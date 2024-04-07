@@ -363,7 +363,7 @@ class RecordBase {
         if (!$this.HasNoteProperty($key)) {
             $htab = [hashtable]::new(); $htab.Add($key, $value); $this.Add($htab)
         } else {
-            Write-Warning "Config.Add() Skipped $Key. Key already exists."
+            Write-Warning "Record.Add() Skipped $Key. Key already exists."
         }
     }
     [void] Add([hashtable]$table) {
@@ -472,7 +472,7 @@ class RecordBase {
                 $process.Dispose()
             }
             Remove-Item $outFile.FullName -Force
-            if ($UseVerbose) { "[+] FileMonitor Log saved in variable: `$$([fileMonitor]::LogvariableName)" | Write-Host -ForegroundColor Magenta }
+            if ($UseVerbose) { "[+] FileMonitor Log saved in variable: `$$([fileMonitor]::LogvariableName)  View log by running: [FileMonitor]::GetLogSummary()" | Write-Host -ForegroundColor Magenta }
             if ($null -ne $config_ob) { $result = $config_ob.ForEach({ [xconvert]::ToHashTable($_) }) }
             if ($UseVerbose) { "[+] Edit Config completed." | Write-Host -ForegroundColor Magenta }
         }
@@ -481,7 +481,7 @@ class RecordBase {
     [void] Save() {
         $pass = $null;
         try {
-            Write-Host "$([RecordBase]::caller) Save records to file: $($this.File) ..." -ForegroundColor Blue
+            Write-Host "$([RecordBase]::caller) Saving records to file: $($this.File) ..." -ForegroundColor Blue
             Set-Variable -Name pass -Scope Local -Visibility Private -Option Private -Value $(if ([CryptoBase]::EncryptionScope.ToString() -eq "User") { Read-Host -Prompt "$([RecordBase]::caller) Paste/write a Password to encrypt configs" -AsSecureString } else { [xconvert]::ToSecurestring([AesGCM]::GetUniqueMachineId()) })
             $this.LastWriteTime = [datetime]::Now; [IO.File]::WriteAllText($this.File, [Base85]::Encode([AesGCM]::Encrypt([xconvert]::ToCompressed($this.ToByte()), $pass)), [System.Text.Encoding]::UTF8)
             Write-Host "$([RecordBase]::caller) Save records " -ForegroundColor Blue -NoNewline; Write-Host "Completed." -ForegroundColor Green
@@ -2574,7 +2574,7 @@ class FileMonitor {
         }
     )
     static [System.IO.FileSystemWatcher] MonitorFile([string]$File) {
-        return [FileMonitor]::monitorFile($File, { Write-Host "[+] File monitor Completed" -ForegroundColor Green; Write-Host "    View log by running: [FileMonitor]::GetLogSummary()" -ForegroundColor Gray })
+        return [FileMonitor]::monitorFile($File, { Write-Host "[+] File monitor Completed" -ForegroundColor Green })
     }
     static [System.IO.FileSystemWatcher] MonitorFile([string]$File, [scriptblock]$Action) {
         [ValidateNotNull()][IO.FileInfo]$File = [IO.FileInfo][CryptoBase]::GetUnResolvedPath($File)
@@ -3324,7 +3324,7 @@ class ArgonCage : CryptoBase {
                 Users         = @{}
                 Host_Os       = [ArgonCage]::Get_Host_Os()
                 ExitCode      = 0
-                OfflineMode   = (Test-Connection github.com -Count 1).status -ne "Success"
+                OfflineMode   = (Test-Connection github.com -Count 1 -ErrorAction Ignore).status -ne "Success"
                 SessionId     = ''
                 SessionConfig = $Config
                 Finish_reason = ''

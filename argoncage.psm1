@@ -155,6 +155,7 @@ class InvalidPasswordException : System.Exception {
 # }
 # (Get-Variable host).Value.UI.RawUI.ForegroundColor = $OgForeground
 # [progressUtil]::WaitJob("waiting", { Start-Sleep -Seconds 3 })
+#
 class ProgressUtil {
     static hidden [string] $_block = '■';
     static hidden [string] $_back = "`b";

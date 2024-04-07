@@ -2235,7 +2235,7 @@ class GitHub {
                 }
             )
         }
-        if (!((Test-Connection github.com -Count 1).status -eq "Success")) {
+        if (!((Test-Connection github.com -Count 1 -ErrorAction Ignore).status -eq "Success")) {
             throw [System.Net.NetworkInformation.PingException]::new("PingException, PLease check your connection!");
         }
         if ([string]::IsNullOrWhiteSpace($GistId) -or $GistId -eq '*') {
@@ -3150,7 +3150,19 @@ class ArgonCage : CryptoBase {
             }
         )
         $result.Name = [IO.Path]::GetFileName($result.File.FullName)
-        $result.Url = $(if ($null -eq [ArgonCage]::SecretStore.Url) { [uri]::new([GitHub]::GetGist('6r1mh04x', 'dac7a950748d39d94d975b77019aa32f').files.$([ArgonCage]::SecretStore.Name).raw_url) } else { [ArgonCage]::SecretStore.Url })
+        if ($null -eq [ArgonCage]::SecretStore.Url) {
+            $rem_gist = $null; try {
+                $rem_gist = [GitHub]::GetGist('6r1mh04x', 'dac7a950748d39d94d975b77019aa32f')
+            } catch {
+                Write-Host "[-] Error: $_" -ForegroundColor Red
+            } finally {
+                if ($null -ne $rem_gist) {
+                    $result.Url = [uri]::new($rem_gist.files.$([ArgonCage]::SecretStore.Name).raw_url)
+                }
+            }
+        } else {
+            $result.Url = [ArgonCage]::SecretStore.Url
+        }
         if (![IO.File]::Exists($result.File.FullName)) {
             if ([ArgonCage]::Tmp.vars.UseVerbose) { "[+] Fetching secrets from gist ..." | Write-Host -ForegroundColor Magenta }
             [NetworkManager]::DownloadOptions.Set('ShowProgress', $true)

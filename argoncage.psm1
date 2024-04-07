@@ -2980,7 +2980,7 @@ class ArgonCage : CryptoBase {
     ArgonCage() {
         $this.Version = [ArgonCage]::GetVersion()
         $this.PsObject.properties.add([psscriptproperty]::new('DataPath', [scriptblock]::Create({ $path = [ArgonCage]::Get_dataPath('ArgonCage', 'Data'); [SecretStore]::DataPath = [IO.Path]::Combine($path, 'secrets'); return $path })))
-        $this.SetTMPvariables(); $this.SaveConfigs() # $this.ImportConfigs()
+        $this.SetTMPvariables(); $this.SaveConfigs()#; $this.SyncConfigs()
         $this.PsObject.properties.add([psscriptproperty]::new('IsOffline', [scriptblock]::Create({ return ((Test-Connection github.com -Count 1).status -ne "Success") })))
     }
     static [void] ShowMenu() {
@@ -3039,13 +3039,18 @@ class ArgonCage : CryptoBase {
         [ArgonCage]::Tmp.vars.Users[$username] = $hashedPassword
     }
     [void] EditConfig() {
-        if ($null -eq $this.Config) { $this.SetConfigs() }; [AesGCM]::caller = '[ArgonCage]'
-        $this.Config.Edit()
+        if ($null -eq $this.Config) { $this.SetConfigs() };
+        [AesGCM]::caller = '[ArgonCage]'; $this.Config.Edit()
     }
     [void] SaveConfigs() {
+        if ($null -eq $this.Config) { $this.SetConfigs() };
         [RecordBase]::caller = '[ArgonCage]'; $this.Config.Save()
     }
     [void] SyncConfigs() {
+        if ($null -eq $this.Config) { $this.SetConfigs() };
+        if (!$this.Config.remote.IsAbsoluteUri) { $this.SetConfigs() }
+        # if ($this.Config.Remote.LastWriteTime -gt $this.Config.LastWriteTime) {
+        # }
         # Imports remote configs into current ones, then uploads the updated version to github gist
         # Compare REMOTE's lastWritetime with [IO.File]::GetLastWriteTime($this.File)
         $this.ImportConfig($this.Config.Remote); $this.SaveConfigs()
@@ -3243,7 +3248,6 @@ class ArgonCage : CryptoBase {
             $results.Where({ $_.Tag -eq $TagName }).Set('Token', [HKDF2]::GetToken($Credential.Password))
         }
         if ([ArgonCage]::Tmp.vars.SessionConfig.SaveCredsCache) {
-            Write-Verbose "Saving credential hashes to CACHE ..."
             $_p = [xconvert]::ToSecurestring([ArgonCage]::GetUniqueMachineId())
             Set-Content -Value $([Base85]::Encode([AesGCM]::Encrypt(
                         [System.Text.Encoding]::UTF8.GetBytes([string]($results | ConvertTo-Json)),
@@ -3251,6 +3255,7 @@ class ArgonCage : CryptoBase {
                     )
                 )
             ) -Path ([ArgonCage]::Tmp.vars.SessionConfig.CachedCredsPath) -Encoding utf8BOM
+            Write-Verbose "Saved Credential hash to CACHE"
         }
         return $results
     }

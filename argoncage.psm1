@@ -358,6 +358,7 @@ class EncodingBase : System.Text.ASCIIEncoding {
 }
 
 class RecordBase {
+    static hidden [string] $caller
     RecordBase() {}
     [void] Add([string]$key, [System.Object]$value) {
         [ValidateNotNullOrEmpty()][string]$key = $key
@@ -486,7 +487,7 @@ class RecordBase {
             Write-Host "$([RecordBase]::caller) Saving records to file: $($this.File) ..." -ForegroundColor Blue
             Set-Variable -Name pass -Scope Local -Visibility Private -Option Private -Value $(if ([CryptoBase]::EncryptionScope.ToString() -eq "User") { Read-Host -Prompt "$([RecordBase]::caller) Paste/write a Password to encrypt configs" -AsSecureString } else { [xconvert]::ToSecurestring([AesGCM]::GetUniqueMachineId()) })
             $this.LastWriteTime = [datetime]::Now; [IO.File]::WriteAllText($this.File, [Base85]::Encode([AesGCM]::Encrypt([xconvert]::ToCompressed($this.ToByte()), $pass)), [System.Text.Encoding]::UTF8)
-            Write-Host "$([RecordBase]::caller) Save records " -ForegroundColor Blue -NoNewline; Write-Host "Completed." -ForegroundColor Green
+            Write-Host "$([RecordBase]::caller) Saving records " -ForegroundColor Blue -NoNewline; Write-Host "Completed." -ForegroundColor Green
         } catch {
             throw $_.Exeption
         } finally {
@@ -3042,7 +3043,7 @@ class ArgonCage : CryptoBase {
         $this.Config.Edit()
     }
     [void] SaveConfigs() {
-        [RecordTbl]::caller = "[$($this.GetType().Name)]"; $this.Config.Save()
+        [RecordBase]::caller = '[ArgonCage]'; $this.Config.Save()
     }
     [void] SyncConfigs() {
         # Imports remote configs into current ones, then uploads the updated version to github gist
@@ -3050,11 +3051,11 @@ class ArgonCage : CryptoBase {
         $this.ImportConfig($this.Config.Remote); $this.SaveConfigs()
     }
     [void] ImportConfigs() {
-        [RecordTbl]::caller = "[$($this.GetType().Name)]"; [void]$this.Config.Import($this.Config.File)
+        [RecordBase]::caller = '[ArgonCage]'; [void]$this.Config.Import($this.Config.File)
     }
     [void] ImportConfigs([uri]$raw_uri) {
         # $e = "GIST_CUD = {0}" -f ([AesGCM]::Decrypt("AfXkvWiCce7hAIvWyGeU4TNQyD6XLV8kFYyk87X4zqqhyzb7DNuWcj2lHb+2mRFdN/1aGUHEv601M56Iwo/SKhkWLus=", $(Read-Host -Prompt "pass" -AsSecureString), 1)); $e >> ./.env
-        [RecordTbl]::caller = "[$($this.GetType().Name)]"; $this.Config.Import($raw_uri)
+        [RecordBase]::caller = '[ArgonCage]'; $this.Config.Import($raw_uri)
     }
     [bool] DeleteConfigs() {
         return [bool]$(
@@ -3201,7 +3202,7 @@ class ArgonCage : CryptoBase {
         if ($null -eq [ArgonCage]::Tmp) { [ArgonCage]::Tmp = [SessionTmp]::new() }
         if ($null -eq [ArgonCage]::Tmp.vars.SessionId) { Write-Verbose "Creating new session ..."; [ArgonCage]::SetTMPvariables([RecordTbl]::new([ArgonCage]::Get_default_Config())) }
         $sc = [ArgonCage]::Tmp.vars.SessionConfig
-        if (!$sc.KeepCredsCache) { throw "Please first enable credential Caching in your config. or run [ArgonCage]::Tmp.vars.Set('KeepCredsCache', `$true)" }
+        if (!$sc.SaveCredsCache) { throw "Please first enable credential Caching in your config. or run [ArgonCage]::Tmp.vars.Set('SaveCredsCache', `$true)" }
         return [ArgonCage]::ReadCredsCache($sc.CachedCredsPath)
     }
     static [RecordTbl[]] ReadCredsCache([string]$FilePath) {
@@ -3241,17 +3242,17 @@ class ArgonCage : CryptoBase {
         } else {
             $results.Where({ $_.Tag -eq $TagName }).Set('Token', [HKDF2]::GetToken($Credential.Password))
         }
-        [ArgonCage]::SaveCredsCache($results)
-        return $results
-    }
-    static [void] SaveCredsCache([RecordTbl[]]$cacheOb) {
-        $_p = [xconvert]::ToSecurestring([ArgonCage]::GetUniqueMachineId())
-        Set-Content -Value $([Base85]::Encode([AesGCM]::Encrypt(
-                    [System.Text.Encoding]::UTF8.GetBytes([string]($cacheOb | ConvertTo-Json)),
-                    $_p, [AesGCM]::GetDerivedSalt($_p), $null, 'Gzip', 1
+        if ([ArgonCage]::Tmp.vars.SessionConfig.SaveCredsCache) {
+            Write-Verbose "Saving credential hashes to CACHE ..."
+            $_p = [xconvert]::ToSecurestring([ArgonCage]::GetUniqueMachineId())
+            Set-Content -Value $([Base85]::Encode([AesGCM]::Encrypt(
+                        [System.Text.Encoding]::UTF8.GetBytes([string]($results | ConvertTo-Json)),
+                        $_p, [AesGCM]::GetDerivedSalt($_p), $null, 'Gzip', 1
+                    )
                 )
-            )
-        ) -Path ([ArgonCage]::Tmp.vars.SessionConfig.CachedCredsPath) -Encoding utf8BOM
+            ) -Path ([ArgonCage]::Tmp.vars.SessionConfig.CachedCredsPath) -Encoding utf8BOM
+        }
+        return $results
     }
     static [void] ClearCredsCache() {
         [ArgonCage]::Tmp.vars.SessionConfig.CachedCredsPath | Remove-Item -Force -ErrorAction Ignore
@@ -3371,19 +3372,20 @@ class ArgonCage : CryptoBase {
             NoApiKeyHelp    = 'Get your OpenAI API key here: https://platform.openai.com/account/api-keys'
             ThrowNoApiKey   = $false # If false then Chat() will go in offlineMode when no api key is provided, otherwise it will throw an error and exit.
             UsageHelp       = "Usage:`nHere's an example of how to use this Password manager:`n   `$pm = [ArgonCage]::new()`n   `$pm.login()`n`nAnd make sure you have Internet."
-            KeepCredsCache  = $true
+            SaveCredsCache  = $true
+            SaveEditorLogs  = $true
             CachedCredsPath = [IO.Path]::Combine($default_DataDir.FullName, "CredsCache.enc")
             LastWriteTime   = [datetime]::Now
         }
         try {
-            Write-Host "[ArgonCage] Get Remote gist uri for config ..." -ForegroundColor Blue
+            Write-Host "[ArgonCage] Set Remote uri for config ..." -ForegroundColor Blue
             $l = [GistFile]::Create([uri]::New($default_Config.GistUri)); [GitHub]::UserName = $l.UserName
             if ($?) {
                 $default_Config.Remote = [uri]::new([GitHub]::GetGist($l.Owner, $l.Id).files."$Config_FileName".raw_url)
             }
-            Write-Host "[ArgonCage] Get Remote gist uri " -ForegroundColor Blue -NoNewline; Write-Host "Completed." -ForegroundColor Green
+            Write-Host "[ArgonCage] Set Remote uri " -ForegroundColor Blue -NoNewline; Write-Host "Completed." -ForegroundColor Green
         } catch {
-            Write-Host "[ArgonCage] Get Remote gist uri Failed!" -ForegroundColor Red
+            Write-Host "[ArgonCage] Set Remote uri Failed!" -ForegroundColor Red
             Write-Host "            $($_.Exception.PsObject.TypeNames[0]) $($_.Exception.Message)" -ForegroundColor Red
         }
         return $default_Config

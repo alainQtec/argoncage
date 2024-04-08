@@ -2348,14 +2348,14 @@ class Gist {
 #endregion GitHub
 
 class RecordMap : System.Configuration.SettingsBase {
-    static hidden [string] $caller = '[RecordMap]'
     hidden [uri] $Remote # usually a gist uri
     hidden [string] $File
-    hidden [System.Configuration.SettingsContext] $Context
     hidden [bool] $IsSynchronized
+    hidden [System.Configuration.SettingsContext] $Context
     hidden [System.Configuration.SettingsProviderCollection] $Providers
     hidden [System.Configuration.SettingsPropertyValueCollection] $PropertyValues
     [datetime] $LastWriteTime = [datetime]::Now
+    static hidden [string] $caller = '[RecordMap]'
     RecordMap() { $this._init() }
     RecordMap([hashtable[]]$array) {
         $this.Add($array); $this._init()
@@ -2366,13 +2366,9 @@ class RecordMap : System.Configuration.SettingsBase {
             ($this | Get-Member -Type *Property).Name.Where({ $_ -notin ('Count', 'Properties', 'PropertyValues', 'Providers', 'Item', 'Context', 'IsSynchronized') }).Foreach({ $r.Add([System.Configuration.SettingsProperty]::new($_)) })
             return $r
         } -SecondValue {
-            Write-Warning 'This is a readonly property!'
+            Throw [System.InvalidOperationException]::new("'Properties' is a readOnly property!")
         } -Force
         $this.PsObject.properties.add([psscriptproperty]::new('Count', [scriptblock]::Create({ $this.Properties.count })))
-    }
-    [void] Edit() {
-        $this.Set([RecordMap]::EditFile([IO.FileInfo]::new($this.File)))
-        $this.Save()
     }
     [void] Import([uri]$raw_uri) {
         try {
@@ -2396,14 +2392,6 @@ class RecordMap : System.Configuration.SettingsBase {
         # $gisturi = 'https://gist.github.com/' + $this.Remote.Segments[2] + $this.Remote.Segments[2].replace('/', '')
         # [GitHub]::UpdateGist($gisturi, $content)
     }
-    [void] Add([string]$key, [System.Object]$value) {
-        [ValidateNotNullOrEmpty()][string]$key = $key
-        if (!$this.HasNoteProperty($key)) {
-            $htab = [hashtable]::new(); $htab.Add($key, $value); $this.Add($htab)
-        } else {
-            Write-Warning "Record.Add() Skipped $Key. Key already exists."
-        }
-    }
     [void] Add([hashtable]$table) {
         [ValidateNotNullOrEmpty()][hashtable]$table = $table
         $Keys = $table.Keys | Where-Object { !$this.HasNoteProperty($_) -and ($_.GetType().FullName -eq 'System.String' -or $_.GetType().BaseType.FullName -eq 'System.ValueType') }
@@ -2418,12 +2406,23 @@ class RecordMap : System.Configuration.SettingsBase {
     [void] Add([hashtable[]]$items) {
         foreach ($item in $items) { $this.Add($item) }
     }
+    [void] Add([string]$key, [System.Object]$value) {
+        [ValidateNotNullOrEmpty()][string]$key = $key
+        if (!$this.HasNoteProperty($key)) {
+            $htab = [hashtable]::new(); $htab.Add($key, $value); $this.Add($htab)
+        } else {
+            Write-Warning "Record.Add() Skipped $Key. Key already exists."
+        }
+    }
     [void] Add([System.Collections.Generic.List[hashtable]]$items) {
         foreach ($item in $items) { $this.Add($item) }
     }
     [void] Set([string]$key, [System.Object]$value) {
         $htab = [hashtable]::new(); $htab.Add($key, $value)
         $this.Set($htab)
+    }
+    [void] Set([hashtable[]]$items) {
+        foreach ($item in $items) { $this.Set($item) }
     }
     [void] Set([hashtable]$table) {
         [ValidateNotNullOrEmpty()][hashtable]$table = $table
@@ -2435,9 +2434,6 @@ class RecordMap : System.Configuration.SettingsBase {
                 $this.$key = $table[$key]
             }
         }
-    }
-    [void] Set([hashtable[]]$items) {
-        foreach ($item in $items) { $this.Set($item) }
     }
     [void] Set([System.Collections.Specialized.OrderedDictionary]$dict) {
         $dict.Keys.Foreach({ $this.Set($_, $dict["$_"]) });
@@ -2478,7 +2474,11 @@ class RecordMap : System.Configuration.SettingsBase {
         }
         return $cfg
     }
-    static [hashtable[]] EditFile([IO.FileInfo]$File) {
+    [void] Edit() {
+        $this.Set([RecordMap]::Edit([IO.FileInfo]::new($this.File)))
+        $this.Save()
+    }
+    static [hashtable[]] Edit([IO.FileInfo]$File) {
         $result = @(); $private:config_ob = $null; $fswatcher = $null; $process = $null;
         [ValidateScript({ if ([IO.File]::Exists($_)) { return $true } ; throw [FileNotFoundException]::new("File '$_' was not found") })][IO.FileInfo]$File = $File;
         $OutFile = [IO.FileInfo][IO.Path]::GetTempFileName()

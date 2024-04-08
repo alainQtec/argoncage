@@ -2347,19 +2347,28 @@ class Gist {
 
 #endregion GitHub
 
-class RecordMap {
+class RecordMap : System.Configuration.SettingsBase {
     static hidden [string] $caller = '[RecordMap]'
     hidden [uri] $Remote # usually a gist uri
     hidden [string] $File
+    hidden [System.Configuration.SettingsContext] $Context
+    hidden [bool] $IsSynchronized
+    hidden [System.Configuration.SettingsProviderCollection] $Providers
+    hidden [System.Configuration.SettingsPropertyValueCollection] $PropertyValues
     [datetime] $LastWriteTime = [datetime]::Now
-    RecordMap() {
-        $this.PsObject.properties.add([psscriptproperty]::new('Count', [scriptblock]::Create({ ($this | Get-Member -Type *Property).count - 2 })))
-        $this.PsObject.properties.add([psscriptproperty]::new('Keys', [scriptblock]::Create({ ($this | Get-Member -Type *Property).Name.Where({ $_ -notin ('Keys', 'Count') }) })))
-    }
+    RecordMap() { $this._init() }
     RecordMap([hashtable[]]$array) {
-        $this.Add($array)
-        $this.PsObject.properties.add([psscriptproperty]::new('Count', [scriptblock]::Create({ ($this | Get-Member -Type *Property).count - 2 })))
-        $this.PsObject.properties.add([psscriptproperty]::new('Keys', [scriptblock]::Create({ ($this | Get-Member -Type *Property).Name.Where({ $_ -notin ('Keys', 'Count') }) })))
+        $this.Add($array); $this._init()
+    }
+    hidden [void] _init() {
+        $this | Add-Member -MemberType ScriptProperty -Name 'Properties' -Value {
+            $r = [System.Configuration.SettingsPropertyCollection]::new()
+            ($this | Get-Member -Type *Property).Name.Where({ $_ -notin ('Count', 'Properties', 'PropertyValues', 'Providers', 'Item', 'Context', 'IsSynchronized') }).Foreach({ $r.Add([System.Configuration.SettingsProperty]::new($_)) })
+            return $r
+        } -SecondValue {
+            Write-Warning 'This is a readonly property!'
+        } -Force
+        $this.PsObject.properties.add([psscriptproperty]::new('Count', [scriptblock]::Create({ $this.Properties.count })))
     }
     [void] Edit() {
         $this.Set([RecordMap]::EditFile([IO.FileInfo]::new($this.File)))
@@ -2370,7 +2379,7 @@ class RecordMap {
             $pass = $null; if ([string]::IsNullOrWhiteSpace([AesGCM]::caller)) { [AesGCM]::caller = [RecordMap]::caller }
             Set-Variable -Name pass -Scope Local -Visibility Private -Option Private -Value $(if ([CryptoBase]::EncryptionScope.ToString() -eq "User") { Read-Host -Prompt "$([RecordMap]::caller) Paste/write a Password to decrypt configs" -AsSecureString }else { [xconvert]::ToSecurestring([AesGCM]::GetUniqueMachineId()) })
             $_ob = [xconvert]::Deserialize([xconvert]::ToDeCompressed([AesGCM]::Decrypt([base85]::Decode($(Invoke-WebRequest $raw_uri -Verbose:$false).Content), $pass)))
-            $this.Set([hashtable[]]$_ob.Keys.ForEach({ @{ $_ = $_ob.$_ } }))
+            $this.Set([hashtable[]]$_ob.Properties.Name.ForEach({ @{ $_ = $_ob.$_ } }))
         } catch {
             throw $_.Exeption
         } finally {
@@ -2461,7 +2470,7 @@ class RecordMap {
             if ([string]::IsNullOrWhiteSpace([AesGCM]::caller)) { [AesGCM]::caller = [RecordMap]::caller }
             Set-Variable -Name pass -Scope Local -Visibility Private -Option Private -Value $(if ([CryptoBase]::EncryptionScope.ToString() -eq "User") { Read-Host -Prompt "$([RecordMap]::caller) Paste/write a Password to decrypt configs" -AsSecureString }else { [xconvert]::ToSecurestring([AesGCM]::GetUniqueMachineId()) })
             $_ob = [xconvert]::Deserialize([xconvert]::ToDeCompressed([AesGCM]::Decrypt([base85]::Decode([IO.File]::ReadAllText($FilePath)), $pass)))
-            $cfg = [hashtable[]]$_ob.Keys.ForEach({ @{ $_ = $_ob.$_ } })
+            $cfg = [hashtable[]]$_ob.Properties.Name.ForEach({ @{ $_ = $_ob.$_ } })
         } catch {
             throw $_.Exeption
         } finally {

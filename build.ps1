@@ -212,7 +212,7 @@ Begin {
         if ($Passthru) {
             $msgList
         } else {
-            $msgList | Write-Host -ForegroundColor Cyan
+            $msgList | Write-Host -f Cyan
         }
     }
     function Write-EnvironmentSummary {
@@ -527,7 +527,7 @@ Process {
                     Import-Module $outputModDir -Force -Verbose:$false
                     $Host.UI.WriteLine();
                     $TestResults = & $test_Script
-                    Write-Host '    Pester invocation complete!' -ForegroundColor Green
+                    Write-Host '    Pester invocation complete!' -f Green
                     $TestResults | Format-List
                     if ($TestResults.FailedCount -gt 0) {
                         Write-Error -Message "One or more Pester tests failed!"
@@ -551,45 +551,45 @@ Process {
                         # Bump MODULE Version
                         $versionToDeploy = switch ($true) {
                             $($commitVer -and ([System.Version]$commitVer -lt $nextGalVer)) {
-                                Write-Host -ForegroundColor Yellow "Version in commit message is $commitVer, which is less than the next Gallery version and would result in an error. Possible duplicate deployment build, skipping module bump and negating deployment"
+                                Write-Host -f Yellow "Version in commit message is $commitVer, which is less than the next Gallery version and would result in an error. Possible duplicate deployment build, skipping module bump and negating deployment"
                                 Set-EnvironmentVariable -name ($env:RUN_ID + 'CommitMessage') -Value $([Environment]::GetEnvironmentVariable($env:RUN_ID + 'CommitMessage')).Replace('!deploy', '')
                                 $null
                                 break
                             }
                             $($commitVer -and ([System.Version]$commitVer -gt $nextGalVer)) {
-                                Write-Host -ForegroundColor Green "Module Bumped version: $commitVer [from commit message]"
+                                Write-Host -f Green "Module Bumped version: $commitVer [from commit message]"
                                 [System.Version]$commitVer
                                 break
                             }
                             $($CurrentVersion -ge $nextGalVer) {
-                                Write-Host -ForegroundColor Green "Module Bumped version: $CurrentVersion [from manifest]"
+                                Write-Host -f Green "Module Bumped version: $CurrentVersion [from manifest]"
                                 $CurrentVersion
                                 break
                             }
                             $(([Environment]::GetEnvironmentVariable($env:RUN_ID + 'CommitMessage')) -match '!hotfix') {
-                                Write-Host -ForegroundColor Green "Module Bumped version: $nextGalVer [commit message match '!hotfix']"
+                                Write-Host -f Green "Module Bumped version: $nextGalVer [commit message match '!hotfix']"
                                 $nextGalVer
                                 break
                             }
                             $(([Environment]::GetEnvironmentVariable($env:RUN_ID + 'CommitMessage')) -match '!minor') {
                                 $minorVers = [System.Version]("{0}.{1}.{2}" -f $nextGalVer.Major, ([int]$nextGalVer.Minor + 1), 0)
-                                Write-Host -ForegroundColor Green "Module Bumped version: $minorVers [commit message match '!minor']"
+                                Write-Host -f Green "Module Bumped version: $minorVers [commit message match '!minor']"
                                 $minorVers
                                 break
                             }
                             $(([Environment]::GetEnvironmentVariable($env:RUN_ID + 'CommitMessage')) -match '!major') {
                                 $majorVers = [System.Version]("{0}.{1}.{2}" -f ([int]$nextGalVer.Major + 1), 0, 0)
-                                Write-Host -ForegroundColor Green "Module Bumped version: $majorVers [commit message match '!major']"
+                                Write-Host -f Green "Module Bumped version: $majorVers [commit message match '!major']"
                                 $majorVers
                                 break
                             }
                             Default {
-                                Write-Host -ForegroundColor Green "Module Bumped version: $nextGalVer [PSGallery next version]"
+                                Write-Host -f Green "Module Bumped version: $nextGalVer [PSGallery next version]"
                                 $nextGalVer
                             }
                         }
                         if (!$versionToDeploy) {
-                            Write-Host -ForegroundColor Yellow "No module version matched! Negating deployment to prevent errors"
+                            Write-Host -f Yellow "No module version matched! Negating deployment to prevent errors"
                             Set-EnvironmentVariable -name ($env:RUN_ID + 'CommitMessage') -Value $([Environment]::GetEnvironmentVariable($env:RUN_ID + 'CommitMessage')).Replace('!deploy', '')
                         }
                         try {
@@ -616,9 +616,9 @@ Process {
                                     "    Updating module version on manifest to [$versionToDeploy]"
                                     Update-Metadata -Path $manifestPath -PropertyName ModuleVersion -Value $versionToDeploy -Verbose
                                 }
-                                Write-Host "    Publishing version [$versionToDeploy] to PSGallery..." -ForegroundColor Green
+                                Write-Host "    Publishing version [$versionToDeploy] to PSGallery..." -f Green
                                 Publish-Module -Path $outputModVerDir -NuGetApiKey $env:NUGETAPIKEY -Repository PSGallery -Verbose
-                                Write-Host "    Published to PsGallery successful!" -ForegroundColor Green
+                                Write-Host "    Published to PsGallery successful!" -f Green
                             } else {
                                 if ($Is_Lower_PsGallery_Version) { Write-Warning "SKIPPED Publishing. Module version $Latest_Module_Verion already exists on PsGallery!" }
                                 Write-Verbose "    SKIPPED Publish of version [$versionToDeploy] to PSGallery"
@@ -657,7 +657,7 @@ Process {
                             Write-Error $_
                         }
                     } else {
-                        Write-Host -ForegroundColor Magenta "UNKNOWN Build system"
+                        Write-Host -f Magenta "UNKNOWN Build system"
                     }
                 }
             }
@@ -685,7 +685,7 @@ Process {
         Register-PSRepository -Default -InstallationPolicy Trusted
     }
     if (!(Get-Command dotnet -ErrorAction Ignore) -and ![bool][int]$env:IsAC) {
-        Write-Heading "Resolve publish dependency [dotnet sdk]`n" -ForegroundColor Magenta
+        Write-Heading "Resolve publish dependency [dotnet sdk]`n" -f Magenta
         Invoke-CommandWithLog {
             [System.Environment]::SetEnvironmentVariable('DOTNET_ROOT', [IO.Path]::Combine($HOME, '.dotnet'))
             # dotnet command version '2.0.0' or newer is required to interact with the NuGet-based repositories.
@@ -695,7 +695,7 @@ Process {
             &powershell -NoProfile -ExecutionPolicy unrestricted -Command "[Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12; &([scriptblock]::Create((Invoke-WebRequest -UseBasicParsing 'https://dot.net/v1/dotnet-install.ps1'))) -channel LTS"
             $env:PATH = $env:PATH + [IO.Path]::PathSeparator + "$env:DOTNET_ROOT"
             . ([scriptblock]::Create((Invoke-RestMethod -Verbose:$false -Method Get https://api.github.com/gists/8b4ddc0302a9262cf7fc25e919227a2f).files.'Update_Session_Env.ps1'.content))
-            Write-Host "`nRefresh SessionEnvironment" -ForegroundColor Magenta
+            Write-Host "`nRefresh SessionEnvironment" -f Magenta
             Update-SessionEnvironment; $Host.ui.WriteLine()
         } else {
             $Host.ui.WriteLine();
@@ -732,15 +732,15 @@ Process {
             "    + NuGet API key is not null        : $(![string]::IsNullOrWhiteSpace($env:NUGETAPIKEY))`n"
             if ($PSVersionTable.PSVersion.Major -lt 5 -or [string]::IsNullOrWhiteSpace($env:NUGETAPIKEY) -or [string]::IsNullOrWhiteSpace($env:GitHubPAT) ) {
                 $MSG = $MSG.Replace('and conditions for deployment are:', 'but conditions are not correct for deployment.')
-                $MSG | Write-Host -ForegroundColor Yellow
+                $MSG | Write-Host -f Yellow
                 if (($([Environment]::GetEnvironmentVariable($env:RUN_ID + 'CommitMessage')) -match '!deploy' -and $([Environment]::GetEnvironmentVariable($env:RUN_ID + 'BranchName')) -eq "main") -or $script:ForceDeploy -eq $true) {
                     Write-Warning "Force Deploying detected"
                 } else {
-                    "Skipping Psake for this job!" | Write-Host -ForegroundColor Yellow
+                    "Skipping Psake for this job!" | Write-Host -f Yellow
                     exit 0
                 }
             } else {
-                $MSG | Write-Host -ForegroundColor Green
+                $MSG | Write-Host -f Green
             }
         }
     }

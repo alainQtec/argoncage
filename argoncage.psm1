@@ -202,7 +202,7 @@ class ProgressUtil {
                 [Console]::CursorTop = $originalY
             }
         }
-        Write-Host "`b$progressMsg ... " -NoNewline -ForegroundColor Magenta
+        Write-Host "`b$progressMsg ... " -NoNewline -f Magenta
         [System.Management.Automation.Runspaces.RemotingErrorRecord[]]$Errors = $Job.ChildJobs.Where({
                 $null -ne $_.Error
             }
@@ -212,9 +212,9 @@ class ProgressUtil {
             if ($null -ne $Errors) {
                 $errormessages = $Errors.Exception.Message -join "`n"
             }
-            Write-Host "Completed with errors.`n`t$errormessages" -ForegroundColor Red
+            Write-Host "Completed with errors.`n`t$errormessages" -f Red
         } else {
-            Write-Host "Done." -ForegroundColor Green
+            Write-Host "Done." -f Green
         }
         [Console]::CursorVisible = $true;
         return $Job
@@ -223,7 +223,7 @@ class ProgressUtil {
 class NetworkManager {
     [string] $HostName
     static [System.Net.IPAddress[]] $IPAddresses
-    static [recordTbl] $DownloadOptions = [recordTbl]::New(@{
+    static [RecordMap] $DownloadOptions = [RecordMap]::New(@{
             ShowProgress      = $true
             ProgressBarLength = [int]([Console]::WindowWidth * 0.7)
             ProgressMessage   = [string]::Empty
@@ -306,7 +306,7 @@ class NetworkManager {
         $OgForeground = (Get-Variable host).Value.UI.RawUI.ForegroundColor
         $Progress_Msg = [NetworkManager]::DownloadOptions.ProgressMessage
         if ([string]::IsNullOrWhiteSpace($Progress_Msg)) { $Progress_Msg = "[+] Downloading $name to $Outfile" }
-        Write-Host $Progress_Msg -ForegroundColor Magenta
+        Write-Host $Progress_Msg -f Magenta
         (Get-Variable host).Value.UI.RawUI.ForegroundColor = [ConsoleColor]::Green
         while ($totalBytesToReceive -gt 0) {
             $bytesRead = $stream.Read($buffer, 0, 1024)
@@ -328,7 +328,7 @@ class NetworkManager {
         [ValidateNotNullOrEmpty()][string]$HostName = $HostName
         if (![bool]("System.Net.NetworkInformation.Ping" -as 'type')) { Add-Type -AssemblyName System.Net.NetworkInformation };
         $cs = $null; $cc = [NetworkManager]::caller; $re = @{ true = @{ m = "Success"; c = "Green" }; false = @{ m = "Failed"; c = "Red" } }
-        Write-Host "$cc Testing Connection ... " -ForegroundColor Blue -NoNewline
+        Write-Host "$cc Testing Connection ... " -f Blue -NoNewline
         try {
             [System.Net.NetworkInformation.PingReply]$PingReply = [System.Net.NetworkInformation.Ping]::new().Send($HostName);
             $cs = $PingReply.Status -eq [System.Net.NetworkInformation.IPStatus]::Success
@@ -339,7 +339,7 @@ class NetworkManager {
             Write-Error $_
         }
         $re = $re[$cs.ToString()]
-        Write-Host $re.m -ForegroundColor $re.c
+        Write-Host $re.m -f $re.c
         return $cs
     }
 }
@@ -354,176 +354,6 @@ class EncodingBase : System.Text.ASCIIEncoding {
     }
     static [char[]] GetChars([byte[]]$bytes) {
         return [EncodingBase]::new().GetChars($bytes)
-    }
-}
-
-class RecordBase {
-    static hidden [string] $caller
-    RecordBase() {}
-    [void] Add([string]$key, [System.Object]$value) {
-        [ValidateNotNullOrEmpty()][string]$key = $key
-        if (!$this.HasNoteProperty($key)) {
-            $htab = [hashtable]::new(); $htab.Add($key, $value); $this.Add($htab)
-        } else {
-            Write-Warning "Record.Add() Skipped $Key. Key already exists."
-        }
-    }
-    [void] Add([hashtable]$table) {
-        [ValidateNotNullOrEmpty()][hashtable]$table = $table
-        $Keys = $table.Keys | Where-Object { !$this.HasNoteProperty($_) -and ($_.GetType().FullName -eq 'System.String' -or $_.GetType().BaseType.FullName -eq 'System.ValueType') }
-        foreach ($key in $Keys) {
-            if ($key -notin ('File', 'Remote', 'LastWriteTime')) {
-                $this | Add-Member -MemberType NoteProperty -Name $key -Value $table[$key]
-            } else {
-                $this.$key = $table[$key]
-            }
-        }
-    }
-    [void] Add([hashtable[]]$items) {
-        foreach ($item in $items) { $this.Add($item) }
-    }
-    [void] Add([System.Collections.Generic.List[hashtable]]$items) {
-        foreach ($item in $items) { $this.Add($item) }
-    }
-    [void] Set([string]$key, [System.Object]$value) {
-        $htab = [hashtable]::new(); $htab.Add($key, $value)
-        $this.Set($htab)
-    }
-    [void] Set([hashtable]$table) {
-        [ValidateNotNullOrEmpty()][hashtable]$table = $table
-        $Keys = $table.Keys | Where-Object { $_.GetType().FullName -eq 'System.String' -or $_.GetType().BaseType.FullName -eq 'System.ValueType' } | Sort-Object -Unique
-        foreach ($key in $Keys) {
-            if (!$this.psObject.Properties.Name.Contains($key)) {
-                $this | Add-Member -MemberType NoteProperty -Name $key -Value $table[$key] -Force
-            } else {
-                $this.$key = $table[$key]
-            }
-        }
-    }
-    [void] Set([hashtable[]]$items) {
-        foreach ($item in $items) { $this.Set($item) }
-    }
-    [void] Set([System.Collections.Specialized.OrderedDictionary]$dict) {
-        $dict.Keys.Foreach({ $this.Set($_, $dict["$_"]) });
-    }
-    [bool] HasNoteProperty([object]$Name) {
-        [ValidateNotNullOrEmpty()][string]$Name = $($Name -as 'string')
-        return (($this | Get-Member -Type NoteProperty | Select-Object -ExpandProperty name) -contains "$Name")
-    }
-    [array] ToArray() {
-        $array = @(); $props = $this | Get-Member -MemberType NoteProperty
-        if ($null -eq $props) { return @() }
-        $props.name | ForEach-Object { $array += @{ $_ = $this.$_ } }
-        return $array
-    }
-    [string] ToJson() {
-        return [string]($this | Select-Object -ExcludeProperty count | ConvertTo-Json -Depth 3)
-    }
-    [System.Collections.Specialized.OrderedDictionary] ToOrdered() {
-        $dict = [System.Collections.Specialized.OrderedDictionary]::new(); $Keys = $this.PsObject.Properties.Where({ $_.Membertype -like "*Property" }).Name
-        if ($Keys.Count -gt 0) {
-            $Keys | ForEach-Object { [void]$dict.Add($_, $this."$_") }
-        }
-        return $dict
-    }
-    static [hashtable[]] Read([string]$FilePath) {
-        $pass = $null; $cfg = $null
-        try {
-            [ValidateNotNullOrEmpty()][string]$FilePath = [AesGCM]::GetUnResolvedPath($FilePath)
-            if (![IO.File]::Exists($FilePath)) { throw [FileNotFoundException]::new("File '$FilePath' was not found") }
-            if ([string]::IsNullOrWhiteSpace([AesGCM]::caller)) { [AesGCM]::caller = [RecordBase]::caller }
-            Set-Variable -Name pass -Scope Local -Visibility Private -Option Private -Value $(if ([CryptoBase]::EncryptionScope.ToString() -eq "User") { Read-Host -Prompt "$([RecordBase]::caller) Paste/write a Password to decrypt configs" -AsSecureString }else { [xconvert]::ToSecurestring([AesGCM]::GetUniqueMachineId()) })
-            $_ob = [xconvert]::Deserialize([xconvert]::ToDeCompressed([AesGCM]::Decrypt([base85]::Decode([IO.File]::ReadAllText($FilePath)), $pass)))
-            $cfg = [hashtable[]]$_ob.Keys.ForEach({ @{ $_ = $_ob.$_ } })
-        } catch {
-            throw $_.Exeption
-        } finally {
-            Remove-Variable Pass -Force -ErrorAction SilentlyContinue
-        }
-        return $cfg
-    }
-    static [hashtable[]] EditFile([IO.FileInfo]$File) {
-        $result = @(); $private:config_ob = $null; $fswatcher = $null; $process = $null;
-        [ValidateScript({ if ([IO.File]::Exists($_)) { return $true } ; throw [FileNotFoundException]::new("File '$_' was not found") })][IO.FileInfo]$File = $File;
-        $OutFile = [IO.FileInfo][IO.Path]::GetTempFileName()
-        $UseVerbose = [bool]$((Get-Variable verbosePreference -ValueOnly) -eq "continue")
-        try {
-            [NetworkManager]::BlockAllOutbound()
-            if ($UseVerbose) { "[+] Edit Config started .." | Write-Host -ForegroundColor Magenta }
-            [RecordBase]::Read($File.FullName) | ConvertTo-Json | Out-File $OutFile.FullName -Encoding utf8BOM
-            Set-Variable -Name OutFile -Value $(Rename-Item $outFile.FullName -NewName ($outFile.BaseName + '.json') -PassThru)
-            $process = [System.Diagnostics.Process]::new()
-            $process.StartInfo.FileName = 'nvim'
-            $process.StartInfo.Arguments = $outFile.FullName
-            $process.StartInfo.WindowStyle = [System.Diagnostics.ProcessWindowStyle]::Maximized
-            $process.Start(); $fswatcher = [FileMonitor]::MonitorFile($outFile.FullName, [scriptblock]::Create("Stop-Process -Id $($process.Id) -Force"));
-            if ($null -eq $fswatcher) { Write-Warning "Failed to start FileMonitor"; Write-Host "Waiting nvim process to exit..." $process.WaitForExit() }
-            $private:config_ob = [IO.FILE]::ReadAllText($outFile.FullName) | ConvertFrom-Json
-        } finally {
-            [NetworkManager]::UnblockAllOutbound()
-            if ($fswatcher) { $fswatcher.Dispose() }
-            if ($process) {
-                "[+] Neovim process {0} successfully" -f $(if (!$process.HasExited) {
-                        $process.Kill($true)
-                        "closed"
-                    } else {
-                        "exited"
-                    }
-                ) | Write-Host -ForegroundColor Green
-                $process.Close()
-                $process.Dispose()
-            }
-            Remove-Item $outFile.FullName -Force
-            Set-Variable -Name ([FileMonitor]::LogvariableName) -Scope Global -Value ([FileMonitor]::GetLogSummary()) | Out-Null
-            if ($UseVerbose) { "[+] FileMonitor Log saved in variable: `$$([fileMonitor]::LogvariableName)" | Write-Host -ForegroundColor Magenta }
-            if ($null -ne $config_ob) { $result = $config_ob.ForEach({ [xconvert]::ToHashTable($_) }) }
-            if ($UseVerbose) { "[+] Edit Config completed." | Write-Host -ForegroundColor Magenta }
-        }
-        return $result
-    }
-    [void] Save() {
-        $pass = $null;
-        try {
-            Write-Host "$([RecordBase]::caller) Saving records to file: $($this.File) ..." -ForegroundColor Blue
-            Set-Variable -Name pass -Scope Local -Visibility Private -Option Private -Value $(if ([CryptoBase]::EncryptionScope.ToString() -eq "User") { Read-Host -Prompt "$([RecordBase]::caller) Paste/write a Password to encrypt configs" -AsSecureString } else { [xconvert]::ToSecurestring([AesGCM]::GetUniqueMachineId()) })
-            $this.LastWriteTime = [datetime]::Now; [IO.File]::WriteAllText($this.File, [Base85]::Encode([AesGCM]::Encrypt([xconvert]::ToCompressed($this.ToByte()), $pass)), [System.Text.Encoding]::UTF8)
-            Write-Host "$([RecordBase]::caller) Saving records " -ForegroundColor Blue -NoNewline; Write-Host "Completed." -ForegroundColor Green
-        } catch {
-            throw $_.Exeption
-        } finally {
-            Remove-Variable Pass -Force -ErrorAction SilentlyContinue
-        }
-    }
-    [void] Import([String]$FilePath) {
-        Write-Host "$([RecordBase]::caller) Import records: $FilePath ..." -ForegroundColor Green
-        $this.Set([RecordBase]::Read($FilePath))
-        Write-Host "$([RecordBase]::caller) Import records Complete" -ForegroundColor Green
-    }
-    [byte[]] ToByte() {
-        return [xconvert]::Serialize($this)
-    }
-    [string] ToString() {
-        $r = $this.ToArray(); $s = ''
-        $shortnr = [scriptblock]::Create({
-                param([string]$str, [int]$MaxLength)
-                while ($str.Length -gt $MaxLength) {
-                    $str = $str.Substring(0, [Math]::Floor(($str.Length * 4 / 5)))
-                }
-                return $str
-            }
-        )
-        if ($r.Count -gt 1) {
-            $b = $r[0]; $e = $r[-1]
-            $0 = $shortnr.Invoke("{'$($b.Keys)' = '$($b.values.ToString())'}", 40)
-            $1 = $shortnr.Invoke("{'$($e.Keys)' = '$($e.values.ToString())'}", 40)
-            $s = "@($0 ... $1)"
-        } elseif ($r.count -eq 1) {
-            $0 = $shortnr.Invoke("{'$($r[0].Keys)' = '$($r[0].values.ToString())'}", 40)
-            $s = "@($0)"
-        } else {
-            $s = '@()'
-        }
-        return $s
     }
 }
 
@@ -1851,7 +1681,7 @@ class cli {
 #     So this class helps speed up the conversion process
 # .EXAMPLE
 #     $b64str = [cliart]::ToBase64String((Get-Item ./ascii))
-#     [CliArt]::FromBase64String($b64str) | Write-Host -ForegroundColor Green
+#     [CliArt]::FromBase64String($b64str) | Write-Host -f Green
 class CliArt {
     hidden [string]$Base64String
     CliArt([byte[]]$ArtBytes) {
@@ -2015,7 +1845,7 @@ class AesGCM : CryptoBase {
             $_bytes = $bytes;
             $aes = $null; Set-Variable -Name aes -Scope Local -Visibility Private -Option Private -Value $([ScriptBlock]::Create("[Security.Cryptography.AesGcm]::new([convert]::FromBase64String('$Key'))").Invoke());
             for ($i = 1; $i -lt $iterations + 1; $i++) {
-                # Write-Host "$([AesGCM]::caller) [+] Encryption [$i/$iterations] ... Done" -ForegroundColor Yellow
+                # Write-Host "$([AesGCM]::caller) [+] Encryption [$i/$iterations] ... Done" -f Yellow
                 # if ($Protect) { $_bytes = [xconvert]::ToProtected($_bytes, $Salt, [EncryptionScope]::User) }
                 # Generate a random IV for each iteration:
                 [byte[]]$IV = $null; Set-Variable -Name IV -Scope Local -Visibility Private -Option Private -Value ([System.Security.Cryptography.Rfc2898DeriveBytes]::new([xconvert]::ToString($password), $salt, 1, [System.Security.Cryptography.HashAlgorithmName]::SHA1).GetBytes($IV_SIZE));
@@ -2106,7 +1936,7 @@ class AesGCM : CryptoBase {
             $_bytes = if (![string]::IsNullOrWhiteSpace($Compression)) { [xconvert]::ToDecompressed($bytes, $Compression) } else { $bytes }
             $aes = [ScriptBlock]::Create("[Security.Cryptography.AesGcm]::new([convert]::FromBase64String('$Key'))").Invoke()
             for ($i = 1; $i -lt $iterations + 1; $i++) {
-                # Write-Host "$([AesGCM]::caller) [+] Decryption [$i/$iterations] ... Done" -ForegroundColor Yellow
+                # Write-Host "$([AesGCM]::caller) [+] Decryption [$i/$iterations] ... Done" -f Yellow
                 # if ($UnProtect) { $_bytes = [xconvert]::ToUnProtected($_bytes, $Salt, [EncryptionScope]::User) }
                 # Split the real encrypted bytes from nonce & tags then decrypt them:
                 ($b, $n1) = [Shuffl3r]::Split($_bytes, $Password, $TAG_SIZE);
@@ -2117,7 +1947,7 @@ class AesGCM : CryptoBase {
             }
         } catch {
             if ($_.FullyQualifiedErrorId -eq "AuthenticationTagMismatchException") {
-                Write-Host "$([AesGCM]::caller) Wrong password" -ForegroundColor Yellow
+                Write-Host "$([AesGCM]::caller) Wrong password" -f Yellow
             }
             throw $_
         } finally {
@@ -2196,11 +2026,11 @@ class GitHub {
         try {
             if ([GitHub]::IsInteractive) {
                 if ([string]::IsNullOrWhiteSpace((Get-Content ([GitHub]::TokenFile) -ErrorAction Ignore))) {
-                    Write-Host "[GitHub] You'll need to set your api token first. This is a One-Time Process :)" -ForegroundColor Green
+                    Write-Host "[GitHub] You'll need to set your api token first. This is a One-Time Process :)" -f Green
                     [GitHub]::SetToken()
-                    Write-Host "[GitHub] Good, now let's use the api token :)" -ForegroundColor DarkGreen
+                    Write-Host "[GitHub] Good, now let's use the api token :)" -f DarkGreen
                 } elseif ([GitHub]::ValidateBase64String([IO.File]::ReadAllText([GitHub]::TokenFile))) {
-                    Write-Host "[GitHub] Encrypted token found in file: $([GitHub]::TokenFile)" -ForegroundColor DarkGreen
+                    Write-Host "[GitHub] Encrypted token found in file: $([GitHub]::TokenFile)" -f DarkGreen
                 } else {
                     throw [System.Exception]::New("Unable to read token file!")
                 }
@@ -2339,7 +2169,7 @@ class GitHub {
     static [bool] IsConnected() {
         if (![bool]("System.Net.NetworkInformation.Ping" -as 'type')) { Add-Type -AssemblyName System.Net.NetworkInformation };
         $cs = $null; $re = @{ true = @{ m = "Success"; c = "Green" }; false = @{ m = "Failed"; c = "Red" } }
-        Write-Host "[Github] Testing Connection ... " -ForegroundColor Blue -NoNewline
+        Write-Host "[Github] Testing Connection ... " -f Blue -NoNewline
         try {
             [System.Net.NetworkInformation.PingReply]$PingReply = [System.Net.NetworkInformation.Ping]::new().Send("github.com");
             $cs = $PingReply.Status -eq [System.Net.NetworkInformation.IPStatus]::Success
@@ -2350,7 +2180,7 @@ class GitHub {
             Write-Error $_
         }
         $re = $re[$cs.ToString()]
-        Write-Host $re.m -ForegroundColor $re.c
+        Write-Host $re.m -f $re.c
         return $cs
     }
 }
@@ -2516,28 +2346,29 @@ class Gist {
 }
 
 #endregion GitHub
-class RecordTbl : RecordBase {
-    static hidden [string] $caller = '[RecordTbl]'
+
+class RecordMap {
+    static hidden [string] $caller = '[RecordMap]'
     hidden [uri] $Remote # usually a gist uri
     hidden [string] $File
     [datetime] $LastWriteTime = [datetime]::Now
-    RecordTbl() {
+    RecordMap() {
         $this.PsObject.properties.add([psscriptproperty]::new('Count', [scriptblock]::Create({ ($this | Get-Member -Type *Property).count - 2 })))
         $this.PsObject.properties.add([psscriptproperty]::new('Keys', [scriptblock]::Create({ ($this | Get-Member -Type *Property).Name.Where({ $_ -notin ('Keys', 'Count') }) })))
     }
-    RecordTbl([hashtable[]]$array) {
+    RecordMap([hashtable[]]$array) {
         $this.Add($array)
         $this.PsObject.properties.add([psscriptproperty]::new('Count', [scriptblock]::Create({ ($this | Get-Member -Type *Property).count - 2 })))
         $this.PsObject.properties.add([psscriptproperty]::new('Keys', [scriptblock]::Create({ ($this | Get-Member -Type *Property).Name.Where({ $_ -notin ('Keys', 'Count') }) })))
     }
     [void] Edit() {
-        $this.Set([RecordTbl]::EditFile([IO.FileInfo]::new($this.File)))
+        $this.Set([RecordMap]::EditFile([IO.FileInfo]::new($this.File)))
         $this.Save()
     }
     [void] Import([uri]$raw_uri) {
         try {
-            $pass = $null; if ([string]::IsNullOrWhiteSpace([AesGCM]::caller)) { [AesGCM]::caller = [RecordTbl]::caller }
-            Set-Variable -Name pass -Scope Local -Visibility Private -Option Private -Value $(if ([CryptoBase]::EncryptionScope.ToString() -eq "User") { Read-Host -Prompt "$([RecordTbl]::caller) Paste/write a Password to decrypt configs" -AsSecureString }else { [xconvert]::ToSecurestring([AesGCM]::GetUniqueMachineId()) })
+            $pass = $null; if ([string]::IsNullOrWhiteSpace([AesGCM]::caller)) { [AesGCM]::caller = [RecordMap]::caller }
+            Set-Variable -Name pass -Scope Local -Visibility Private -Option Private -Value $(if ([CryptoBase]::EncryptionScope.ToString() -eq "User") { Read-Host -Prompt "$([RecordMap]::caller) Paste/write a Password to decrypt configs" -AsSecureString }else { [xconvert]::ToSecurestring([AesGCM]::GetUniqueMachineId()) })
             $_ob = [xconvert]::Deserialize([xconvert]::ToDeCompressed([AesGCM]::Decrypt([base85]::Decode($(Invoke-WebRequest $raw_uri -Verbose:$false).Content), $pass)))
             $this.Set([hashtable[]]$_ob.Keys.ForEach({ @{ $_ = $_ob.$_ } }))
         } catch {
@@ -2546,21 +2377,186 @@ class RecordTbl : RecordBase {
             Remove-Variable Pass -Force -ErrorAction SilentlyContinue
         }
     }
+    [void] Import([String]$FilePath) {
+        Write-Host "$([RecordMap]::caller) Import records: $FilePath ..." -f Green
+        $this.Set([RecordMap]::Read($FilePath))
+        Write-Host "$([RecordMap]::caller) Import records Complete" -f Green
+    }
     [void] Upload() {
         if ([string]::IsNullOrWhiteSpace($this.Remote)) { throw [InvalidArgumentException]::new('remote') }
         # $gisturi = 'https://gist.github.com/' + $this.Remote.Segments[2] + $this.Remote.Segments[2].replace('/', '')
         # [GitHub]::UpdateGist($gisturi, $content)
     }
+    [void] Add([string]$key, [System.Object]$value) {
+        [ValidateNotNullOrEmpty()][string]$key = $key
+        if (!$this.HasNoteProperty($key)) {
+            $htab = [hashtable]::new(); $htab.Add($key, $value); $this.Add($htab)
+        } else {
+            Write-Warning "Record.Add() Skipped $Key. Key already exists."
+        }
+    }
+    [void] Add([hashtable]$table) {
+        [ValidateNotNullOrEmpty()][hashtable]$table = $table
+        $Keys = $table.Keys | Where-Object { !$this.HasNoteProperty($_) -and ($_.GetType().FullName -eq 'System.String' -or $_.GetType().BaseType.FullName -eq 'System.ValueType') }
+        foreach ($key in $Keys) {
+            if ($key -notin ('File', 'Remote', 'LastWriteTime')) {
+                $this | Add-Member -MemberType NoteProperty -Name $key -Value $table[$key]
+            } else {
+                $this.$key = $table[$key]
+            }
+        }
+    }
+    [void] Add([hashtable[]]$items) {
+        foreach ($item in $items) { $this.Add($item) }
+    }
+    [void] Add([System.Collections.Generic.List[hashtable]]$items) {
+        foreach ($item in $items) { $this.Add($item) }
+    }
+    [void] Set([string]$key, [System.Object]$value) {
+        $htab = [hashtable]::new(); $htab.Add($key, $value)
+        $this.Set($htab)
+    }
+    [void] Set([hashtable]$table) {
+        [ValidateNotNullOrEmpty()][hashtable]$table = $table
+        $Keys = $table.Keys | Where-Object { $_.GetType().FullName -eq 'System.String' -or $_.GetType().BaseType.FullName -eq 'System.ValueType' } | Sort-Object -Unique
+        foreach ($key in $Keys) {
+            if (!$this.psObject.Properties.Name.Contains($key)) {
+                $this | Add-Member -MemberType NoteProperty -Name $key -Value $table[$key] -Force
+            } else {
+                $this.$key = $table[$key]
+            }
+        }
+    }
+    [void] Set([hashtable[]]$items) {
+        foreach ($item in $items) { $this.Set($item) }
+    }
+    [void] Set([System.Collections.Specialized.OrderedDictionary]$dict) {
+        $dict.Keys.Foreach({ $this.Set($_, $dict["$_"]) });
+    }
+    [bool] HasNoteProperty([object]$Name) {
+        [ValidateNotNullOrEmpty()][string]$Name = $($Name -as 'string')
+        return (($this | Get-Member -Type NoteProperty | Select-Object -ExpandProperty name) -contains "$Name")
+    }
+    [array] ToArray() {
+        $array = @(); $props = $this | Get-Member -MemberType NoteProperty
+        if ($null -eq $props) { return @() }
+        $props.name | ForEach-Object { $array += @{ $_ = $this.$_ } }
+        return $array
+    }
+    [string] ToJson() {
+        return [string]($this | Select-Object -ExcludeProperty count | ConvertTo-Json -Depth 3)
+    }
+    [System.Collections.Specialized.OrderedDictionary] ToOrdered() {
+        $dict = [System.Collections.Specialized.OrderedDictionary]::new(); $Keys = $this.PsObject.Properties.Where({ $_.Membertype -like "*Property" }).Name
+        if ($Keys.Count -gt 0) {
+            $Keys | ForEach-Object { [void]$dict.Add($_, $this."$_") }
+        }
+        return $dict
+    }
+    static [hashtable[]] Read([string]$FilePath) {
+        $pass = $null; $cfg = $null
+        try {
+            [ValidateNotNullOrEmpty()][string]$FilePath = [AesGCM]::GetUnResolvedPath($FilePath)
+            if (![IO.File]::Exists($FilePath)) { throw [FileNotFoundException]::new("File '$FilePath' was not found") }
+            if ([string]::IsNullOrWhiteSpace([AesGCM]::caller)) { [AesGCM]::caller = [RecordMap]::caller }
+            Set-Variable -Name pass -Scope Local -Visibility Private -Option Private -Value $(if ([CryptoBase]::EncryptionScope.ToString() -eq "User") { Read-Host -Prompt "$([RecordMap]::caller) Paste/write a Password to decrypt configs" -AsSecureString }else { [xconvert]::ToSecurestring([AesGCM]::GetUniqueMachineId()) })
+            $_ob = [xconvert]::Deserialize([xconvert]::ToDeCompressed([AesGCM]::Decrypt([base85]::Decode([IO.File]::ReadAllText($FilePath)), $pass)))
+            $cfg = [hashtable[]]$_ob.Keys.ForEach({ @{ $_ = $_ob.$_ } })
+        } catch {
+            throw $_.Exeption
+        } finally {
+            Remove-Variable Pass -Force -ErrorAction SilentlyContinue
+        }
+        return $cfg
+    }
+    static [hashtable[]] EditFile([IO.FileInfo]$File) {
+        $result = @(); $private:config_ob = $null; $fswatcher = $null; $process = $null;
+        [ValidateScript({ if ([IO.File]::Exists($_)) { return $true } ; throw [FileNotFoundException]::new("File '$_' was not found") })][IO.FileInfo]$File = $File;
+        $OutFile = [IO.FileInfo][IO.Path]::GetTempFileName()
+        $UseVerbose = [bool]$((Get-Variable verbosePreference -ValueOnly) -eq "continue")
+        try {
+            [NetworkManager]::BlockAllOutbound()
+            if ($UseVerbose) { "[+] Edit Config started .." | Write-Host -f Magenta }
+            [RecordMap]::Read($File.FullName) | ConvertTo-Json | Out-File $OutFile.FullName -Encoding utf8BOM
+            Set-Variable -Name OutFile -Value $(Rename-Item $outFile.FullName -NewName ($outFile.BaseName + '.json') -PassThru)
+            $process = [System.Diagnostics.Process]::new()
+            $process.StartInfo.FileName = 'nvim'
+            $process.StartInfo.Arguments = $outFile.FullName
+            $process.StartInfo.WindowStyle = [System.Diagnostics.ProcessWindowStyle]::Maximized
+            $process.Start(); $fswatcher = [FileMonitor]::MonitorFile($outFile.FullName, [scriptblock]::Create("Stop-Process -Id $($process.Id) -Force"));
+            if ($null -eq $fswatcher) { Write-Warning "Failed to start FileMonitor"; Write-Host "Waiting nvim process to exit..." $process.WaitForExit() }
+            $private:config_ob = [IO.FILE]::ReadAllText($outFile.FullName) | ConvertFrom-Json
+        } finally {
+            [NetworkManager]::UnblockAllOutbound()
+            if ($fswatcher) { $fswatcher.Dispose() }
+            if ($process) {
+                "[+] Neovim process {0} successfully" -f $(if (!$process.HasExited) {
+                        $process.Kill($true)
+                        "closed"
+                    } else {
+                        "exited"
+                    }
+                ) | Write-Host -f Green
+                $process.Close()
+                $process.Dispose()
+            }
+            Remove-Item $outFile.FullName -Force
+            Set-Variable -Name ([FileMonitor]::LogvariableName) -Scope Global -Value ([FileMonitor]::GetLogSummary()) | Out-Null
+            if ($UseVerbose) { "[+] FileMonitor Log saved in variable: `$$([fileMonitor]::LogvariableName)" | Write-Host -f Magenta }
+            if ($null -ne $config_ob) { $result = $config_ob.ForEach({ [xconvert]::ToHashTable($_) }) }
+            if ($UseVerbose) { "[+] Edit Config completed." | Write-Host -f Magenta }
+        }
+        return $result
+    }
+    [void] Save() {
+        $pass = $null;
+        try {
+            Write-Host "$([RecordMap]::caller) Saving records to file: $($this.File) ..." -f Blue
+            Set-Variable -Name pass -Scope Local -Visibility Private -Option Private -Value $(if ([CryptoBase]::EncryptionScope.ToString() -eq "User") { Read-Host -Prompt "$([RecordMap]::caller) Paste/write a Password to encrypt configs" -AsSecureString } else { [xconvert]::ToSecurestring([AesGCM]::GetUniqueMachineId()) })
+            $this.LastWriteTime = [datetime]::Now; [IO.File]::WriteAllText($this.File, [Base85]::Encode([AesGCM]::Encrypt([xconvert]::ToCompressed($this.ToByte()), $pass)), [System.Text.Encoding]::UTF8)
+            Write-Host "$([RecordMap]::caller) Saving records " -f Blue -NoNewline; Write-Host "Completed." -f Green
+        } catch {
+            throw $_.Exeption
+        } finally {
+            Remove-Variable Pass -Force -ErrorAction SilentlyContinue
+        }
+    }
+    [byte[]] ToByte() {
+        return [xconvert]::Serialize($this)
+    }
+    [string] ToString() {
+        $r = $this.ToArray(); $s = ''
+        $shortnr = [scriptblock]::Create({
+                param([string]$str, [int]$MaxLength)
+                while ($str.Length -gt $MaxLength) {
+                    $str = $str.Substring(0, [Math]::Floor(($str.Length * 4 / 5)))
+                }
+                return $str
+            }
+        )
+        if ($r.Count -gt 1) {
+            $b = $r[0]; $e = $r[-1]
+            $0 = $shortnr.Invoke("{'$($b.Keys)' = '$($b.values.ToString())'}", 40)
+            $1 = $shortnr.Invoke("{'$($e.Keys)' = '$($e.values.ToString())'}", 40)
+            $s = "@($0 ... $1)"
+        } elseif ($r.count -eq 1) {
+            $0 = $shortnr.Invoke("{'$($r[0].Keys)' = '$($r[0].values.ToString())'}", 40)
+            $s = "@($0)"
+        } else {
+            $s = '@()'
+        }
+        return $s
+    }
 }
 class SessionTmp {
-    [ValidateNotNull()][RecordTbl]$vars
+    [ValidateNotNull()][RecordMap]$vars
     [ValidateNotNull()][System.Collections.Generic.List[string]]$Paths
     SessionTmp() {
-        $this.vars = [RecordTbl]::new()
+        $this.vars = [RecordMap]::new()
         $this.Paths = [System.Collections.Generic.List[string]]::new()
     }
     [void] Clear() {
-        $this.vars = [RecordTbl]::new()
+        $this.vars = [RecordMap]::new()
         $this.Paths | ForEach-Object { Remove-Item "$_" -ErrorAction SilentlyContinue }; $this.Paths = [System.Collections.Generic.List[string]]::new()
     }
 }
@@ -2577,7 +2573,7 @@ class FileMonitor {
         }
     )
     static [System.IO.FileSystemWatcher] MonitorFile([string]$File) {
-        return [FileMonitor]::monitorFile($File, { Write-Host "[+] File monitor Completed" -ForegroundColor Green })
+        return [FileMonitor]::monitorFile($File, { Write-Host "[+] File monitor Completed" -f Green })
     }
     static [System.IO.FileSystemWatcher] MonitorFile([string]$File, [scriptblock]$Action) {
         [ValidateNotNull()][IO.FileInfo]$File = [IO.FileInfo][CryptoBase]::GetUnResolvedPath($File)
@@ -2970,7 +2966,7 @@ class HKDF2 {
 #     [ArgonCage]::New()
 #     Explanation of the function or its result. You can include multiple examples with additional .EXAMPLE lines
 class ArgonCage : CryptoBase {
-    [ValidateNotNullOrEmpty()][RecordTbl] $Config
+    [ValidateNotNullOrEmpty()][RecordMap] $Config
     [ValidateNotNullOrEmpty()][version] $Version
     static hidden [ValidateNotNull()][SessionTmp] $Tmp
     static [SecretStore] $SecretStore = [SecretStore]::new("secret_Info")
@@ -2980,7 +2976,7 @@ class ArgonCage : CryptoBase {
     ArgonCage() {
         $this.Version = [ArgonCage]::GetVersion()
         $this.PsObject.properties.add([psscriptproperty]::new('DataPath', [scriptblock]::Create({ $path = [ArgonCage]::Get_dataPath('ArgonCage', 'Data'); [SecretStore]::DataPath = [IO.Path]::Combine($path, 'secrets'); return $path })))
-        $this.SetTMPvariables(); $this.SaveConfigs()#; $this.SyncConfigs()
+        $this.SetTMPvariables(); # $this.SyncConfigs()
         $this.PsObject.properties.add([psscriptproperty]::new('IsOffline', [scriptblock]::Create({ return ((Test-Connection github.com -Count 1).status -ne "Success") })))
     }
     static [void] ShowMenu() {
@@ -2992,7 +2988,7 @@ class ArgonCage : CryptoBase {
         if ($null -eq [ArgonCage]::banners -or ([ArgonCage]::banners.Count -eq 0)) {
             [void][ArgonCage]::banners.Add([CliArt]::new('H4sIAAAAAAAAA7VXaXOiQBD9ThU/wlVLjGGNxuBNopZJFmIw3B5RdzUEchiv/P+dwaiAAw6m8mWqeoQ3j9dvulvLzLwOZHEcm3HNyEXbMjPmY6iQJODGAmywkmW24iNFepg2lU8ufb0OheHlKhiMJLAOyybz34Eoi5Z5X00rCn+mDbrJWMIyhSKnqDfGyA5JwrURXdmPy9MkPQ+nxXbDSB8r57J3Kr7MPQRxQ5JQtVQhEvZsJ1vMjIBQUdnR0E1gMOhSHwqUM/vbcCUQhIq+KOzTh2KXpl4feuQM4IuZkeay7hFM/uifpzDcyeT25G6VnnHVhVqEdwPKnfhvX5//8XxrsJxY6gZC7NsxzE1F5CZQzmPc4IbA4+vLliSOfnvD9lBGFIlWa7AUmMjLDisZSfTGucQLqFXLmr2BDgXG64btrwWUnCHV/YIIX6uc7sR//GATwHIDunYeSd+3jwTw9WWLzsiPyenD1rcJ4Kv7M3KGVRfD4Bt1efU5YfGz1sTiDaaWf6GNTqdYfpqQxH13Um60Z9F4W7us9sX8eXPQ2VJ5tHFi/NXQX5qtnEFfw9bVoXjGXaQmYZJKfZTQx/YaaZwKvgw5XxyZ1EMGR/H1ZXvYF9++I4eoALZYPfXus02BYS77FIXjDyMllZPMLiQJz0boMGLLeXiMR6sLp9sKDSFAz5CnQzGGhgDzmVK819ugZ0QKltlYDZHWWsMFgcFB3AfMXXIQfPUl7RzeFZnRof3n3nGtiMynrs1EB1in3uwjRtcHjzu3YLtJt0rfylJL+OXLdtMQi4uZPGD/vcfXBFaGPOgnhZOO64BKZt2gy6eP4ABqCR+OgPlCXtBm3VGhQoPtbmqk7gHzvWut8mu2Ypm5xI39hSQB3dvZcwOc5fW/EQkKVgNh6kkW306c/5QkVYlyo8plDmqxgQPoGQ+YvvauE8z9t+HLWkG1YVplu0m45OGSS4mv89FdnNJnWom5YvV8tlcjCV3rnVLCzUj4FDhTrgrcvMsKvDFfSRpvsGC5ncC3KRsCLlm41LZhgyRs4HbuIkbp7+Z7Y4cuTsZvZyAdLUYa/wf3K1M5Uw8AAA=='))
         }
-        [ArgonCage]::banners[(Get-Random (0..([ArgonCage]::banners.Count - 1)))].Tostring() | Write-Host -ForegroundColor Magenta
+        [ArgonCage]::banners[(Get-Random (0..([ArgonCage]::banners.Count - 1)))].Tostring() | Write-Host -f Magenta
         [void][cli]::Write('[!] https://github.com/alainQtec/argoncage', [ConsoleColor]::Red)
     }
     [void] RegisterUser() {
@@ -3042,10 +3038,6 @@ class ArgonCage : CryptoBase {
         if ($null -eq $this.Config) { $this.SetConfigs() };
         [AesGCM]::caller = '[ArgonCage]'; $this.Config.Edit()
     }
-    [void] SaveConfigs() {
-        if ($null -eq $this.Config) { $this.SetConfigs() };
-        [RecordBase]::caller = '[ArgonCage]'; $this.Config.Save()
-    }
     [void] SyncConfigs() {
         if ($null -eq $this.Config) { $this.SetConfigs() };
         if (!$this.Config.remote.IsAbsoluteUri) { $this.SetConfigs() }
@@ -3053,14 +3045,17 @@ class ArgonCage : CryptoBase {
         # }
         # Imports remote configs into current ones, then uploads the updated version to github gist
         # Compare REMOTE's lastWritetime with [IO.File]::GetLastWriteTime($this.File)
-        $this.ImportConfig($this.Config.Remote); $this.SaveConfigs()
+        if (!$this.Config.remote.IsAbsoluteUri) { throw [System.InvalidOperationException]::new('Could not resolve remote uri') }
+        [RecordMap]::caller = '[ArgonCage]'; $this.Config.Import($this.Config.Remote)
+        $this.Config.Save()
+        if ($?) { Write-Host "[ArgonCage] Config Syncing" -NoNewline -f Blue; Write-Host " Completed." -f Green }
     }
     [void] ImportConfigs() {
-        [RecordBase]::caller = '[ArgonCage]'; [void]$this.Config.Import($this.Config.File)
+        [RecordMap]::caller = '[ArgonCage]'; [void]$this.Config.Import($this.Config.File)
     }
     [void] ImportConfigs([uri]$raw_uri) {
         # $e = "GIST_CUD = {0}" -f ([AesGCM]::Decrypt("AfXkvWiCce7hAIvWyGeU4TNQyD6XLV8kFYyk87X4zqqhyzb7DNuWcj2lHb+2mRFdN/1aGUHEv601M56Iwo/SKhkWLus=", $(Read-Host -Prompt "pass" -AsSecureString), 1)); $e >> ./.env
-        [RecordBase]::caller = '[ArgonCage]'; $this.Config.Import($raw_uri)
+        [RecordMap]::caller = '[ArgonCage]'; $this.Config.Import($raw_uri)
     }
     [bool] DeleteConfigs() {
         return [bool]$(
@@ -3076,7 +3071,7 @@ class ArgonCage : CryptoBase {
     [void] SetConfigs([bool]$throwOnFailure) { $this.SetConfigs([string]::Empty, $throwOnFailure) }
     [void] SetConfigs([string]$ConfigFile, [bool]$throwOnFailure) {
         [AesGCM]::caller = "[$($this.GetType().Name)]"
-        if ($null -eq $this.Config) { $this.Config = [RecordTbl]::new([ArgonCage]::Get_default_Config()) }
+        if ($null -eq $this.Config) { $this.Config = [RecordMap]::new([ArgonCage]::Get_default_Config()) }
         if (![string]::IsNullOrWhiteSpace($ConfigFile)) { $this.Config.File = [ArgonCage]::GetUnResolvedPath($ConfigFile) }
         if (![IO.File]::Exists($this.Config.File)) {
             if ($throwOnFailure -and ![bool]$((Get-Variable WhatIfPreference).Value.IsPresent)) {
@@ -3162,7 +3157,7 @@ class ArgonCage : CryptoBase {
     static [SecretStore] GetSecretStore([string]$FileName) {
         $result = [SecretStore]::new($FileName); $__FilePath = [ArgonCage]::GetUnResolvedPath($FileName)
         $result.File = $(if ([IO.File]::Exists($__FilePath)) {
-                Write-Host "    Found secrets file '$([IO.Path]::GetFileName($__FilePath))'" -ForegroundColor Green
+                Write-Host "    Found secrets file '$([IO.Path]::GetFileName($__FilePath))'" -f Green
                 Get-Item $__FilePath
             } else {
                 [ArgonCage]::SecretStore.File
@@ -3173,7 +3168,7 @@ class ArgonCage : CryptoBase {
             $rem_gist = $null; try {
                 $rem_gist = [GitHub]::GetGist('6r1mh04x', 'dac7a950748d39d94d975b77019aa32f')
             } catch {
-                Write-Host "[-] Error: $_" -ForegroundColor Red
+                Write-Host "[-] Error: $_" -f Red
             } finally {
                 if ($null -ne $rem_gist) {
                     $result.Url = [uri]::new($rem_gist.files.$([ArgonCage]::SecretStore.Name).raw_url)
@@ -3183,7 +3178,7 @@ class ArgonCage : CryptoBase {
             $result.Url = [ArgonCage]::SecretStore.Url
         }
         if (![IO.File]::Exists($result.File.FullName)) {
-            if ([ArgonCage]::Tmp.vars.UseVerbose) { "[+] Fetching secrets from gist ..." | Write-Host -ForegroundColor Magenta }
+            if ([ArgonCage]::Tmp.vars.UseVerbose) { "[+] Fetching secrets from gist ..." | Write-Host -f Magenta }
             [NetworkManager]::DownloadOptions.Set('ShowProgress', $true)
             $og_PbLength = [NetworkManager]::DownloadOptions.ProgressBarLength
             $og_pbMsg = [NetworkManager]::DownloadOptions.ProgressMessage
@@ -3203,29 +3198,29 @@ class ArgonCage : CryptoBase {
         }
         return $result
     }
-    static [RecordTbl[]] ReadCredsCache() {
+    static [RecordMap[]] ReadCredsCache() {
         if ($null -eq [ArgonCage]::Tmp) { [ArgonCage]::Tmp = [SessionTmp]::new() }
-        if ($null -eq [ArgonCage]::Tmp.vars.SessionId) { Write-Verbose "Creating new session ..."; [ArgonCage]::SetTMPvariables([RecordTbl]::new([ArgonCage]::Get_default_Config())) }
+        if ($null -eq [ArgonCage]::Tmp.vars.SessionId) { Write-Verbose "Creating new session ..."; [ArgonCage]::SetTMPvariables([RecordMap]::new([ArgonCage]::Get_default_Config())) }
         $sc = [ArgonCage]::Tmp.vars.SessionConfig
         if (!$sc.SaveCredsCache) { throw "Please first enable credential Caching in your config. or run [ArgonCage]::Tmp.vars.Set('SaveCredsCache', `$true)" }
         return [ArgonCage]::ReadCredsCache($sc.CachedCredsPath)
     }
-    static [RecordTbl[]] ReadCredsCache([string]$FilePath) {
+    static [RecordMap[]] ReadCredsCache([string]$FilePath) {
         $credspath = $FilePath | Split-Path
         if (!(Test-Path -Path $credspath -PathType Container -ErrorAction Ignore)) { [ArgonCage]::Create_Dir($credspath) }
         $ca = @(); if (![IO.File]::Exists($FilePath)) { return $ca }
         $_p = [xconvert]::ToSecurestring([ArgonCage]::GetUniqueMachineId())
         $da = [byte[]][AesGCM]::Decrypt([Base85]::Decode([IO.FILE]::ReadAllText($FilePath)), $_p, [AesGCM]::GetDerivedSalt($_p), $null, 'Gzip', 1)
-        $([System.Text.Encoding]::UTF8.GetString($da) | ConvertFrom-Json).ForEach({ $ca += [RecordTbl]::new([xconvert]::ToHashTable($_)) })
+        $([System.Text.Encoding]::UTF8.GetString($da) | ConvertFrom-Json).ForEach({ $ca += [RecordMap]::new([xconvert]::ToHashTable($_)) })
         return $ca
     }
-    static [RecordTbl[]] UpdateCredsCache([string]$userName, [securestring]$password, [string]$TagName) {
+    static [RecordMap[]] UpdateCredsCache([string]$userName, [securestring]$password, [string]$TagName) {
         return [ArgonCage]::UpdateCredsCache([pscredential]::new($userName, $password), $TagName, $false)
     }
-    static [RecordTbl[]] UpdateCredsCache([string]$userName, [securestring]$password, [string]$TagName, [bool]$Force) {
+    static [RecordMap[]] UpdateCredsCache([string]$userName, [securestring]$password, [string]$TagName, [bool]$Force) {
         return [ArgonCage]::UpdateCredsCache([pscredential]::new($userName, $password), $TagName, $Force)
     }
-    static [RecordTbl[]] UpdateCredsCache([pscredential]$Credential, [string]$TagName, [bool]$Force) {
+    static [RecordMap[]] UpdateCredsCache([pscredential]$Credential, [string]$TagName, [bool]$Force) {
         [ValidateNotNullOrWhiteSpace()][string]$TagName = $TagName
         [ValidateNotNullOrEmpty()][pscredential]$Credential = $Credential
         $results = [ArgonCage]::ReadCredsCache()
@@ -3238,7 +3233,7 @@ class ArgonCage : CryptoBase {
         }
         Write-Verbose "$(if ($IsNewTag) { "Adding new" } else { "Updating" }) tag: '$TagName' ..."
         if ($results.Count -eq 0 -or $IsNewTag) {
-            $results += [RecordTbl]::new(@{
+            $results += [RecordMap]::new(@{
                     User  = $Credential.UserName
                     Tag   = $TagName
                     Token = [HKDF2]::GetToken($Credential.Password)
@@ -3286,7 +3281,7 @@ class ArgonCage : CryptoBase {
         $private:secrets = $null; $fswatcher = $null; $process = $null; $outFile = [IO.FileInfo][IO.Path]::GetTempFileName()
         try {
             [NetworkManager]::BlockAllOutbound()
-            if ([ArgonCage]::Tmp.vars.UseVerbose) { "[+] Edit secrets started .." | Write-Host -ForegroundColor Magenta }
+            if ([ArgonCage]::Tmp.vars.UseVerbose) { "[+] Edit secrets started .." | Write-Host -f Magenta }
             [ArgonCage]::GetSecrets($Path) | ConvertTo-Json | Out-File $OutFile.FullName -Encoding utf8BOM
             Set-Variable -Name OutFile -Value $(Rename-Item $outFile.FullName -NewName ($outFile.BaseName + '.json') -PassThru)
             $process = [System.Diagnostics.Process]::new()
@@ -3306,14 +3301,14 @@ class ArgonCage : CryptoBase {
                     } else {
                         "exited"
                     }
-                ) | Write-Host -ForegroundColor Green
+                ) | Write-Host -f Green
                 $process.Close()
                 $process.Dispose()
             }
             Remove-Item $outFile.FullName -Force
-            if ([ArgonCage]::Tmp.vars.UseVerbose) { "[+] FileMonitor Log saved in variable: `$$([fileMonitor]::LogvariableName)" | Write-Host -ForegroundColor Magenta }
+            if ([ArgonCage]::Tmp.vars.UseVerbose) { "[+] FileMonitor Log saved in variable: `$$([fileMonitor]::LogvariableName)" | Write-Host -f Magenta }
             if ($null -ne $secrets) { [ArgonCage]::UpdateSecrets($secrets, $Path) }
-            if ([ArgonCage]::Tmp.vars.UseVerbose) { "[+] Edit secrets completed." | Write-Host -ForegroundColor Magenta }
+            if ([ArgonCage]::Tmp.vars.UseVerbose) { "[+] Edit secrets completed." | Write-Host -f Magenta }
         }
     }
     static [void] UpdateSecrets([psObject]$InputObject, [string]$outFile) {
@@ -3321,7 +3316,7 @@ class ArgonCage : CryptoBase {
         [ArgonCage]::UpdateSecrets($InputObject, [ArgonCage]::GetUnResolvedPath($outFile), $password, '')
     }
     static [void] UpdateSecrets([psObject]$InputObject, [string]$outFile, [securestring]$Password, [string]$Compression) {
-        if ([ArgonCage]::Tmp.vars.UseVerbose) { "[+] Updating secrets .." | Write-Host -ForegroundColor Green }
+        if ([ArgonCage]::Tmp.vars.UseVerbose) { "[+] Updating secrets .." | Write-Host -f Green }
         if (![string]::IsNullOrWhiteSpace($Compression)) { [ArgonCage]::ValidateCompression($Compression) }
         [Base85]::Encode([AesGCM]::Encrypt([System.Text.Encoding]::UTF8.GetBytes([string]($InputObject | ConvertTo-Csv)), $Password, [AesGCM]::GetDerivedSalt($Password), $null, $Compression, 1)) | Out-File $outFile -Encoding utf8BOM
     }
@@ -3337,9 +3332,9 @@ class ArgonCage : CryptoBase {
         $originalTreatControlCAsInput = [System.Console]::TreatControlCAsInput
         if (![console]::KeyAvailable) { [System.Console]::TreatControlCAsInput = $true }
         $key = [ConsoleKeyInfo]::new(' ', [System.ConsoleKey]::None, $false, $false, $false)
-        Write-Host "Press a key :)" -ForegroundColor Green
+        Write-Host "Press a key :)" -f Green
         [FileMonitor]::Keys += $key = [System.Console]::ReadKey($true)
-        Write-Host $("Pressed {0}{1}" -f $(if ($key.Modifiers -ne 'None') { $key.Modifiers.ToString() + '^' }), $key.Key) -ForegroundColor Green
+        Write-Host $("Pressed {0}{1}" -f $(if ($key.Modifiers -ne 'None') { $key.Modifiers.ToString() + '^' }), $key.Key) -f Green
         [System.Console]::TreatControlCAsInput = $originalTreatControlCAsInput
         return $key
     }
@@ -3347,7 +3342,7 @@ class ArgonCage : CryptoBase {
         if ($null -eq $this.Config) { $this.SetConfigs() }
         [ArgonCage]::SetTMPvariables($this.Config)
     }
-    static hidden [void] SetTMPvariables([RecordTbl]$Config) {
+    static hidden [void] SetTMPvariables([RecordMap]$Config) {
         # Sets default variables and stores them in $this::Tmp.vars
         # Makes it way easier to clean & manage variables without worying about scopes and not dealing with global variables.
         if ($null -eq [ArgonCage]::Tmp) { [ArgonCage]::Tmp = [SessionTmp]::new() }
@@ -3383,15 +3378,15 @@ class ArgonCage : CryptoBase {
             LastWriteTime   = [datetime]::Now
         }
         try {
-            Write-Host "[ArgonCage] Set Remote uri for config ..." -ForegroundColor Blue
+            Write-Host "[ArgonCage] Set Remote uri for config ..." -f Blue
             $l = [GistFile]::Create([uri]::New($default_Config.GistUri)); [GitHub]::UserName = $l.UserName
             if ($?) {
                 $default_Config.Remote = [uri]::new([GitHub]::GetGist($l.Owner, $l.Id).files."$Config_FileName".raw_url)
             }
-            Write-Host "[ArgonCage] Set Remote uri " -ForegroundColor Blue -NoNewline; Write-Host "Completed." -ForegroundColor Green
+            Write-Host "[ArgonCage] Set Remote uri " -f Blue -NoNewline; Write-Host "Completed." -f Green
         } catch {
-            Write-Host "[ArgonCage] Set Remote uri Failed!" -ForegroundColor Red
-            Write-Host "            $($_.Exception.PsObject.TypeNames[0]) $($_.Exception.Message)" -ForegroundColor Red
+            Write-Host "[ArgonCage] Set Remote uri Failed!" -f Red
+            Write-Host "            $($_.Exception.PsObject.TypeNames[0]) $($_.Exception.Message)" -f Red
         }
         return $default_Config
     }

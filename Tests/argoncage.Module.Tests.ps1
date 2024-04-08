@@ -2,20 +2,20 @@ $script:ModuleName = (Get-Item "$PSScriptRoot/..").Name
 $script:ModulePath = Resolve-Path "$PSScriptRoot/../BuildOutput/$ModuleName" | Get-Item
 $script:moduleVersion = ((Get-ChildItem $ModulePath).Where({ $_.Name -as 'version' -is 'version' }).Name -as 'version[]' | Sort-Object -Descending)[0].ToString()
 
-Write-Host "[+] Testing the latest built module:" -ForegroundColor Green
+Write-Host "[+] Testing the latest built module:" -f Green
 Write-Host "      ModuleName    $ModuleName"
 Write-Host "      ModulePath    $ModulePath"
 Write-Host "      Version       $moduleVersion`n"
 
 Get-Module -Name $ModuleName | Remove-Module # Make sure no versions of the module are loaded
 
-Write-Host "[+] Reading module information ..." -ForegroundColor Green
+Write-Host "[+] Reading module information ..." -f Green
 $script:ModuleInformation = Import-Module -Name "$ModulePath" -PassThru
 $script:ModuleInformation | Format-List
 
-Write-Host "[+] Get all functions present in the Manifest ..." -ForegroundColor Green
+Write-Host "[+] Get all functions present in the Manifest ..." -f Green
 $script:ExportedFunctions = $ModuleInformation.ExportedFunctions.Values.Name
-Write-Host "      ExportedFunctions: " -ForegroundColor DarkGray -NoNewline
+Write-Host "      ExportedFunctions: " -f DarkGray -NoNewline
 Write-Host $($ExportedFunctions -join ', ')
 $script:PS1Functions = Get-ChildItem -Path "$ModulePath/$moduleVersion/Public/*.ps1"
 

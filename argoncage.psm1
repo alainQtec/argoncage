@@ -3370,6 +3370,7 @@ class ArgonCage : CryptoBase {
         )
     }
     static hidden [hashtable] Get_default_Config() {
+        Write-Host "[ArgonCage] Get default Config ..." -f Blue
         $Config_FileName = 'Config.enc'
         $default_DataDir = [ArgonCage]::Get_dataPath('ArgonCage', 'Data')
         $default_Config = @{
@@ -3387,14 +3388,14 @@ class ArgonCage : CryptoBase {
             LastWriteTime   = [datetime]::Now
         }
         try {
-            Write-Host "[ArgonCage] Set Remote uri for config ..." -f Blue
+            Write-Host "     Set Remote uri for config ..." -f Blue
             $l = [GistFile]::Create([uri]::New($default_Config.GistUri)); [GitHub]::UserName = $l.UserName
             if ($?) {
                 $default_Config.Remote = [uri]::new([GitHub]::GetGist($l.Owner, $l.Id).files."$Config_FileName".raw_url)
             }
-            Write-Host "[ArgonCage] Set Remote uri " -f Blue -NoNewline; Write-Host "Completed." -f Green
+            Write-Host "     Set Remote uri " -f Blue -NoNewline; Write-Host "Completed." -f Green
         } catch {
-            Write-Host "[ArgonCage] Set Remote uri Failed!" -f Red
+            Write-Host "     Set Remote uri Failed!" -f Red
             Write-Host "            $($_.Exception.PsObject.TypeNames[0]) $($_.Exception.Message)" -f Red
         }
         return $default_Config

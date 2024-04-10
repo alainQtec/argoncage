@@ -3173,19 +3173,7 @@ class ArgonCage : CryptoBase {
             }
         )
         $result.Name = [IO.Path]::GetFileName($result.File.FullName)
-        if ($null -eq [ArgonCage]::SecretStore.Url) {
-            $rem_gist = $null; try {
-                $rem_gist = [GitHub]::GetGist('6r1mh04x', 'dac7a950748d39d94d975b77019aa32f')
-            } catch {
-                Write-Host "[-] Error: $_" -f Red
-            } finally {
-                if ($null -ne $rem_gist) {
-                    $result.Url = [uri]::new($rem_gist.files.$([ArgonCage]::SecretStore.Name).raw_url)
-                }
-            }
-        } else {
-            $result.Url = [ArgonCage]::SecretStore.Url
-        }
+        $result.Url = $(if ($null -eq [ArgonCage]::SecretStore.Url) { [ArgonCage]::GetSecretsRawUri() } else { [ArgonCage]::SecretStore.Url })
         if (![IO.File]::Exists($result.File.FullName)) {
             if ([ArgonCage]::Tmp.vars.UseVerbose) { "[+] Fetching secrets from gist ..." | Write-Host -f Magenta }
             [NetworkManager]::DownloadOptions.Set('ShowProgress', $true)
@@ -3207,17 +3195,43 @@ class ArgonCage : CryptoBase {
         }
         return $result
     }
+    static [uri] GetSecretsRawUri() {
+        $rem_gist = $null; $raw_uri = [string]::Empty -as [uri]
+        $rem_cUri = [ArgonCage]::Tmp.vars.config.Remote
+        try {
+            if ([string]::IsNullOrWhiteSpace($rem_cUri)) {
+                throw "PLease first set remote uri"
+            }
+            [GitHub]::GetGist($rem_cUri)
+            $rem_gist = [GitHub]::GetGist('alainQtec', '0710a1d4a833c3b618136e5ea98ca0b2')
+        } catch {
+            Write-Host "[-] Error: $_" -f Red
+        } finally {
+            if ($null -ne $rem_gist) {
+                $raw_uri = [uri]::new($rem_gist.files.$([ArgonCage]::SecretStore.Name).raw_url)
+            }
+        }
+        return $raw_uri
+    }
     static [RecordMap[]] ReadCredsCache() {
         if ($null -eq [ArgonCage]::Tmp) { [ArgonCage]::Tmp = [SessionTmp]::new() }
         if ($null -eq [ArgonCage]::Tmp.vars.SessionId) { Write-Verbose "Creating new session ..."; [ArgonCage]::SetTMPvariables([RecordMap]::new([ArgonCage]::Get_default_Config())) }
         $sc = [ArgonCage]::Tmp.vars.SessionConfig
+        #TODO:sessionConfig should be kept as securestring
+        #This line should be decrypting the sessionConfig. ie: $sc object.
         if (!$sc.SaveCredsCache) { throw "Please first enable credential Caching in your config. or run [ArgonCage]::Tmp.vars.Set('SaveCredsCache', `$true)" }
-        return [ArgonCage]::ReadCredsCache($sc.CachedCredsPath)
+        return [ArgonCage]::ReadCredsCache([xconvert]::ToSecurestring($sc.CachedCredsPath))
     }
-    static [RecordMap[]] ReadCredsCache([string]$FilePath) {
-        $credspath = $FilePath | Split-Path
+    static [RecordMap[]] ReadCredsCache([securestring]$CachedCredsPath) {
+        $FilePath = ''; $credspath = '';
+        Set-Variable -Name "FilePath" -Visibility Private -Option Private -Value ([xconvert]::Tostring($CachedCredsPath))
+        [ValidateNotNullOrWhiteSpace()][string]$FilePath = $FilePath;
+        Set-Variable -Name "credspath" -Visibility Private -Option Private -Value ([IO.Path]::GetDirectoryName($FilePath))
+        [ValidateNotNullOrWhiteSpace()][string]$credspath = $credspath;
         if (!(Test-Path -Path $credspath -PathType Container -ErrorAction Ignore)) { [ArgonCage]::Create_Dir($credspath) }
-        $ca = @(); if (![IO.File]::Exists($FilePath)) { return $ca }
+        $ca = @(); if (![IO.File]::Exists($FilePath)) {
+            Write-Host "[ArgonCage] System.IO.FileNotFoundException: No such file yet.`n`t    File name: $FilePath" -f Yellow; return $ca
+        }
         $_p = [xconvert]::ToSecurestring([ArgonCage]::GetUniqueMachineId())
         $da = [byte[]][AesGCM]::Decrypt([Base85]::Decode([IO.FILE]::ReadAllText($FilePath)), $_p, [AesGCM]::GetDerivedSalt($_p), $null, 'Gzip', 1)
         $([System.Text.Encoding]::UTF8.GetString($da) | ConvertFrom-Json).ForEach({ $ca += [RecordMap]::new([xconvert]::ToHashTable($_)) })
@@ -3263,6 +3277,9 @@ class ArgonCage : CryptoBase {
         }
         return $results
     }
+    static [bool] CheckCredCache([string]$TagName) {
+        return [ArgonCage]::Tmp.vars.CachedCreds.Tag -contains $TagName
+    }
     static [void] ClearCredsCache() {
         [ArgonCage]::Tmp.vars.SessionConfig.CachedCredsPath | Remove-Item -Force -ErrorAction Ignore
     }
@@ -3271,7 +3288,7 @@ class ArgonCage : CryptoBase {
         return [ArgonCage]::GetSecrets([ArgonCage]::SecretStore.File)
     }
     static [PsObject] GetSecrets([String]$Path) {
-        # $CachedCreds = [ArgonCage]::ReadCredsCache(); $TagIsCached = $CachedCreds.Tag -contains $TagName
+        # $IsCached = [ArgonCage]::checkCredCache($Path)
         $password = [AesGCM]::GetPassword("[ArgonCage] password to read secrets")
         return [ArgonCage]::GetSecrets($Path, $password, [string]::Empty)
     }
@@ -3354,27 +3371,31 @@ class ArgonCage : CryptoBase {
     static hidden [void] SetTMPvariables([RecordMap]$Config) {
         # Sets default variables and stores them in $this::Tmp.vars
         # Makes it way easier to clean & manage variables without worying about scopes and not dealing with global variables.
+        [ValidateNotNullOrEmpty()][RecordMap]$Config = $Config
         if ($null -eq [ArgonCage]::Tmp) { [ArgonCage]::Tmp = [SessionTmp]::new() }
         [ArgonCage]::Tmp.vars.Set(@{
                 Users         = @{}
                 Host_Os       = [ArgonCage]::Get_Host_Os()
                 ExitCode      = 0
-                OfflineMode   = (Test-Connection github.com -Count 1 -ErrorAction Ignore).status -ne "Success"
-                SessionId     = ''
-                SessionConfig = $Config
-                Finish_reason = ''
-                OgWindowTitle = $(Get-Variable executionContext).Value.Host.UI.RawUI.WindowTitle
-                UseVerbose    = [bool]$((Get-Variable verbosePreference -ValueOnly) -eq "continue")
                 UseWhatIf     = [bool]$((Get-Variable WhatIfPreference -ValueOnly) -eq $true)
+                SessionId     = [string]::Empty
+                UseVerbose    = [bool]$((Get-Variable verbosePreference -ValueOnly) -eq "continue")
+                OfflineMode   = (Test-Connection github.com -Count 1 -ErrorAction Ignore).status -ne "Success"
+                CachedCreds   = $(if ($Config.SaveCredsCache) { [ArgonCage]::ReadCredsCache([xconvert]::ToSecurestring($Config.CachedCredsPath)) } else { $null })
+                SessionConfig = $Config
+                OgWindowTitle = $(Get-Variable executionContext).Value.Host.UI.RawUI.WindowTitle
+                Finish_reason = [string]::Empty
             }
         )
     }
     static hidden [hashtable] Get_default_Config() {
+        return [ArgonCage]::Get_default_Config("Config.enc")
+    }
+    static hidden [hashtable] Get_default_Config([string]$Config_FileName) {
         Write-Host "[ArgonCage] Get default Config ..." -f Blue
-        $Config_FileName = 'Config.enc'
         $default_DataDir = [ArgonCage]::Get_dataPath('ArgonCage', 'Data')
         $default_Config = @{
-            Remote          = ''
+            Remote          = [string]::Empty
             FileName        = $Config_FileName # Config is stored locally and all it's contents are always encrypted.
             File            = [ArgonCage]::GetUnResolvedPath([IO.Path]::Combine($default_DataDir, $Config_FileName))
             GistUri         = 'https://gist.github.com/alainQtec/0710a1d4a833c3b618136e5ea98ca0b2' # replace with yours

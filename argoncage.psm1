@@ -7,10 +7,6 @@ using namespace System.Runtime.InteropServices
 
 #Requires -Version 5.1
 
-# Load all necessary dlls:
-$script:RuntimeDir = [Runtime.InteropServices.RuntimeEnvironment]::GetRuntimeDirectory(); @(
-    'Microsoft.PowerShell.Commands.Utility'
-).ForEach({ [void][System.Reflection.Assembly]::LoadFile([System.IO.Path]::Combine($RuntimeDir, "$_.dll")) })
 # Load localizedData:
 $dataFile = [System.IO.FileInfo]::new([IO.Path]::Combine((Get-Variable -ValueOnly ExecutionContext).SessionState.path.CurrentLocation.Path, "en-US", "argoncage.strings.psd1"))
 if ($dataFile.Exists) {
@@ -327,7 +323,8 @@ class NetworkManager {
     static [bool] Resolve_Ping_Dependencies () {
         # Prevent: error: System.PlatformNotSupportedException : The system's ping utility could not be found.
         # https://github.com/dotnet/runtime/issues/28572
-        $result = $false
+        $result = [bool](Get-Command ping -ea SilentlyContinue)
+        if ($result) { return $result }
         $HostOS = [cryptobase]::Get_Host_Os()
         switch ($HostOS) {
             "Linux" {
@@ -349,13 +346,16 @@ class NetworkManager {
                     $result = $?
                     $IsBinInPATH = $env:PATH -split ':' -contains '/bin'
                     if (!$IsBinInPATH) {
-                        echo 'export PATH=$PATH:/bin' >> ~/.bashrc
+                        Write-Output 'export PATH=$PATH:/bin' >> ~/.bashrc
                         source ~/.bashrc
                     }
                 }
             }
+            "Windows" {
+                $result = $true
+            }
             Default {
-                Write-Host "[NetworkManager] Ping could not be installed. Please install it manually."
+                Write-Host "[NetworkManager] Ping could not be installed on HostOS : $HostOS. Please install it manually."
             }
         }
         return $result
@@ -363,7 +363,7 @@ class NetworkManager {
     static [bool] TestConnection ([string]$HostName) {
         #GOAL: Be faster than (Test-Connection github.com -Count 1 -ErrorAction Ignore).status -ne "Success"
         if (![NetworkManager]::resolve_ping_dependencies()) {
-           Write-Host "[NetworkManager] Could not resolve ping dependencies" -f Red
+            Write-Host "[NetworkManager] Could not resolve ping dependencies" -f Red
         }
         [ValidateNotNullOrEmpty()][string]$HostName = $HostName
         if (![bool]("System.Net.NetworkInformation.Ping" -as 'type')) { Add-Type -AssemblyName System.Net.NetworkInformation };
@@ -2679,7 +2679,7 @@ class FileMonitor {
         return [FileMonitor]::GetLogSummary([FileMonitor]::LogvariableName)
     }
     static [string] GetLogSummary([string]$LogvariableName) {
-        [ValidateNotNullOrWhiteSpace()][string]$LogvariableName = $LogvariableName
+        if ([string]::IsNullOrWhiteSpace($LogvariableName)) { throw "InvalidArgument : LogvariableName" }
         $l = Get-Variable -Name $LogvariableName -Scope Global -ValueOnly;
         $summ = ''; $rgx = "\[.*\] The file '.*' is open in nvim \(PID: \d+\)"
         if ($null -eq $l) { return '' }; $ct = $l.Where({ $_ -notmatch $rgx })
@@ -2734,7 +2734,7 @@ class FileMonitor {
 class SecretStore {
     [string]$Name
     [uri]$Url
-    static hidden [ValidateNotNullOrWhiteSpace()][string]$DataPath
+    static hidden [ValidateNotNullOrEmpty()][string]$DataPath
 
     SecretStore([string]$Name) {
         $this.Name = $Name
@@ -3263,9 +3263,9 @@ class ArgonCage : CryptoBase {
     static [RecordMap[]] ReadCredsCache([securestring]$CachedCredsPath) {
         $FilePath = ''; $credspath = '';
         Set-Variable -Name "FilePath" -Visibility Private -Option Private -Value ([xconvert]::Tostring($CachedCredsPath))
-        [ValidateNotNullOrWhiteSpace()][string]$FilePath = $FilePath;
+        if ([string]::IsNullOrWhiteSpace($FilePath)) { throw "InvalidArgument: `$FilePath" }
         Set-Variable -Name "credspath" -Visibility Private -Option Private -Value ([IO.Path]::GetDirectoryName($FilePath))
-        [ValidateNotNullOrWhiteSpace()][string]$credspath = $credspath;
+        if ([string]::IsNullOrWhiteSpace($credspath)) { throw "InvalidArgument: `$credspath" }
         if (!(Test-Path -Path $credspath -PathType Container -ErrorAction Ignore)) { [ArgonCage]::Create_Dir($credspath) }
         $ca = @(); if (![IO.File]::Exists($FilePath)) {
             Write-Host "[ArgonCage] System.IO.FileNotFoundException: No such file yet.`n`t    File name: $FilePath" -f Yellow; return $ca
@@ -3282,7 +3282,7 @@ class ArgonCage : CryptoBase {
         return [ArgonCage]::UpdateCredsCache([pscredential]::new($userName, $password), $TagName, $Force)
     }
     static [RecordMap[]] UpdateCredsCache([pscredential]$Credential, [string]$TagName, [bool]$Force) {
-        [ValidateNotNullOrWhiteSpace()][string]$TagName = $TagName
+        if ([string]::IsNullOrWhiteSpace($TagName)) { throw "InvalidArgument : TagName" }
         [ValidateNotNullOrEmpty()][pscredential]$Credential = $Credential
         $results = [ArgonCage]::ReadCredsCache()
         $IsNewTag = $TagName -notin $results.Tag

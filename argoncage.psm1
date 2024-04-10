@@ -324,7 +324,47 @@ class NetworkManager {
     static [void] UploadFile ([string]$SourcePath, [string]$DestinationURL) {
         Invoke-RestMethod -Uri $DestinationURL -Method Post -InFile $SourcePath
     }
+    static [bool] Resolve_Ping_Dependencies () {
+        # Prevent: error: System.PlatformNotSupportedException : The system's ping utility could not be found.
+        # https://github.com/dotnet/runtime/issues/28572
+        $result = $false
+        $HostOS = [cryptobase]::Get_Host_Os()
+        switch ($HostOS) {
+            "Linux" {
+                $osID = (Get-Content -Path '/etc/os-release' | Where-Object { $_ -match '^ID=' }).Split('=')[1]
+                [bool]$IsPingInstalled = ![string]::IsNullOrWhiteSpace($([string](which ping))); $result = $IsPingInstalled
+                if (!$IsPingInstalled) {
+                    Write-Host "[NetworkManager] Ping is not installed. Installing it now ..." -f Yellow
+                    switch ($osID) {
+                        "ubuntu" { sudo apt-get install iputils-ping }
+                        "debian" { sudo apt-get install iputils-ping }
+                        "fedora" { sudo dnf install iputils }
+                        "centos" { sudo yum install iputils }
+                        "rhel" { sudo yum install iputils }
+                        "arch" { sudo pacman -S iputils }
+                        "opensuse" { sudo zypper install iputils }
+                        "alpine" { sudo apk add iputils }
+                        Default { throw "Unsupported distribution: $osID" }
+                    }
+                    $result = $?
+                    $IsBinInPATH = $env:PATH -split ':' -contains '/bin'
+                    if (!$IsBinInPATH) {
+                        echo 'export PATH=$PATH:/bin' >> ~/.bashrc
+                        source ~/.bashrc
+                    }
+                }
+            }
+            Default {
+                Write-Host "[NetworkManager] Ping could not be installed. Please install it manually."
+            }
+        }
+        return $result
+    }
     static [bool] TestConnection ([string]$HostName) {
+        #GOAL: Be faster than (Test-Connection github.com -Count 1 -ErrorAction Ignore).status -ne "Success"
+        if (![NetworkManager]::resolve_ping_dependencies()) {
+           Write-Host "[NetworkManager] Could not resolve ping dependencies" -f Red
+        }
         [ValidateNotNullOrEmpty()][string]$HostName = $HostName
         if (![bool]("System.Net.NetworkInformation.Ping" -as 'type')) { Add-Type -AssemblyName System.Net.NetworkInformation };
         $cs = $null; $cc = [NetworkManager]::caller; $re = @{ true = @{ m = "Success"; c = "Green" }; false = @{ m = "Failed"; c = "Red" } }
@@ -3378,7 +3418,7 @@ class ArgonCage : CryptoBase {
                 UseWhatIf     = [bool]$((Get-Variable WhatIfPreference -ValueOnly) -eq $true)
                 SessionId     = [string]::Empty
                 UseVerbose    = [bool]$((Get-Variable verbosePreference -ValueOnly) -eq "continue")
-                OfflineMode   = (Test-Connection github.com -Count 1 -ErrorAction Ignore).status -ne "Success"
+                OfflineMode   = [NetworkManager]::Testconnection("github.com");
                 CachedCreds   = $(if ($Config.SaveCredsCache) { [ArgonCage]::ReadCredsCache([xconvert]::ToSecurestring($Config.CachedCredsPath)) } else { $null })
                 SessionConfig = $Config
                 OgWindowTitle = $(Get-Variable executionContext).Value.Host.UI.RawUI.WindowTitle

@@ -3196,14 +3196,17 @@ class ArgonCage : CryptoBase {
         return $result
     }
     static [uri] GetSecretsRawUri() {
+        if ($null -eq [ArgonCage]::Tmp) { [ArgonCage]::Tmp = [SessionTmp]::new() }
+        if ($null -eq [ArgonCage]::Tmp.vars) {
+            [void][ArgonCage]::SetTMPvariables([ArgonCage]::Get_default_Config())
+        }
         $rem_gist = $null; $raw_uri = [string]::Empty -as [uri]
         $rem_cUri = [ArgonCage]::Tmp.vars.config.Remote
+        if ([string]::IsNullOrWhiteSpace($rem_cUri)) {
+            throw "Failed to get remote uri"
+        }
         try {
-            if ([string]::IsNullOrWhiteSpace($rem_cUri)) {
-                throw "PLease first set remote uri"
-            }
-            [GitHub]::GetGist($rem_cUri)
-            $rem_gist = [GitHub]::GetGist('alainQtec', '0710a1d4a833c3b618136e5ea98ca0b2')
+            $rem_gist = [GitHub]::GetGist($rem_cUri)
         } catch {
             Write-Host "[-] Error: $_" -f Red
         } finally {

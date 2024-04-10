@@ -2347,13 +2347,10 @@ class Gist {
 
 #endregion GitHub
 
-class RecordMap : System.Configuration.SettingsBase {
+class RecordMap {
     hidden [uri] $Remote # usually a gist uri
     hidden [string] $File
     hidden [bool] $IsSynchronized
-    hidden [System.Configuration.SettingsContext] $Context
-    hidden [System.Configuration.SettingsProviderCollection] $Providers
-    hidden [System.Configuration.SettingsPropertyValueCollection] $PropertyValues
     [datetime] $LastWriteTime = [datetime]::Now
     static hidden [string] $caller = '[RecordMap]'
     RecordMap() { $this._init() }
@@ -2362,9 +2359,7 @@ class RecordMap : System.Configuration.SettingsBase {
     }
     hidden [void] _init() {
         $this | Add-Member -MemberType ScriptProperty -Name 'Properties' -Value {
-            $r = [System.Configuration.SettingsPropertyCollection]::new()
-            ($this | Get-Member -Type *Property).Name.Where({ $_ -notin ('Count', 'Properties', 'PropertyValues', 'Providers', 'Item', 'Context', 'IsSynchronized') }).Foreach({ $r.Add([System.Configuration.SettingsProperty]::new($_)) })
-            return $r
+            return ($this | Get-Member -Type *Property).Name.Where({ $_ -notin ('Count', 'Properties', 'IsSynchronized') })
         } -SecondValue {
             Throw [System.InvalidOperationException]::new("'Properties' is a readOnly property!")
         } -Force
@@ -3398,9 +3393,9 @@ class ArgonCage : CryptoBase {
         Write-Host "[ArgonCage] Get default Config ..." -f Blue
         $default_DataDir = [ArgonCage]::Get_dataPath('ArgonCage', 'Data')
         $default_Config = @{
-            Remote          = [string]::Empty
-            FileName        = $Config_FileName # Config is stored locally and all it's contents are always encrypted.
             File            = [ArgonCage]::GetUnResolvedPath([IO.Path]::Combine($default_DataDir, $Config_FileName))
+            FileName        = $Config_FileName # Config is stored locally and all it's contents are always encrypted.
+            Remote          = [string]::Empty
             GistUri         = 'https://gist.github.com/alainQtec/0710a1d4a833c3b618136e5ea98ca0b2' # replace with yours
             ERROR_NAMES     = ('No_Internet', 'Failed_HttpRequest', 'Empty_API_key') # If exit reason is in one of these, the bot will appologise and close.
             NoApiKeyHelp    = 'Get your OpenAI API key here: https://platform.openai.com/account/api-keys'

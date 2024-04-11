@@ -6,6 +6,7 @@ using namespace System.Security
 using namespace System.Runtime.InteropServices
 
 #Requires -Version 5.1
+#reson: https://learn.microsoft.com/en-us/answers/questions/444991/powershell-system-security-cryptography-aesgcm-not
 
 # Load localizedData:
 $dataFile = [System.IO.FileInfo]::new([IO.Path]::Combine((Get-Variable -ValueOnly ExecutionContext).SessionState.path.CurrentLocation.Path, "en-US", "argoncage.strings.psd1"))

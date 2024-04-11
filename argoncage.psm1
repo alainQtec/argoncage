@@ -643,33 +643,40 @@ class CryptoBase {
     }
     # Use a cryptographic hash function (SHA-256) to generate a unique machine ID
     static [string] GetUniqueMachineId() {
-        $Id = [string]($Env:MachineId)
-        $vp = (Get-Variable VerbosePreference).Value
+        $Id = [string]($Env:MACHINE_ID)
+        $vp = Get-Variable VerbosePreference -ValueOnly
         try {
             Set-Variable VerbosePreference -Value $([System.Management.Automation.ActionPreference]::SilentlyContinue)
-            $sha256 = [System.Security.Cryptography.SHA256]::Create()
-            $HostOS = $(if ($(Get-Variable PSVersionTable -Value).PSVersion.Major -le 5 -or $(Get-Variable IsWindows -Value)) { "Windows" }elseif ($(Get-Variable IsLinux -Value)) { "Linux" }elseif ($(Get-Variable IsMacOS -Value)) { "macOS" }else { "UNKNOWN" });
-            if ($HostOS -eq "Windows") {
-                if ([string]::IsNullOrWhiteSpace($Id)) {
-                    $machineId = Get-CimInstance -ClassName Win32_ComputerSystemProduct | Select-Object -ExpandProperty UUID
-                    Set-Item -Path Env:\MachineId -Value $([convert]::ToBase64String($sha256.ComputeHash([System.Text.Encoding]::UTF8.GetBytes($machineId))));
+            if ([string]::IsNullOrWhiteSpace($Id)) {
+                $sha256 = [System.Security.Cryptography.SHA256]::Create()
+                $HostOS = $(if ($(Get-Variable PSVersionTable -Value).PSVersion.Major -le 5 -or $(Get-Variable IsWindows -Value)) { "Windows" }elseif ($(Get-Variable IsLinux -Value)) { "Linux" }elseif ($(Get-Variable IsMacOS -Value)) { "macOS" }else { "UNKNOWN" });
+                switch ($HostOS) {
+                    "Windows" {
+                        $_Id = Get-CimInstance -ClassName Win32_ComputerSystemProduct | Select-Object -ExpandProperty UUID
+                        $_Id = $([convert]::ToBase64String($sha256.ComputeHash([System.Text.Encoding]::UTF8.GetBytes($_Id))));
+                    }
+                    "Linux" {
+                        # $_Id = (sudo cat /sys/class/dmi/id/product_uuid).Trim() # sudo prompt is a nono
+                        # Lets use mac addresses
+                        $_Id = ([string[]]$(ip link show | grep "link/ether" | awk '{print $2}') -join '-').Trim()
+                        $_Id = [convert]::ToBase64String($sha256.ComputeHash([System.Text.Encoding]::UTF8.GetBytes($_Id)))
+                    }
+                    "macOS" {
+                        $_Id = (system_profiler SPHardwareDataType | Select-String "UUID").Line.Split(":")[1].Trim()
+                        $_Id = [convert]::ToBase64String($sha256.ComputeHash([System.Text.Encoding]::UTF8.GetBytes($_Id)))
+                    }
+                    Default {
+                        Write-Host "unknown"
+                        throw "Error: HostOS = '$HostOS'. Could not determine the operating system."
+                    }
                 }
-                $Id = [string]($Env:MachineId)
-            } elseif ($HostOS -eq "Linux") {
-                # $Id = (sudo cat /sys/class/dmi/id/product_uuid).Trim() # sudo prompt is a nono
-                # Lets use mac addresses
-                $Id = ([string[]]$(ip link show | grep "link/ether" | awk '{print $2}') -join '-').Trim()
-                $Id = [convert]::ToBase64String($sha256.ComputeHash([System.Text.Encoding]::UTF8.GetBytes($Id)))
-            } elseif ($HostOS -eq "macOS") {
-                $Id = (system_profiler SPHardwareDataType | Select-String "UUID").Line.Split(":")[1].Trim()
-                $Id = [convert]::ToBase64String($sha256.ComputeHash([System.Text.Encoding]::UTF8.GetBytes($Id)))
-            } else {
-                throw "Error: HostOS = '$HostOS'. Could not determine the operating system."
+                [System.Environment]::SetEnvironmentVariable("MACHINE_ID", $_Id, [System.EnvironmentVariableTarget]::Process)
             }
+            $Id = [string]($Env:MACHINE_ID)
         } catch {
             throw $_
         } finally {
-            $sha256.Clear(); $sha256.Dispose()
+            if ($sha256) { $sha256.Clear(); $sha256.Dispose() }
             Set-Variable VerbosePreference -Value $vp
         }
         return $Id
@@ -720,9 +727,7 @@ class CryptoBase {
         if ([CryptoBase]::EncryptionScope.ToString() -eq "Machine") {
             return [xconvert]::ToSecurestring([CryptoBase]::GetUniqueMachineId())
         } else {
-            $pswd = [SecureString]::new(); $_caller = 'PasswordManager'; if ([CryptoBase]::caller) {
-                $_caller = [CryptoBase]::caller
-            }
+            $pswd = [SecureString]::new(); $_caller = 'PasswordManager'; if (![string]::IsNullOrWhiteSpace([CryptoBase]::caller)) { $_caller = [CryptoBase]::caller }
             Set-Variable -Name pswd -Scope Local -Visibility Private -Option Private -Value $(Read-Host -Prompt "$_caller $Prompt" -AsSecureString);
             if ($ThrowOnFailure -and ($null -eq $pswd -or $([string]::IsNullOrWhiteSpace([xconvert]::ToString($pswd))))) {
                 throw [InvalidPasswordException]::new("Please Provide a Password that isn't Null or WhiteSpace.", $pswd, [System.ArgumentNullException]::new("Password"))
@@ -1755,7 +1760,7 @@ class CliArt {
 # .DESCRIPTION
 #     Everyone is appending the IV to encrypted bytes, such that when decrypting, $CryptoProvider.IV = $encyptedBytes[0..15];
 #     They say its safe since IV is basically random and changes every encryption. but this small loophole can allow an advanced attacker to use some tools to find that IV at the end.
-#     This class aim to prevent that; or at least make it nearly impossible.
+#     This class aim to prevent that; or at least make it nearly impossible. ie: As long as your source code isn't leaked :)
 #     By using an int[] of indices as a lookup table to rearrange the $nonce and $bytes.
 #     The int[] array is derrivated from the password that the user provides.
 # .EXAMPLE
@@ -1801,10 +1806,31 @@ class Shuffl3r {
         for ($i = 0; $i -lt $NonceLength; $i++) { $Nonce[$i] = $ShuffledBytes[$Indices[$i]] };
         return ($bytes, $Nonce)
     }
-    static hidden [int[]] GenerateIndices([int]$Count, [string]$randomString, [int]$HighestIndex) {
+    static [string] Scramble([string]$string) {
+        return [Shuffl3r]::Scramble($string, [xconvert]::ToSecurestring($string))
+    }
+    static [string] Scramble([string]$string, [securestring]$password) {
+        if ([string]::IsNullOrWhiteSpace($string)) {
+            throw [System.Management.Automation.ValidationMetadataException]::new("The variable cannot be validated because the value '$string' is not a valid value for the `$string variable.")
+        }; [ValidateNotNullOrEmpty()][securestring]$password = $password
+        $_str = [string]::Join('', $([convert]::ToBase64String([cryptobase]::GetKey($password, $string.Length)).ToCharArray() | Select-Object -First $string.Length))
+        $s = $string.ToCharArray(); $in = [Shuffl3r]::GenerateIndices($_str)
+        $r = $(for ($i = 0; $i -lt $s.Length; $i++) { $s[$in[$i] - 1] }) -join ''
+        return $r
+    }
+    static [string] UnScramble([string]$string, [securestring]$password) {
+        $_str = [string]::Join('', $([convert]::ToBase64String([cryptobase]::GetKey($password, $string.Length)).ToCharArray() | Select-Object -First $string.Length))
+        $s = $string.ToCharArray(); $in = [Shuffl3r]::GenerateIndices($_str)
+        $r = $(for ($i = 0; $i -lt $s.Length; $i++) { $s[$in[$i] - 1] }) -join ''
+        return $r
+    }
+    static [int[]] GenerateIndices([string]$string) {
+        return [Shuffl3r]::GenerateIndices(($string.Length - 1), [convert]::ToBase64String([cryptobase]::GetDerivedSalt([xconvert]::ToSecurestring($string))), $string.Length)
+    }
+    static [int[]] GenerateIndices([int]$Count, [string]$string, [int]$HighestIndex) {
         if ($HighestIndex -lt 3 -or $Count -ge $HighestIndex) { throw [System.ArgumentOutOfRangeException]::new('$HighestIndex >= 3 is required; and $Count should be less than $HighestIndex') }
-        if ([string]::IsNullOrWhiteSpace($randomString)) { throw [System.ArgumentNullException]::new('$randomString') }
-        [Byte[]]$hash = [System.Security.Cryptography.SHA256]::Create().ComputeHash([System.Text.Encoding]::UTF8.GetBytes([string]$randomString))
+        if ([string]::IsNullOrWhiteSpace($string)) { throw [System.ArgumentNullException]::new('$string') }
+        [Byte[]]$hash = [System.Security.Cryptography.SHA256]::Create().ComputeHash([System.Text.Encoding]::UTF8.GetBytes([string]$string))
         [int[]]$indices = [int[]]::new($Count)
         for ($i = 0; $i -lt $Count; $i++) {
             [int]$nextIndex = [Convert]::ToInt32($hash[$i] % $HighestIndex)
@@ -3007,7 +3033,7 @@ class HKDF2 {
 # .LINK
 #     https://github.com/alainQtec/argoncage
 # .EXAMPLE
-#     [ArgonCage]::New()
+#     $pm = [ArgonCage]::New()
 #     Explanation of the function or its result. You can include multiple examples with additional .EXAMPLE lines
 class ArgonCage : CryptoBase {
     [ValidateNotNullOrEmpty()][RecordMap] $Config
@@ -3255,7 +3281,7 @@ class ArgonCage : CryptoBase {
         if ($null -eq [ArgonCage]::Tmp) { [ArgonCage]::Tmp = [SessionTmp]::new() }
         if ($null -eq [ArgonCage]::Tmp.vars.SessionId) { Write-Verbose "Creating new session ..."; [ArgonCage]::SetTMPvariables([RecordMap]::new([ArgonCage]::Get_default_Config())) }
         $sc = [ArgonCage]::Tmp.vars.SessionConfig
-        #TODO:sessionConfig should be kept as securestring
+        #TODO: sessionConfig should be kept as securestring
         #This line should be decrypting the sessionConfig. ie: $sc object.
         if (!$sc.SaveCredsCache) { throw "Please first enable credential Caching in your config. or run [ArgonCage]::Tmp.vars.Set('SaveCredsCache', `$true)" }
         return [ArgonCage]::ReadCredsCache([xconvert]::ToSecurestring($sc.CachedCredsPath))
@@ -3268,7 +3294,13 @@ class ArgonCage : CryptoBase {
         if ([string]::IsNullOrWhiteSpace($credspath)) { throw "InvalidArgument: `$credspath" }
         if (!(Test-Path -Path $credspath -PathType Container -ErrorAction Ignore)) { [ArgonCage]::Create_Dir($credspath) }
         $ca = @(); if (![IO.File]::Exists($FilePath)) {
-            Write-Host "[ArgonCage] System.IO.FileNotFoundException: No such file yet.`n`t    File name: $FilePath" -f Yellow; return $ca
+            if (![string]::IsNullOrWhiteSpace([cryptobase]::GetUniqueMachineId())) {
+                [argoncage]::updateCredsCache('alain', [string]($Env:MACHINE_ID), 'rw2', $true)
+                #TODO: Cache the UniqueMachineId
+            } else {
+                Write-Host "[ArgonCage] FileNotFoundException: No such file.`n$(' '*12)File name: $FilePath" -f Yellow
+            }
+            return $ca
         }
         $_p = [xconvert]::ToSecurestring([ArgonCage]::GetUniqueMachineId())
         $da = [byte[]][AesGCM]::Decrypt([Base85]::Decode([IO.FILE]::ReadAllText($FilePath)), $_p, [AesGCM]::GetDerivedSalt($_p), $null, 'Gzip', 1)

@@ -436,6 +436,7 @@ class CryptoBase {
         return [string][CryptoBase]::GetRandomSTR($samplekeys, $iterations, $minLength, $maxLength);
     }
     static [byte[]] GetSalt() {
+        # TODO: Fix all BytesFromObject methods
         # [system.Text.Encoding]::UTF8.GetBytes()
         return [byte[]][xconvert]::BytesFromObject([CryptoBase]::GetRandomName(16));
     }

@@ -486,7 +486,6 @@ class CryptoBase {
         [void][System.Security.Cryptography.RNGCryptoServiceProvider]::new().GetBytes($entropy)
         return $entropy;
     }
-    # Uses a cryptographic hash function (SHA-256) to generate a unique machine ID
     static hidden [string] GetRandomSTR([string]$InputSample, [int]$iterations, [int]$minLength, [int]$maxLength) {
         if ($maxLength -lt $minLength) { throw [System.ArgumentOutOfRangeException]::new('MinLength', "'MaxLength' cannot be less than 'MinLength'") }
         if ($iterations -le 0) { Write-Warning 'Negative and Zero Iterations are NOT Possible!'; return [string]::Empty }
@@ -581,7 +580,7 @@ class CryptoBase {
     static [bool] IsValidAES([System.Security.Cryptography.Aes]$aes) {
         return [bool]$(try { [CryptoBase]::CheckProps($aes); $? } catch { $false })
     }
-    static [void] CheckProps([System.Security.Cryptography.Aes]$Aes) {
+    static hidden [void] CheckProps([System.Security.Cryptography.Aes]$Aes) {
         $MissingProps = @(); $throw = $false
         Write-Verbose "$([CryptoBase]::caller) [+] Checking Encryption Properties ... $(('Mode','Padding', 'keysize', 'BlockSize') | ForEach-Object { if ($null -eq $Aes.Algo.$_) { $MissingProps += $_ } };
             if ($MissingProps.Count -eq 0) { "Done. All AES Props are Good." } else { $throw = $true; "System.ArgumentNullException: $([string]::Join(', ', $MissingProps)) cannot be null." }
@@ -606,23 +605,24 @@ class CryptoBase {
     static [string] GetUnResolvedPath([System.Management.Automation.SessionState]$session, [string]$Path) {
         return $session.Path.GetUnresolvedProviderPathFromPSPath($Path)
     }
-    static [void] GetEnumerator([string]$Name, [bool]$IsPublic, [string[]]$Members) {
+    static [System.Type] CreateEnum([string]$Name, [bool]$IsPublic, [string[]]$Members) {
+        # Example:
+        # $MacMseries = [cryptobase]::CreateEnum('Mseries', $true, ('M1', 'M2', 'M3'))
+        # $MacMseries::M1 | gm
+        # Todo: Explore more about [System.Reflection.Emit.EnumBuilder], so we can add more features. ex: Flags, instead of [string[]]$Members we can have [hastable]$Members etc.
         try {
-            if ([string]::IsNullOrWhiteSpace($Name)) {
-                throw [InvalidArgumentException]::new('Name', 'Name can not be null or space')
-            }
-            $Domain = [AppDomain]::CurrentDomain
+            if ([string]::IsNullOrWhiteSpace($Name)) { throw [InvalidArgumentException]::new('Name', 'Name can not be null or space') }
             $DynAssembly = [System.Reflection.AssemblyName]::new("EmittedEnum")
-            $AssemblyBuilder = $Domain.DefineDynamicAssembly($DynAssembly, ([System.Reflection.Emit.AssemblyBuilderAccess]::Save -bor [System.Reflection.Emit.AssemblyBuilderAccess]::Run)) # Only run in memory
-            $ModuleBuilder = $AssemblyBuilder.DefineDynamicModule("DynamicModule", $False)
-            $EnumBuilder = $ModuleBuilder.DefineEnum('GetLastErrorEnum', 'Public', [int32])
+            $AssmBuilder = [System.Reflection.Emit.AssemblyBuilder]::DefineDynamicAssembly($DynAssembly, ([System.Reflection.Emit.AssemblyBuilderAccess]::Save -bor [System.Reflection.Emit.AssemblyBuilderAccess]::Run)) # Only run in memory
+            $ModulBuildr = $AssmBuilder.DefineDynamicModule("DynamicModule")
             $type_attrib = if ($IsPublic) { [System.Reflection.TypeAttributes]::Public }else { [System.Reflection.TypeAttributes]::NotPublic }
-            $enumBuilder = $moduleBuilder.DefineEnum($name, $type_attrib, [System.Int32]);
+            $enumBuilder = [System.Reflection.Emit.EnumBuilder]$ModulBuildr.DefineEnum($name, $type_attrib, [System.Int32]);
             for ($i = 0; $i -lt $Members.count; $i++) { [void]$enumBuilder.DefineLiteral($Members[$i], $i) }
             [void]$enumBuilder.CreateType()
         } catch {
             throw $_
         }
+        return ($Name -as [Type])
     }
     static [System.Security.Cryptography.Aes] GetAes() { return [CryptoBase]::GetAes(1) }
     static [System.Security.Cryptography.Aes] GetAes([int]$Iterations) {
@@ -1815,24 +1815,21 @@ class Shuffl3r {
         if ([string]::IsNullOrWhiteSpace($string)) {
             throw [System.Management.Automation.ValidationMetadataException]::new("The variable cannot be validated because the value '$string' is not a valid value for the `$string variable.")
         }; [ValidateNotNullOrEmpty()][securestring]$password = $password
-        $_str = [string]::Join('', $([convert]::ToBase64String([cryptobase]::GetKey($password, $string.Length)).ToCharArray() | Select-Object -First $string.Length))
-        $s = $string.ToCharArray(); $in = [Shuffl3r]::GenerateIndices($_str)
-        $r = $(for ($i = 0; $i -lt $s.Length; $i++) { $s[$in[$i] - 1] }) -join ''
-        return $r
-    }
-    static [string] UnScramble([string]$string, [securestring]$password) {
-        $_str = [string]::Join('', $([convert]::ToBase64String([cryptobase]::GetKey($password, $string.Length)).ToCharArray() | Select-Object -First $string.Length))
-        $s = $string.ToCharArray(); $in = [Shuffl3r]::GenerateIndices($_str)
-        $r = $(for ($i = 0; $i -lt $s.Length; $i++) { $s[$in[$i] - 1] }) -join ''
-        return $r
+        $bytes = [System.Text.Encoding]::UTF8.GetBytes($string)
+        return [System.Convert]::ToBase64String([Shuffl3r]::combine($bytes, [cryptoBase]::GetKey([xconvert]::ToSecurestring($string), ($bytes.Length - 1)), $password))
     }
     static [int[]] GenerateIndices([string]$string) {
-        return [Shuffl3r]::GenerateIndices(($string.Length - 1), [convert]::ToBase64String([cryptobase]::GetDerivedSalt([xconvert]::ToSecurestring($string))), $string.Length)
+        return [Shuffl3r]::GenerateIndices($string, [xconvert]::ToSecurestring($string))
+    }
+    static [int[]] GenerateIndices([string]$string, [securestring]$password) {
+        return [Shuffl3r]::GenerateIndices(($string.Length - 1), [convert]::ToBase64String([cryptobase]::GetDerivedSalt($password)), $string.Length)
     }
     static [int[]] GenerateIndices([int]$Count, [string]$string, [int]$HighestIndex) {
         if ($HighestIndex -lt 3 -or $Count -ge $HighestIndex) { throw [System.ArgumentOutOfRangeException]::new('$HighestIndex >= 3 is required; and $Count should be less than $HighestIndex') }
         if ([string]::IsNullOrWhiteSpace($string)) { throw [System.ArgumentNullException]::new('$string') }
-        [Byte[]]$hash = [System.Security.Cryptography.SHA256]::Create().ComputeHash([System.Text.Encoding]::UTF8.GetBytes([string]$string))
+        Write-Verbose "_Str = $string" -Verbose
+        [Byte[]]$hash = [System.Security.Cryptography.SHA1]::Create().ComputeHash([System.Text.Encoding]::UTF8.GetBytes([string]$string))
+        Write-Verbose "Hash = $([System.Convert]::tobase64string($hash))" -Verbose
         [int[]]$indices = [int[]]::new($Count)
         for ($i = 0; $i -lt $Count; $i++) {
             [int]$nextIndex = [Convert]::ToInt32($hash[$i] % $HighestIndex)

@@ -436,23 +436,18 @@ class CryptoBase {
         }
         return [string][CryptoBase]::GetRandomSTR($samplekeys, $iterations, $minLength, $maxLength);
     }
-    static [byte[]] GetSalt() {
-        # TODO: Fix all BytesFromObject methods
-        # [system.Text.Encoding]::UTF8.GetBytes()
-        return [byte[]][xconvert]::BytesFromObject([CryptoBase]::GetRandomName(16));
+    static [byte[]] GetRfc2898Bytes() {
+        return [CryptoBase]::GetRfc2898Bytes(16)
     }
-    static [byte[]] GetSalt([int]$iterations) {
-        return [byte[]]$(1..$iterations | ForEach-Object { [CryptoBase]::GetSalt() });
-    }
-    static [byte[]] GetRfc2898Bytes([string]$passw0rd) {
-        return [CryptoBase]::GetRfc2898Bytes([xconvert]::ToSecurestring($passw0rd));
+    static [byte[]] GetRfc2898Bytes([int]$Length) {
+        return [CryptoBase]::GetRfc2898Bytes([xconvert]::ToSecurestring([CryptoBase]::GetRandomName(16)), $Length)
     }
     static [byte[]] GetRfc2898Bytes([securestring]$password) {
         return [CryptoBase]::GetRfc2898Bytes($password, 16)
     }
     static [byte[]] GetRfc2898Bytes([securestring]$password, [int]$Length) {
-        $rfc2898 = $null; $s4lt = $null;
-        Set-Variable -Name s4lt -Scope Local -Visibility Private -Option Private -Value $(switch ([CryptoBase]::EncryptionScope.ToString()) {
+        # $s6lt = [CryptoBase]::GetRandomEntropy()
+        $s6lt = $(switch ([CryptoBase]::EncryptionScope.ToString()) {
                 "Machine" {
                     [System.Text.Encoding]::UTF8.GetBytes([CryptoBase]::GetUniqueMachineId())
                 }
@@ -461,46 +456,32 @@ class CryptoBase {
                 }
             }
         )
-        Set-Variable -Name rfc2898 -Scope Local -Visibility Private -Option Private -Value $([System.Security.Cryptography.Rfc2898DeriveBytes]::new($password, $s6lt));
-        $aesManaged = New-Object System.Security.Cryptography.AesManaged
-
-        $aesManaged.Key = $rfc2898.GetBytes(32)
-        $aesManaged.IV = $s6lt
-
-        $encryptor = $aesManaged.CreateEncryptor()
-        $memoryStream = [System.IO.MemoryStream]::new()
-        $cryptoStream = [System.Security.Cryptography.CryptoStream]::new($memoryStream, $encryptor, 'Write')
-        $cryptoStream.Write($s6lt, 0, $s6lt.Length)
-        $cryptoStream.FlushFinalBlock(); $s6lt = $memoryStream.ToArray()
-        Set-Variable -Name rfc2898 -Scope Local -Visibility Private -Option Private -Value $([System.Security.Cryptography.Rfc2898DeriveBytes]::new($password, $s6lt));
-        $cryptoStream.Close()
-        $memoryStream.Close()
-
-        Set-Variable -Name s4lt -Scope Local -Visibility Private -Option Private -Value $($rfc2898.GetBytes($Length));
-        return $s4lt
+        Write-Verbose "salt = $([convert]::tobase64string($s6lt))"
+        $passwordBytes = [System.Text.Encoding]::UTF8.GetBytes([xconvert]::Tostring($Password))
+        $derivedPasswd = [System.Text.Encoding]::UTF8.GetString([System.Security.Cryptography.Rfc2898DeriveBytes]::new($passwordBytes, $s6lt, 1000).GetBytes($passwordBytes.Length))
+        Write-Verbose "derivedPasswd = $derivedPasswd"
+        return [CryptoBase]::GetRfc2898Bytes([xconvert]::ToSecurestring($derivedPasswd), $s6lt, $Length)
+    }
+    static [byte[]] GetRfc2898Bytes([securestring]$password, [byte[]]$salt, [int]$Length) {
+        return [System.Security.Cryptography.Rfc2898DeriveBytes]::new($password, $salt, 1000).GetBytes($Length);
     }
     static [byte[]] GetKey() {
         return [CryptoBase]::GetKey(16);
     }
     static [byte[]] GetKey([int]$Length) {
-        $password = $null; Set-Variable -Name password -Scope Local -Visibility Private -Option Private -Value $([xconvert]::ToSecurestring([CryptoBase]::GeneratePassword()));
-        return [CryptoBase]::GetKey($password, $Length)
+        return [CryptoBase]::GetKey([xconvert]::ToSecurestring([CryptoBase]::GeneratePassword()), $Length)
     }
     static [byte[]] GetKey([securestring]$password) {
         return [CryptoBase]::GetKey($password, 16)
     }
     static [byte[]] GetKey([securestring]$password, [int]$Length) {
-        return [CryptoBase]::GetKey($password, [CryptoBase]::GetRfc2898Bytes($password), $Length)
+        return [CryptoBase]::GetRfc2898Bytes($password, $Length)
     }
     static [byte[]] GetKey([securestring]$password, [byte[]]$salt) {
         return [CryptoBase]::GetKey($password, $salt, 16)
     }
     static [byte[]] GetKey([securestring]$password, [byte[]]$salt, [int]$Length) {
-        $Rfc2898Obj = $null; $derivedkey = $null;
-        Write-Verbose "Generating Key: $Length" -Verbose
-        Set-Variable -Name Rfc2898Obj -Scope Local -Visibility Private -Option Private -Value $([System.Security.Cryptography.Rfc2898DeriveBytes]::new($([System.Text.Encoding]::UTF8.GetBytes([xconvert]::ToString($password))), $Salt, 1000));
-        Set-Variable -Name derivedkey -Scope Local -Visibility Private -Option Private -Value $($Rfc2898Obj.GetBytes($Length));
-        return $derivedkey
+        return [CryptoBase]::GetRfc2898Bytes($password, $salt, $Length)
     }
     # can be used to generate random IV
     static [byte[]] GetRandomEntropy() {
@@ -650,7 +631,7 @@ class CryptoBase {
     static [System.Security.Cryptography.Aes] GetAes([int]$Iterations) {
         $salt = $null; $password = $null;
         Set-Variable -Name password -Scope Local -Visibility Private -Option Private -Value $([xconvert]::ToSecurestring([CryptoBase]::GeneratePassword()));
-        Set-Variable -Name salt -Scope Local -Visibility Private -Option Private -Value $([CryptoBase]::GetSalt($Iterations));
+        Set-Variable -Name salt -Scope Local -Visibility Private -Option Private -Value $([CryptoBase]::GetRfc2898Bytes(16));
         return [CryptoBase]::GetAes($password, $salt, $Iterations)
     }
     static [System.Security.Cryptography.Aes] GetAes([securestring]$password, [byte[]]$salt, [int]$iterations) {
@@ -1289,25 +1270,6 @@ class xconvert : System.ComponentModel.TypeConverter {
         }
         return $output;
     }
-    static [byte[]] BytesFromObject([object]$obj) {
-        return [xconvert]::BytesFromObject($obj, $false);
-    }
-    static [byte[]] BytesFromObject([object]$obj, [bool]$protect) {
-        if ($null -eq $obj) { return $null }; $bytes = $null;
-        if ($obj.GetType() -eq [string] -and $([regex]::IsMatch([string]$obj, '^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$') -and ![string]::IsNullOrWhiteSpace([string]$obj) -and !$obj.Length % 4 -eq 0 -and !$obj.Contains(" ") -and !$obj.Contains(" ") -and !$obj.Contains("`t") -and !$obj.Contains("`n"))) {
-            $bytes = [convert]::FromBase64String($obj);
-        } elseif ($obj.GetType() -eq [byte[]]) {
-            $bytes = [byte[]]$obj
-        } else {
-            # Serialize the Object:
-            $bytes = [xconvert]::Serialize($obj)
-        }
-        if ($protect) {
-            # Protecteddata: https://docs.microsoft.com/en-us/dotnet/api/system.security.cryptography.protecteddata.unprotect?
-            $bytes = [byte[]][xconvert]::ToProtected($bytes);
-        }
-        return $bytes
-    }
     static [byte[]] Serialize($Obj) {
         return [Text.Encoding]::UTF8.GetBytes([System.Management.Automation.PSSerializer]::Serialize($Obj))
     }
@@ -1874,7 +1836,7 @@ class Shuffl3r {
 #     AesCng, on the other hand, only provides confidentiality protection and does not include an authentication tag. This means that an attacker who can modify the ciphertext may be able to undetectably alter the decrypted plaintext.
 #     Therefore, it is recommended to use AesGcm whenever possible, as it provides stronger security guarantees compared to AesCng.
 # .EXAMPLE
-#     $bytes = [xconvert]::BytesFromObject('Text_Message1'); $Password = [xconvert]::ToSecurestring('X-aP0jJ_:No=08TfdQ'); $salt = [CryptoBase]::GetRandomEntropy();
+#     $bytes = GetbytesFromObj('Text_Message1'); $Password = [xconvert]::ToSecurestring('X-aP0jJ_:No=08TfdQ'); $salt = [CryptoBase]::GetRandomEntropy();
 #     $enc = [AesGCM]::Encrypt($bytes, $Password, $salt)
 #     $dec = [AesGCM]::Decrypt($enc, $Password, $salt)
 #     echo ([System.Text.Encoding]::UTF8.GetString($dec).Trim()) # should be: Text_Message1

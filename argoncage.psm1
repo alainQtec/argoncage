@@ -1789,18 +1789,24 @@ class Shuffl3r {
         for ($i = 0; $i -lt $NonceLength; $i++) { $Nonce[$i] = $ShuffledBytes[$Indices[$i]] };
         return ($bytes, $Nonce)
     }
-    static [string] Scramble([string]$string) {
-        return [Shuffl3r]::Scramble($string, [xconvert]::ToSecurestring($string))
+    static [int[]] Scramble([string]$string) {
+        $_pass = [xconvert]::ToSecurestring([convert]::ToBase64String([cryptobase]::GetDerivedBytes([xconvert]::ToSecurestring($string))))
+        return [Shuffl3r]::Scramble($string, $_pass)
     }
-    static [string] Scramble([string]$string, [securestring]$password) {
+    static [int[]] Scramble([string]$string, [securestring]$password) {
         if ([string]::IsNullOrWhiteSpace($string)) {
             throw [System.Management.Automation.ValidationMetadataException]::new("The variable cannot be validated because the value '$string' is not a valid value for the `$string variable.")
         }; [ValidateNotNullOrEmpty()][securestring]$password = $password
+        return [Shuffl3r]::GenerateIndices($string, $password)
         $bytes = [System.Text.Encoding]::UTF8.GetBytes($string)
         return [System.Convert]::ToBase64String([Shuffl3r]::combine($bytes, [cryptoBase]::GetKey([xconvert]::ToSecurestring($string), ($bytes.Length - 1)), $password))
     }
-    static [int[]] GenerateIndices([string]$string) {
-        return [Shuffl3r]::GenerateIndices($string, [xconvert]::ToSecurestring($string))
+    static [int[]] UnScramble([string]$string) {
+        $_pass = [xconvert]::ToSecurestring([convert]::ToBase64String([cryptobase]::GetDerivedBytes([xconvert]::ToSecurestring($string))))
+        return [Shuffl3r]::UnScramble($string, $_pass)
+    }
+    static [int[]] UnScramble([string]$string, [securestring]$password) {
+        return [Shuffl3r]::GenerateIndices($string, $password)
     }
     static [int[]] GenerateIndices([string]$string, [securestring]$password) {
         return [Shuffl3r]::GenerateIndices(($string.Length - 1), [convert]::ToBase64String([cryptobase]::GetDerivedBytes($password)), $string.Length)
@@ -1808,9 +1814,7 @@ class Shuffl3r {
     static [int[]] GenerateIndices([int]$Count, [string]$string, [int]$HighestIndex) {
         if ($HighestIndex -lt 3 -or $Count -ge $HighestIndex) { throw [System.ArgumentOutOfRangeException]::new('$HighestIndex >= 3 is required; and $Count should be less than $HighestIndex') }
         if ([string]::IsNullOrWhiteSpace($string)) { throw [System.ArgumentNullException]::new('$string') }
-        Write-Verbose "_Str = $string" -Verbose
-        [Byte[]]$hash = [System.Security.Cryptography.SHA1]::Create().ComputeHash([System.Text.Encoding]::UTF8.GetBytes([string]$string))
-        Write-Verbose "Hash = $([System.Convert]::tobase64string($hash))" -Verbose
+        [Byte[]]$hash = [Shuffl3r]::ComputeHash($string)
         [int[]]$indices = [int[]]::new($Count)
         for ($i = 0; $i -lt $Count; $i++) {
             [int]$nextIndex = [Convert]::ToInt32($hash[$i] % $HighestIndex)
@@ -1820,6 +1824,10 @@ class Shuffl3r {
             $indices[$i] = $nextIndex
         }
         return $indices
+    }
+    static [byte[]] ComputeHash([string]$string) {
+        # returns the same hash even if the input string is scrambled.
+        return [System.Security.Cryptography.SHA1]::Create().ComputeHash($([System.Text.Encoding]::UTF8.GetBytes([string]$string) | Sort-Object))
     }
 }
 #endregion Shuffl3r

@@ -1789,24 +1789,28 @@ class Shuffl3r {
         for ($i = 0; $i -lt $NonceLength; $i++) { $Nonce[$i] = $ShuffledBytes[$Indices[$i]] };
         return ($bytes, $Nonce)
     }
-    static [int[]] Scramble([string]$string) {
-        $_pass = [xconvert]::ToSecurestring([convert]::ToBase64String([cryptobase]::GetDerivedBytes([xconvert]::ToSecurestring($string))))
-        return [Shuffl3r]::Scramble($string, $_pass)
-    }
-    static [int[]] Scramble([string]$string, [securestring]$password) {
+    static [string] Scramble([string]$string, [securestring]$password) {
         if ([string]::IsNullOrWhiteSpace($string)) {
             throw [System.Management.Automation.ValidationMetadataException]::new("The variable cannot be validated because the value '$string' is not a valid value for the `$string variable.")
         }; [ValidateNotNullOrEmpty()][securestring]$password = $password
-        return [Shuffl3r]::GenerateIndices($string, $password)
-        $bytes = [System.Text.Encoding]::UTF8.GetBytes($string)
-        return [System.Convert]::ToBase64String([Shuffl3r]::combine($bytes, [cryptoBase]::GetKey([xconvert]::ToSecurestring($string), ($bytes.Length - 1)), $password))
+        $in = [shuffl3r]::GenerateIndices($string, $password) + 0
+        $ca = $string.ToCharArray()
+        $re = [string]::Join('', $in.ForEach({ $ca[$_] }))
+        return $re
     }
-    static [int[]] UnScramble([string]$string) {
-        $_pass = [xconvert]::ToSecurestring([convert]::ToBase64String([cryptobase]::GetDerivedBytes([xconvert]::ToSecurestring($string))))
-        return [Shuffl3r]::UnScramble($string, $_pass)
-    }
-    static [int[]] UnScramble([string]$string, [securestring]$password) {
-        return [Shuffl3r]::GenerateIndices($string, $password)
+    static [string] UnScramble([string]$string, [securestring]$password) {
+        if ([string]::IsNullOrWhiteSpace($string)) {
+            throw [System.Management.Automation.ValidationMetadataException]::new("The variable cannot be validated because the value '$string' is not a valid value for the `$string variable.")
+        }; [ValidateNotNullOrEmpty()][securestring]$password = $password
+        $in = [shuffl3r]::GenerateIndices($string, $password) + 0
+        $ca = $string.ToCharArray()
+        $re = @(); 0..$ca.Count | ForEach-Object {
+            $re += [PSCustomObject]@{
+                char  = $ca[$_]
+                index = $in[$_]
+            }
+        }
+        return [string]::Join('', ($re | Sort-Object -Property index).char)
     }
     static [int[]] GenerateIndices([string]$string, [securestring]$password) {
         return [Shuffl3r]::GenerateIndices(($string.Length - 1), [convert]::ToBase64String([cryptobase]::GetDerivedBytes($password)), $string.Length)
@@ -1860,6 +1864,7 @@ class AesGCM : CryptoBase {
     # static hidden [byte[]]$_salt = [convert]::FromBase64String("hsKgmva9wZoDxLeREB1udw==");
     static hidden [EncryptionScope] $Scope = [EncryptionScope]::User
     static [byte[]] Encrypt([byte[]]$bytes) {
+        if ([string]::IsNullOrWhiteSpace([AesGCM]::caller)) { [AesGCM]::caller = '[AesGCM]' }
         return [AesGCM]::Encrypt($bytes, [AesGCM]::GetPassword());
     }
     static [byte[]] Encrypt([byte[]]$Bytes, [SecureString]$Password) {
@@ -1920,6 +1925,7 @@ class AesGCM : CryptoBase {
         return $_bytes
     }
     static [void] Encrypt([IO.FileInfo]$File) {
+        if ([string]::IsNullOrWhiteSpace([AesGCM]::caller)) { [AesGCM]::caller = '[AesGCM]' }
         [AesGCM]::Encrypt($File, [AesGCM]::GetPassword());
     }
     static [void] Encrypt([IO.FileInfo]$File, [securestring]$Password) {
@@ -1951,6 +1957,7 @@ class AesGCM : CryptoBase {
         [void]$streamWriter.Dispose()
     }
     static [byte[]] Decrypt([byte[]]$bytes) {
+        if ([string]::IsNullOrWhiteSpace([AesGCM]::caller)) { [AesGCM]::caller = '[AesGCM]' }
         return [AesGCM]::Decrypt($bytes, [AesGCM]::GetPassword());
     }
     static [byte[]] Decrypt([byte[]]$Bytes, [SecureString]$Password) {
@@ -2011,6 +2018,7 @@ class AesGCM : CryptoBase {
         return $_bytes
     }
     static [void] Decrypt([IO.FileInfo]$File) {
+        if ([string]::IsNullOrWhiteSpace([AesGCM]::caller)) { [AesGCM]::caller = '[AesGCM]' }
         [AesGCM]::Decrypt($File, [AesGCM]::GetPassword());
     }
     static [void] Decrypt([IO.FileInfo]$File, [securestring]$password) {

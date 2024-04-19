@@ -2947,12 +2947,13 @@ class HKDF2 {
         return [HKDF2]::GetToken($secretKey, [CryptoBase]::GetDerivedBytes($secretKey), $expires.TotalSeconds)
     }
     static [string] GetToken([securestring]$secretKey, [datetime]$expires) {
-        return [HKDF2]::GenerateToken($secretKey, ($expires - [datetime]::Now).TotalSeconds)
+        return [HKDF2]::GetToken($secretKey, ($expires - [datetime]::Now).TotalSeconds)
     }
     static [string] GetToken([securestring]$secretKey, [byte[]]$salt, [int]$seconds) {
         $_mdhsbytes = [HKDF2]::new($secretKey, $salt).GetBytes(4)
         $_secretKey = [cryptoBase]::GetKey([xconvert]::ToSecurestring([xconvert]::ToHexString($_mdhsbytes)))
-        return [xconvert]::ToBase32String([shuffl3r]::Combine([System.Text.Encoding]::UTF8.GetBytes([Datetime]::Now.AddSeconds($seconds).ToFileTime()), $_mdhsbytes, $_secretKey)).Replace("_", '')
+        $_token_str = [xconvert]::ToBase32String([shuffl3r]::Combine([System.Text.Encoding]::UTF8.GetBytes([Datetime]::Now.AddSeconds($seconds).ToFileTime()), $_mdhsbytes, $_secretKey)).Replace("_", '')
+        return [Shuffl3r]::Scramble($_token_str, $secretKey)
     }
     static [string] GetToken([securestring]$secretKey, [byte[]]$salt, [timespan]$expires) {
         if ($expires.TotalSeconds -gt [int]::MaxValue) {
@@ -2966,7 +2967,8 @@ class HKDF2 {
     static [bool] VerifyToken([string]$TokenSTR, [securestring]$secretKey, [byte[]]$salt) {
         $_calcdhash = [HKDF2]::new($secretKey, $salt).GetBytes(4)
         $_secretKey = [cryptoBase]::GetKey([xconvert]::ToSecurestring([xconvert]::ToHexString($_calcdhash)))
-        ($fb, $mdh) = [shuffl3r]::Split([xconvert]::FromBase32String(($TokenSTR.Trim() + '_' * 4)), $_secretKey, 4)
+        $_Token_STR = [Shuffl3r]::UnScramble($TokenSTR.Trim(), $secretKey)
+        ($fb, $mdh) = [shuffl3r]::Split([xconvert]::FromBase32String(($_Token_STR + '_' * 4)), $_secretKey, 4)
         $ht = [DateTime]::FromFileTime([long]::Parse([System.Text.Encoding]::UTF8.GetString($fb)))
         $rs = ($ht - [Datetime]::Now).TotalSeconds
         $NotExpired = $rs -ge 0
@@ -2985,7 +2987,7 @@ class HKDF2 {
         [ValidateNotNullOrEmpty()][string] $Passw0rd = $Passw0rd
         if ([HKDF2]::VerifyToken($TokenSTR, $Password, $salt)) {
             try {
-                if ([System.Environment]::UserInteractive) { (Get-Variable host).Value.UI.WriteDebugLine("  [i] Using Password, With Hash: $TokenSTR") }
+                if ([System.Environment]::UserInteractive) { (Get-Variable host).Value.UI.WriteDebugLine("  [i] Using Password, With token: $TokenSTR") }
                 $derivedKey = [xconvert]::ToSecurestring([System.Text.Encoding]::UTF7.GetString([System.Security.Cryptography.Rfc2898DeriveBytes]::new($Passw0rd, $salt, 10000, [System.Security.Cryptography.HashAlgorithmName]::SHA1).GetBytes(256 / 8)));
             } catch {
                 Write-Error ($error[1].exception.ErrorRecord)

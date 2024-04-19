@@ -1795,8 +1795,7 @@ class Shuffl3r {
         }; [ValidateNotNullOrEmpty()][securestring]$password = $password
         $in = [shuffl3r]::GenerateIndices($string, $password) + 0
         $ca = $string.ToCharArray()
-        $re = [string]::Join('', $in.ForEach({ $ca[$_] }))
-        return $re
+        return [string]::Join('', $in.ForEach({ $ca[$_] }))
     }
     static [string] UnScramble([string]$string, [securestring]$password) {
         if ([string]::IsNullOrWhiteSpace($string)) {

@@ -2515,28 +2515,22 @@ class RecordMap {
         return $dict
     }
     static [hashtable[]] Read([string]$FilePath) {
-        $pass = $null; $cfg = $null
-        try {
-            [ValidateNotNullOrEmpty()][string]$FilePath = [AesGCM]::GetUnResolvedPath($FilePath)
-            Test-Path -PathType Leaf -Path $FilePath -ErrorAction Stop
-            if ([string]::IsNullOrWhiteSpace([AesGCM]::caller)) { [AesGCM]::caller = 'ArgonCage' }
-            Set-Variable -Name pass -Scope Local -Visibility Private -Option Private -Value $(if ([CryptoBase]::EncryptionScope.ToString() -eq "User") { Read-Host -Prompt "$([RecordMap]::caller) Paste/write a Password to decrypt configs" -AsSecureString }else { [xconvert]::ToSecurestring([AesGCM]::GetUniqueMachineId()) })
-            $_ob = [xconvert]::Deserialize([xconvert]::ToDeCompressed([AesGCM]::Decrypt([base85]::Decode([IO.File]::ReadAllText($FilePath)), $pass)))
-            $cfg = [hashtable[]]$_ob.Properties.Name.ForEach({ @{ $_ = $_ob.$_ } })
-        } catch {
-            throw $_
-        } finally {
-            Remove-Variable Pass -Force -ErrorAction SilentlyContinue
-        }
+        $pass = $null; $cfg = $null; $FilePath = [AesGCM]::GetResolvedPath($FilePath)
+        [ValidateNotNullOrEmpty()][string]$FilePath = $FilePath
+        if ([string]::IsNullOrWhiteSpace([AesGCM]::caller)) { [AesGCM]::caller = 'ArgonCage' }
+        Set-Variable -Name pass -Scope Local -Visibility Private -Option Private -Value $(if ([CryptoBase]::EncryptionScope.ToString() -eq "User") { Read-Host -Prompt "$([RecordMap]::caller) Paste/write a Password to decrypt configs" -AsSecureString }else { [xconvert]::ToSecurestring([AesGCM]::GetUniqueMachineId()) })
+        $txt = [IO.File]::ReadAllText($FilePath)
+        $_ob = [xconvert]::Deserialize([xconvert]::ToDeCompressed([AesGCM]::Decrypt([base85]::Decode($txt), $pass)))
+        $cfg = [hashtable[]]$_ob.Properties.Name.ForEach({ @{ $_ = $_ob.$_ } })
         return $cfg
     }
     [void] Edit() {
-        $this.Set([RecordMap]::Edit([IO.FileInfo]::new($this.File)))
+        $this.Set([RecordMap]::Edit($(Get-Item -Path $this.File)))
         $this.Save()
     }
     static [hashtable[]] Edit([IO.FileInfo]$File) {
         $result = @(); $private:config_ob = $null; $fswatcher = $null; $process = $null;
-        [ValidateScript({ if ([IO.File]::Exists($_)) { return $true } ; throw [FileNotFoundException]::new("File '$_' was not found") })][IO.FileInfo]$File = $File;
+        if (!(Test-Path -Path $File.FullName -PathType Leaf -ErrorAction SilentlyContinue)) { throw [FileNotFoundException]::new("File '$File' was not found") }
         $OutFile = [IO.FileInfo][IO.Path]::GetTempFileName()
         $UseVerbose = [bool]$((Get-Variable verbosePreference -ValueOnly) -eq "continue")
         try {

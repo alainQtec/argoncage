@@ -2518,13 +2518,13 @@ class RecordMap {
         $pass = $null; $cfg = $null
         try {
             [ValidateNotNullOrEmpty()][string]$FilePath = [AesGCM]::GetUnResolvedPath($FilePath)
-            if (![IO.File]::Exists($FilePath)) { throw [FileNotFoundException]::new("File '$FilePath' was not found") }
-            if ([string]::IsNullOrWhiteSpace([AesGCM]::caller)) { [AesGCM]::caller = [RecordMap]::caller }
+            Test-Path -PathType Leaf -Path $FilePath -ErrorAction Stop
+            if ([string]::IsNullOrWhiteSpace([AesGCM]::caller)) { [AesGCM]::caller = 'ArgonCage' }
             Set-Variable -Name pass -Scope Local -Visibility Private -Option Private -Value $(if ([CryptoBase]::EncryptionScope.ToString() -eq "User") { Read-Host -Prompt "$([RecordMap]::caller) Paste/write a Password to decrypt configs" -AsSecureString }else { [xconvert]::ToSecurestring([AesGCM]::GetUniqueMachineId()) })
             $_ob = [xconvert]::Deserialize([xconvert]::ToDeCompressed([AesGCM]::Decrypt([base85]::Decode([IO.File]::ReadAllText($FilePath)), $pass)))
             $cfg = [hashtable[]]$_ob.Properties.Name.ForEach({ @{ $_ = $_ob.$_ } })
         } catch {
-            throw $_.Exeption
+            throw $_
         } finally {
             Remove-Variable Pass -Force -ErrorAction SilentlyContinue
         }

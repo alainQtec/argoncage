@@ -2515,8 +2515,8 @@ class RecordMap {
         return $dict
     }
     static [hashtable[]] Read([string]$FilePath) {
-        $pass = $null; $cfg = $null; $FilePath = [AesGCM]::GetResolvedPath($FilePath)
-        [ValidateNotNullOrEmpty()][string]$FilePath = $FilePath
+        $pass = $null; $cfg = $null; $FilePath = [AesGCM]::GetResolvedPath($FilePath);
+        if ([IO.File]::Exists($FilePath)) { if ([string]::IsNullOrWhiteSpace([IO.File]::ReadAllText($FilePath).Trim())) { throw [System.Exception]::new("File is empty: $FilePath") } } else { throw [FileNotFoundException]::new("File not found: $FilePath") }
         if ([string]::IsNullOrWhiteSpace([AesGCM]::caller)) { [AesGCM]::caller = 'ArgonCage' }
         Set-Variable -Name pass -Scope Local -Visibility Private -Option Private -Value $(if ([CryptoBase]::EncryptionScope.ToString() -eq "User") { Read-Host -Prompt "$([RecordMap]::caller) Paste/write a Password to decrypt configs" -AsSecureString }else { [xconvert]::ToSecurestring([AesGCM]::GetUniqueMachineId()) })
         $txt = [IO.File]::ReadAllText($FilePath)
@@ -2525,18 +2525,20 @@ class RecordMap {
         return $cfg
     }
     [void] Edit() {
-        $this.Set([RecordMap]::Edit($(Get-Item -Path $this.File)))
+        $_rds = $this.Edit($this.File)
+        $this.Set($_rds)
         $this.Save()
     }
-    static [hashtable[]] Edit([IO.FileInfo]$File) {
+    [hashtable[]] Edit([string]$FilePath) {
         $result = @(); $private:config_ob = $null; $fswatcher = $null; $process = $null;
-        if (!(Test-Path -Path $File.FullName -PathType Leaf -ErrorAction SilentlyContinue)) { throw [FileNotFoundException]::new("File '$File' was not found") }
+        $FilePath = [AesGCM]::GetResolvedPath($FilePath);
+        if ([IO.File]::Exists($FilePath)) { if ([string]::IsNullOrWhiteSpace([IO.File]::ReadAllText($FilePath).Trim())) { throw [System.Exception]::new("File is empty: $FilePath") } } else { throw [FileNotFoundException]::new("File not found: $FilePath") }
         $OutFile = [IO.FileInfo][IO.Path]::GetTempFileName()
         $UseVerbose = [bool]$((Get-Variable verbosePreference -ValueOnly) -eq "continue")
         try {
             [NetworkManager]::BlockAllOutbound()
             if ($UseVerbose) { "[+] Edit Config started .." | Write-Host -f Magenta }
-            [RecordMap]::Read($File.FullName) | ConvertTo-Json | Out-File $OutFile.FullName -Encoding utf8BOM
+            [RecordMap]::Read("$FilePath") | ConvertTo-Json | Out-File $OutFile.FullName -Encoding utf8BOM
             Set-Variable -Name OutFile -Value $(Rename-Item $outFile.FullName -NewName ($outFile.BaseName + '.json') -PassThru)
             $process = [System.Diagnostics.Process]::new()
             $process.StartInfo.FileName = 'nvim'

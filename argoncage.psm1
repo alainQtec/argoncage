@@ -2521,7 +2521,7 @@ class RecordMap {
         Set-Variable -Name pass -Scope Local -Visibility Private -Option Private -Value $(if ([CryptoBase]::EncryptionScope.ToString() -eq "User") { Read-Host -Prompt "$([RecordMap]::caller) Paste/write a Password to decrypt configs" -AsSecureString }else { [xconvert]::ToSecurestring([AesGCM]::GetUniqueMachineId()) })
         $txt = [IO.File]::ReadAllText($FilePath)
         $_ob = [xconvert]::Deserialize([xconvert]::ToDeCompressed([AesGCM]::Decrypt([base85]::Decode($txt), $pass)))
-        $cfg = [hashtable[]]$_ob.Properties.Name.ForEach({ @{ $_ = $_ob.$_ } })
+        $cfg = [hashtable[]]$_ob.PsObject.Properties.Name.Where({ $_ -notin ('Count', 'Properties', 'IsSynchronized') }).ForEach({ @{ $_ = $_ob.$_ } })
         return $cfg
     }
     [hashtable[]] Edit() {

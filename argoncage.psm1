@@ -2524,10 +2524,10 @@ class RecordMap {
         $cfg = [hashtable[]]$_ob.Properties.Name.ForEach({ @{ $_ = $_ob.$_ } })
         return $cfg
     }
-    [void] Edit() {
-        $_rds = $this.Edit($this.File)
-        $this.Set($_rds)
-        $this.Save()
+    [hashtable[]] Edit() {
+        $result = $this.Edit($this.File)
+        $this.Set($result); $this.Save()
+        return $result
     }
     [hashtable[]] Edit([string]$FilePath) {
         $result = @(); $private:config_ob = $null; $fswatcher = $null; $process = $null;
@@ -2538,7 +2538,9 @@ class RecordMap {
         try {
             [NetworkManager]::BlockAllOutbound()
             if ($UseVerbose) { "[+] Edit Config started .." | Write-Host -f Magenta }
-            [RecordMap]::Read("$FilePath") | ConvertTo-Json | Out-File $OutFile.FullName -Encoding utf8BOM
+            $parsed_content = [RecordMap]::Read("$FilePath");
+            [ValidateNotNullOrEmpty()][hashtable[]]$parsed_content = $parsed_content
+            $parsed_content | ConvertTo-Json | Out-File $OutFile.FullName -Encoding utf8BOM
             Set-Variable -Name OutFile -Value $(Rename-Item $outFile.FullName -NewName ($outFile.BaseName + '.json') -PassThru)
             $process = [System.Diagnostics.Process]::new()
             $process.StartInfo.FileName = 'nvim'
@@ -3099,7 +3101,7 @@ class ArgonCage : CryptoBase {
     }
     [void] EditConfig() {
         if ($null -eq $this.Config) { $this.SetConfigs() };
-        [AesGCM]::caller = '[ArgonCage]'; $this.Config.Edit()
+        [AesGCM]::caller = '[ArgonCage]'; [void]$this.Config.Edit()
     }
     [void] SyncConfigs() {
         if ($null -eq $this.Config) { $this.SetConfigs() };
@@ -3141,6 +3143,7 @@ class ArgonCage : CryptoBase {
                 throw [System.IO.FileNotFoundException]::new("Unable to find file '$($this.Config.File)'")
             }; [void](New-Item -ItemType File -Path $this.Config.File)
         }
+        if ([string]::IsNullOrWhiteSpace([IO.File]::ReadAllText($this.Config.File).Trim())) { $this.Config.Save() }
     }
     # Method to validate the password: This Just checks if its a good enough password
     static [bool] ValidatePassword([SecureString]$password) {

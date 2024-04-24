@@ -8,6 +8,7 @@ using namespace System.Runtime.InteropServices
 #Requires -Version 5.1
 #reson: https://learn.microsoft.com/en-us/answers/questions/444991/powershell-system-security-cryptography-aesgcm-not
 
+[void][System.Reflection.Assembly]::LoadFile((Get-Item "./libs/net6.0/Konscious.Security.Cryptography.Argon2.dll").FullName)
 # Load localizedData:
 $dataFile = [System.IO.FileInfo]::new([IO.Path]::Combine((Get-Variable -ValueOnly ExecutionContext).SessionState.path.CurrentLocation.Path, "en-US", "argoncage.strings.psd1"))
 if ($dataFile.Exists) {
@@ -3016,6 +3017,42 @@ class HKDF2 {
     }
 }
 #endregion HKDF2
+
+#region    Argon2idKDF
+class Argon2idKDF {
+    static [int] $Iterations = 10
+    static [int] $MemorySize = 1024 * 64  # 64 MB
+    static [int] $Parallelism = [Math]::Max(1, [Environment]::ProcessorCount / 2)
+    static [int] $OutputLength = 32  # 256 bits
+    static [byte[]] $UserUuidBytes
+
+    static [byte[]] DeriveKey([securestring]$Password) {
+        return [Argon2idKDF]::DeriveKey($Password, [CryptoBase]::GetDerivedBytes($Password), [Argon2idKDF]::OutputLength)
+    }
+    static [byte[]] DeriveKey([byte[]]$Password, [byte[]]$Salt) {
+        return [Argon2idKDF]::DeriveKey($Password, $Salt, [Argon2idKDF]::OutputLength)
+    }
+    static [byte[]] DeriveKey([byte[]]$Password, [byte[]]$Salt, [int]$OutputLength) {
+        $B64String = [Convert]::ToBase64String($Password)
+        $argon2 = [scriptblock]::create("[Konscious.Security.Cryptography.Argon2id]::new([convert]::FromBase64String('$B64String'))").Invoke()
+        $argon2.DegreeOfParallelism = [Argon2idKDF]::Parallelism
+        $argon2.MemorySize = [Argon2idKDF]::MemorySize;
+        $argon2.Iterations = [Argon2idKDF]::Iterations;
+        $argon2.Salt = $salt;
+        if ($null -ne [Argon2idKDF]::UserUuidBytes) {
+            $argon2.AssociatedData = [Argon2idKDF]::UserUuidBytes;
+        }
+        return $argon2.GetBytes($OutputLength)
+    }
+    static [byte[]] DeriveKey([securestring]$Password, [byte[]]$Salt) {
+        return [Argon2idKDF]::DeriveKey($Password, $Salt, [Argon2idKDF]::OutputLength)
+    }
+    static [byte[]] DeriveKey([securestring]$Password, [byte[]]$Salt, [int]$OutputLength) {
+        $passwordBytes = [System.Text.Encoding]::UTF8.GetBytes([xconvert]::Tostring($Password))
+        return [Argon2idKDF]::DeriveKey($passwordBytes, $Salt, $OutputLength)
+    }
+}
+#endregion Argon2idKDF
 
 #region    Main
 #     A simple cli tool that uses state-of-the-art encryption to save secrets.

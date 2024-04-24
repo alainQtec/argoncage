@@ -3035,9 +3035,9 @@ class Argon2idKDF {
     static [byte[]] DeriveKey([byte[]]$Password, [byte[]]$Salt, [int]$OutputLength) {
         $B64String = [System.Convert]::ToBase64String($Password)
         $argon2 = [scriptblock]::create("[Konscious.Security.Cryptography.Argon2id]::new([convert]::FromBase64String('$B64String'))").Invoke()
-        $argon2.DegreeOfParallelism = [Argon2idKDF]::Parallelism
-        $argon2.MemorySize = [Argon2idKDF]::MemorySize;
         $argon2.Iterations = [Argon2idKDF]::Iterations;
+        $argon2.MemorySize = [Argon2idKDF]::MemorySize;
+        $argon2.DegreeOfParallelism = [Argon2idKDF]::Parallelism
         $argon2.Salt = $salt;
         if ($null -ne [Argon2idKDF]::UserUuidBytes) {
             $argon2.AssociatedData = [Argon2idKDF]::UserUuidBytes;

@@ -2412,7 +2412,7 @@ class RecordMap {
     hidden [string] $File
     hidden [bool] $IsSynchronized
     [datetime] $LastWriteTime = [datetime]::Now
-    static hidden [string] $caller = '[RecordMap]'
+    static hidden [string] $caller = '[ArgonCage]'
     RecordMap() { $this._init() }
     RecordMap([hashtable[]]$array) {
         $this.Add($array); $this._init()
@@ -3038,52 +3038,6 @@ class HKDF2 {
 }
 #endregion HKDF2
 
-#region    Argon2idKDF
-class Argon2idKDF {
-    static [int] $Iterations = 10
-    static [int] $MemorySize = 1024 * 64  # 64 MB
-    static [int] $Parallelism = [Math]::Max(1, [Environment]::ProcessorCount / 2)
-    static [int] $OutputLength = 32  # 256 bits
-    static [byte[]] $UserUuidBytes
-
-    static [byte[]] DeriveKey([securestring]$Password) {
-        return [Argon2idKDF]::DeriveKey($Password, [CryptoBase]::GetDerivedBytes($Password), [Argon2idKDF]::OutputLength)
-    }
-    static [byte[]] DeriveKey([byte[]]$Password, [byte[]]$Salt) {
-        return [Argon2idKDF]::DeriveKey($Password, $Salt, [Argon2idKDF]::OutputLength)
-    }
-    static [byte[]] DeriveKey([byte[]]$Password, [byte[]]$Salt, [int]$OutputLength) {
-        $id = New-Object Argon2id([byte[]]$Password);
-        $id.Iterations = [Argon2idKDF]::Iterations;
-        $id.MemorySize = [Argon2idKDF]::MemorySize;
-        $id.DegreeOfParallelism = [Argon2idKDF]::Parallelism;
-        $id.Salt = $Salt
-        $bytes = $id.GetBytes($OutputLength)
-        if ($null -ne [Argon2idKDF]::UserUuidBytes) {
-            $id.AssociatedData = [Argon2idKDF]::UserUuidBytes;
-        }
-        return $bytes
-    }
-    static [byte[]] DeriveKey([securestring]$Password, [byte[]]$Salt) {
-        return [Argon2idKDF]::DeriveKey($Password, $Salt, [Argon2idKDF]::OutputLength)
-    }
-    static [byte[]] DeriveKey([securestring]$Password, [byte[]]$Salt, [int]$OutputLength) {
-        $passwordBytes = [System.Text.Encoding]::UTF8.GetBytes([xconvert]::Tostring($Password))
-        return [Argon2idKDF]::DeriveKey($passwordBytes, $Salt, $OutputLength)
-    }
-    static [byte[]] HashPassword([string]$passw0rd) {
-        return [Argon2idKDF]::HashPassword($passw0rd, [CryptoBase]::GetDerivedBytes([xconvert]::ToSecurestring($passw0rd)))
-    }
-    static [byte[]] HashPassword([string]$Passw0rd, [byte[]]$Salt) {
-        $config = New-Object Isopoh.Cryptography.Argon2.Argon2Config
-        # -ArgumentList @('Data', 'Argon2id', [System.Text.Encoding]::UTF8.GetBytes($Passw0rd), $Salt)
-        $argon2 = New-Object Isopoh.Cryptography.Argon2.Argon2 -ArgumentList $config
-        $hash = $argon2.Hash()
-        $argon2.Dispose()
-        return $hash
-    }
-}
-#endregion Argon2idKDF
 
 #region    Main
 #     A simple cli tool that uses state-of-the-art encryption to save secrets.
@@ -3179,16 +3133,16 @@ class ArgonCage : CryptoBase {
         # Imports remote configs into current ones, then uploads the updated version to github gist
         # Compare REMOTE's lastWritetime with [IO.File]::GetLastWriteTime($this.File)
         if (!$this.Config.remote.IsAbsoluteUri) { throw [System.InvalidOperationException]::new('Could not resolve remote uri') }
-        [RecordMap]::caller = '[ArgonCage]'; $this.Config.Import($this.Config.Remote)
+        $this.Config.Import($this.Config.Remote)
         $this.Config.Save()
         if ($?) { Write-Host "[ArgonCage] Config Syncing" -NoNewline -f Blue; Write-Host " Completed." -f Green }
     }
     [void] ImportConfigs() {
-        [RecordMap]::caller = '[ArgonCage]'; [void]$this.Config.Import($this.Config.File)
+        [void]$this.Config.Import($this.Config.File)
     }
     [void] ImportConfigs([uri]$raw_uri) {
         # $e = "GIST_CUD = {0}" -f ([AesGCM]::Decrypt("AfXkvWiCce7hAIvWyGeU4TNQyD6XLV8kFYyk87X4zqqhyzb7DNuWcj2lHb+2mRFdN/1aGUHEv601M56Iwo/SKhkWLus=", $(Read-Host -Prompt "pass" -AsSecureString), 1)); $e >> ./.env
-        [RecordMap]::caller = '[ArgonCage]'; $this.Config.Import($raw_uri)
+        $this.Config.Import($raw_uri)
     }
     [bool] DeleteConfigs() {
         return [bool]$(
@@ -3347,22 +3301,35 @@ class ArgonCage : CryptoBase {
         $sc = [ArgonCage]::Tmp.vars.SessionConfig; [ValidateNotNullOrEmpty()][RecordMap]$sc = $sc
         #TODO: sessionConfig should be kept as securestring
         #This line should be decrypting the sessionConfig. ie: $sc object.
-        if (!$sc.SaveCredsCache) { throw "Please first enable credential Caching in your config. or run [ArgonCage]::Tmp.vars.Set('SaveCredsCache', `$true)" }
+        if ([string]::IsNullOrWhiteSpace($sc.CachedCredsPath)) {
+            throw [IO.FileNotFoundException]::new("No such file. i.e: ::..SessionConfig.CachedCredsPath is not set")
+        }
+        if (!$sc.SaveCredsCache) {
+            Write-Warning "Enable credential Caching in your config. or run [ArgonCage]::Tmp.vars.Set('SaveCredsCache', `$true)"
+            return $null
+        }
         return [ArgonCage]::ReadCredsCache([xconvert]::ToSecurestring($sc.CachedCredsPath))
     }
     static [RecordMap[]] ReadCredsCache([securestring]$CachedCredsPath) {
-        $FilePath = ''; $credspath = '';
+        $FilePath = ''; $credspath = ''; $sc = [ArgonCage]::Tmp.vars.SessionConfig; [ValidateNotNullOrEmpty()][RecordMap]$sc = $sc
         Set-Variable -Name "FilePath" -Visibility Public -Value ([xconvert]::Tostring($CachedCredsPath))
         if ([string]::IsNullOrWhiteSpace($FilePath)) { throw "InvalidArgument: `$FilePath" }
         Set-Variable -Name "credspath" -Visibility Public -Value ([IO.Path]::GetDirectoryName($FilePath))
         if ([string]::IsNullOrWhiteSpace($credspath)) { throw "InvalidArgument: `$credspath" }
         if (!(Test-Path -Path $credspath -PathType Container -ErrorAction Ignore)) { [ArgonCage]::Create_Dir($credspath) }
+        $_p = [xconvert]::ToSecurestring([ArgonCage]::GetUniqueMachineId())
         $ca = @(); if (![IO.File]::Exists($FilePath)) {
-            Write-Host "[ArgonCage] FileNotFoundException: No such file.`n$(' '*12)File name: $FilePath" -f Yellow
+            if ($sc.SaveCredsCache) {
+                New-Item -Path $FilePath -ItemType File -Force -ErrorAction Ignore | Out-Null
+                Write-Verbose "Saving default rwsu creds to CACHE ..."
+                $ca += [ArgonCage]::UpdateCredsCache((whoami), $_p, 'rwsu', $true)
+            } else {
+                Write-Host "[ArgonCage] FileNotFoundException: No such file.`n$(' '*12)File name: $FilePath" -f Yellow
+            }
             return $ca
         }
-        $_p = [xconvert]::ToSecurestring([ArgonCage]::GetUniqueMachineId())
-        $da = [byte[]][AesGCM]::Decrypt([Base85]::Decode([IO.FILE]::ReadAllText($FilePath)), $_p, [AesGCM]::GetDerivedBytes($_p), $null, 'Gzip', 1)
+        $tc = [IO.FILE]::ReadAllText($FilePath); if ([string]::IsNullOrWhiteSpace($tc.Trim())) { return $ca }
+        $da = [byte[]][AesGCM]::Decrypt([Base85]::Decode($tc), $_p, [AesGCM]::GetDerivedBytes($_p), $null, 'Gzip', 1)
         $([System.Text.Encoding]::UTF8.GetString($da) | ConvertFrom-Json).ForEach({ $ca += [RecordMap]::new([xconvert]::ToHashTable($_)) })
         return $ca
     }
@@ -3377,11 +3344,6 @@ class ArgonCage : CryptoBase {
         [ValidateNotNullOrEmpty()][RecordMap]$sessionConfig = $sessionConfig
         $c_array = @()
         $c_array += @{ $TagName = $Credential }
-        if (![IO.File]::Exists($sessionConfig.CachedCredsPath)) {
-            if (![string]::IsNullOrWhiteSpace([cryptobase]::GetUniqueMachineId())) {
-                $c_array += @{ "rwsu" = [pscredential]::new((whoami), [xconvert]::ToSecurestring([environment]::GetEnvironmentVariable("MACHINE_ID"))) }
-            }
-        }
         $results = @(); $c_array.keys | ForEach-Object {
             $_TagName = $_; $_Credential = $c_array.$_
             if ([string]::IsNullOrWhiteSpace($_TagName)) { throw "InvalidArgument : TagName" }
@@ -3392,7 +3354,6 @@ class ArgonCage : CryptoBase {
                 if (!$Force) {
                     Throw [System.InvalidOperationException]::new("CACHE_NOT_FOUND! Please make sure the tag already exist, or use -Force to auto add.")
                 }
-                Write-Verbose "Create new file: '$($sessionConfig.CachedCredsPath)'."
             }
             Write-Verbose "$(if ($IsNewTag) { "Adding new" } else { "Updating" }) tag: '$_TagName' ..."
             if ($results.Count -eq 0 -or $IsNewTag) {

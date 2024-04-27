@@ -6,9 +6,7 @@ using namespace System.Security
 using namespace System.Runtime.InteropServices
 
 #Requires -Version 5.1
-#reson: https://learn.microsoft.com/en-us/answers/questions/444991/powershell-system-security-cryptography-aesgcm-not
-
-[void][System.Reflection.Assembly]::LoadFile((Get-Item "./libs/net6.0/Konscious.Security.Cryptography.Argon2.dll").FullName)
+# https://learn.microsoft.com/en-us/answers/questions/444991/powershell-system-security-cryptography-aesgcm-not.html
 # Load localizedData:
 $dataFile = [System.IO.FileInfo]::new([IO.Path]::Combine((Get-Variable -ValueOnly ExecutionContext).SessionState.path.CurrentLocation.Path, "en-US", "argoncage.strings.psd1"))
 if ($dataFile.Exists) {
@@ -3001,6 +2999,28 @@ class HKDF2 {
             Throw [System.UnauthorizedAccessException]::new('Wrong Password.', [InvalidPasswordException]::new());
         }
     }
+    static [byte[]] HashPassword([string]$Passw0rd) {
+        return [HKDF2]::HashPassword([xconvert]::ToSecurestring($Passw0rd))
+    }
+    static [byte[]] HashPassword([securestring]$Password) {
+        return [HKDF2]::HashPassword($Password, [CryptoBase]::getDerivedBytes($Password))
+    }
+    static [byte[]] HashPassword([securestring]$Password, [byte[]]$Salt) {
+        return [HKDF2]::HashPassword($Password, 1000, $Salt, 20)
+    }
+    static [byte[]] HashPassword([securestring]$Password, [int]$Iterations, [byte[]]$Salt, [int]$HashSize) {
+        $passwordBytes = [System.Text.Encoding]::UTF8.GetBytes([xconvert]::ToString($Password))
+        $pbkdf2 = New-Object System.Security.Cryptography.Rfc2898DeriveBytes -ArgumentList $passwordBytes, $Salt, $Iterations
+        $hash = $pbkdf2.GetBytes($HashSize)
+        return $hash
+    }
+    static [bool] VerifyPassword([securestring]$password, [byte[]]$hash) {
+        return [HKDF2]::VerifyPassword($password, $hash, 1000, [CryptoBase]::GetDerivedBytes($password), 20)
+    }
+    static [bool] VerifyPassword([securestring]$Password, [byte[]]$Hash, [int]$Iterations, [byte[]]$Salt, [int]$HashSize) {
+        $hashToVerify = [HKDF2]::HashPassword($Password, $Iterations, $Salt, $HashSize)
+        return [System.Linq.Enumerable]::SequenceEqual($hashToVerify, $Hash)
+    }
     static [bool] TestEqualByteArrays([byte[]]$a, [byte[]]$b) {
         # Compares two byte arrays for equality, specifically written so that the loop is not optimized.
         if ($a -eq $b) {
@@ -3033,16 +3053,16 @@ class Argon2idKDF {
         return [Argon2idKDF]::DeriveKey($Password, $Salt, [Argon2idKDF]::OutputLength)
     }
     static [byte[]] DeriveKey([byte[]]$Password, [byte[]]$Salt, [int]$OutputLength) {
-        $B64String = [System.Convert]::ToBase64String($Password)
-        $argon2 = [scriptblock]::create("[Konscious.Security.Cryptography.Argon2id]::new([convert]::FromBase64String('$B64String'))").Invoke()
-        $argon2.Iterations = [Argon2idKDF]::Iterations;
-        $argon2.MemorySize = [Argon2idKDF]::MemorySize;
-        $argon2.DegreeOfParallelism = [Argon2idKDF]::Parallelism
-        $argon2.Salt = $salt;
+        $id = New-Object Argon2id([byte[]]$Password);
+        $id.Iterations = [Argon2idKDF]::Iterations;
+        $id.MemorySize = [Argon2idKDF]::MemorySize;
+        $id.DegreeOfParallelism = [Argon2idKDF]::Parallelism;
+        $id.Salt = $Salt
+        $bytes = $id.GetBytes($OutputLength)
         if ($null -ne [Argon2idKDF]::UserUuidBytes) {
-            $argon2.AssociatedData = [Argon2idKDF]::UserUuidBytes;
+            $id.AssociatedData = [Argon2idKDF]::UserUuidBytes;
         }
-        return $argon2.GetBytes($OutputLength)
+        return $bytes
     }
     static [byte[]] DeriveKey([securestring]$Password, [byte[]]$Salt) {
         return [Argon2idKDF]::DeriveKey($Password, $Salt, [Argon2idKDF]::OutputLength)
@@ -3050,6 +3070,17 @@ class Argon2idKDF {
     static [byte[]] DeriveKey([securestring]$Password, [byte[]]$Salt, [int]$OutputLength) {
         $passwordBytes = [System.Text.Encoding]::UTF8.GetBytes([xconvert]::Tostring($Password))
         return [Argon2idKDF]::DeriveKey($passwordBytes, $Salt, $OutputLength)
+    }
+    static [byte[]] HashPassword([string]$passw0rd) {
+        return [Argon2idKDF]::HashPassword($passw0rd, [CryptoBase]::GetDerivedBytes([xconvert]::ToSecurestring($passw0rd)))
+    }
+    static [byte[]] HashPassword([string]$Passw0rd, [byte[]]$Salt) {
+        $config = New-Object Isopoh.Cryptography.Argon2.Argon2Config
+        # -ArgumentList @('Data', 'Argon2id', [System.Text.Encoding]::UTF8.GetBytes($Passw0rd), $Salt)
+        $argon2 = New-Object Isopoh.Cryptography.Argon2.Argon2 -ArgumentList $config
+        $hash = $argon2.Hash()
+        $argon2.Dispose()
+        return $hash
     }
 }
 #endregion Argon2idKDF

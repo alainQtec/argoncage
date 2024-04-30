@@ -361,13 +361,13 @@ class NetworkManager {
         return $result
     }
     static [bool] TestConnection ([string]$HostName) {
-        #GOAL: Be faster than (Test-Connection github.com -Count 1 -ErrorAction Ignore).status -ne "Success"
+        $cs = $null; $cc = [NetworkManager]::caller; if ([string]::IsNullOrWhiteSpace($cc)) { $cc = '[NetworkManager]' }
+        $re = @{ true = @{ m = "Success"; c = "Green" }; false = @{ m = "Failed"; c = "Red" } }
         if (![NetworkManager]::resolve_ping_dependencies()) {
-            Write-Host "[NetworkManager] Could not resolve ping dependencies" -f Red
+            Write-Host "$cc Could not resolve ping dependencies" -f Red
         }
         [ValidateNotNullOrEmpty()][string]$HostName = $HostName
         if (![bool]("System.Net.NetworkInformation.Ping" -as 'type')) { Add-Type -AssemblyName System.Net.NetworkInformation };
-        $cs = $null; $cc = [NetworkManager]::caller; $re = @{ true = @{ m = "Success"; c = "Green" }; false = @{ m = "Failed"; c = "Red" } }
         Write-Host "$cc Testing Connection ... " -f Blue -NoNewline
         try {
             [System.Net.NetworkInformation.PingReply]$PingReply = [System.Net.NetworkInformation.Ping]::new().Send($HostName);
@@ -2428,7 +2428,9 @@ class RecordMap {
     [void] Import([uri]$raw_uri) {
         try {
             $pass = $null; if ([string]::IsNullOrWhiteSpace([AesGCM]::caller)) { [AesGCM]::caller = [RecordMap]::caller }
-            Set-Variable -Name pass -Scope Local -Visibility Private -Option Private -Value $(if ([CryptoBase]::EncryptionScope.ToString() -eq "User") { Read-Host -Prompt "$([RecordMap]::caller) Paste/write a Password to decrypt configs" -AsSecureString }else { [xconvert]::ToSecurestring([AesGCM]::GetUniqueMachineId()) })
+            $scope = [scriptblock]::Create("$([RecordMap]::caller)::EncryptionScope").Invoke()
+            if ([string]::IsNullOrWhiteSpace($scope)) { $scope = [CryptoBase]::EncryptionScope.ToString() }
+            Set-Variable -Name pass -Scope Local -Visibility Private -Option Private -Value $(if ($scope -eq "User") { Read-Host -Prompt "$([RecordMap]::caller) Paste/write a Password to decrypt configs" -AsSecureString }else { [xconvert]::ToSecurestring([AesGCM]::GetUniqueMachineId()) })
             $_ob = [xconvert]::Deserialize([xconvert]::ToDeCompressed([AesGCM]::Decrypt([base85]::Decode($(Invoke-WebRequest $raw_uri -Verbose:$false).Content), $pass)))
             $this.Set([hashtable[]]$_ob.Properties.Name.ForEach({ @{ $_ = $_ob.$_ } }))
         } catch {
@@ -2517,7 +2519,9 @@ class RecordMap {
         $pass = $null; $cfg = $null; $FilePath = [AesGCM]::GetResolvedPath($FilePath);
         if ([IO.File]::Exists($FilePath)) { if ([string]::IsNullOrWhiteSpace([IO.File]::ReadAllText($FilePath).Trim())) { throw [System.Exception]::new("File is empty: $FilePath") } } else { throw [FileNotFoundException]::new("File not found: $FilePath") }
         if ([string]::IsNullOrWhiteSpace([AesGCM]::caller)) { [AesGCM]::caller = 'ArgonCage' }
-        Set-Variable -Name pass -Scope Local -Visibility Private -Option Private -Value $(if ([CryptoBase]::EncryptionScope.ToString() -eq "User") { Read-Host -Prompt "$([RecordMap]::caller) Paste/write a Password to decrypt configs" -AsSecureString }else { [xconvert]::ToSecurestring([AesGCM]::GetUniqueMachineId()) })
+        $scope = [scriptblock]::Create("$([RecordMap]::caller)::EncryptionScope").Invoke()
+        if ([string]::IsNullOrWhiteSpace($scope)) { $scope = [CryptoBase]::EncryptionScope.ToString() }
+        Set-Variable -Name pass -Scope Local -Visibility Private -Option Private -Value $(if ($scope -eq "User") { Read-Host -Prompt "$([RecordMap]::caller) Paste/write a Password to decrypt configs" -AsSecureString }else { [xconvert]::ToSecurestring([AesGCM]::GetUniqueMachineId()) })
         $txt = [IO.File]::ReadAllText($FilePath)
         $_ob = [xconvert]::Deserialize([xconvert]::ToDeCompressed([AesGCM]::Decrypt([base85]::Decode($txt), $pass)))
         $cfg = [hashtable[]]$_ob.PsObject.Properties.Name.Where({ $_ -notin ('Count', 'Properties', 'IsSynchronized') }).ForEach({ @{ $_ = $_ob.$_ } })
@@ -2571,10 +2575,11 @@ class RecordMap {
         return $result
     }
     [void] Save() {
-        $pass = $null;
         try {
+            $pass = $null; $scope = [scriptblock]::Create("$([RecordMap]::caller)::EncryptionScope").Invoke()
+            if ([string]::IsNullOrWhiteSpace($scope)) { $scope = [CryptoBase]::EncryptionScope.ToString() }
             Write-Host "$([RecordMap]::caller) Saving records to file: $($this.File) ..." -f Blue
-            Set-Variable -Name pass -Scope Local -Visibility Private -Option Private -Value $(if ([CryptoBase]::EncryptionScope.ToString() -eq "User") { Read-Host -Prompt "$([RecordMap]::caller) Paste/write a Password to encrypt configs" -AsSecureString } else { [xconvert]::ToSecurestring([AesGCM]::GetUniqueMachineId()) })
+            Set-Variable -Name pass -Scope Local -Visibility Private -Option Private -Value $(if ($scope -eq "User") { Read-Host -Prompt "$([RecordMap]::caller) Paste/write a Password to encrypt configs" -AsSecureString } else { [xconvert]::ToSecurestring([AesGCM]::GetUniqueMachineId()) })
             $this.LastWriteTime = [datetime]::Now; [IO.File]::WriteAllText($this.File, [Base85]::Encode([AesGCM]::Encrypt([xconvert]::ToCompressed($this.ToByte()), $pass)), [System.Text.Encoding]::UTF8)
             Write-Host "$([RecordMap]::caller) Saving records " -f Blue -NoNewline; Write-Host "Completed." -f Green
         } catch {
@@ -3123,18 +3128,29 @@ class ArgonCage : CryptoBase {
     }
     [void] EditConfig() {
         if ($null -eq $this.Config) { $this.SetConfigs() };
-        [AesGCM]::caller = '[ArgonCage]'; [void]$this.Config.Edit()
+        $og_EncryptionScope = [ArgonCage]::EncryptionScope;
+        try {
+            $this::EncryptionScope = [EncryptionScope]::Machine
+            [AesGCM]::caller = '[ArgonCage]'; [void]$this.Config.Edit()
+        } finally {
+            $this::EncryptionScope = $og_EncryptionScope;
+        }
     }
     [void] SyncConfigs() {
         if ($null -eq $this.Config) { $this.SetConfigs() };
         if (!$this.Config.remote.IsAbsoluteUri) { $this.SetConfigs() }
-        # if ($this.Config.Remote.LastWriteTime -gt $this.Config.LastWriteTime) {
-        # }
-        # Imports remote configs into current ones, then uploads the updated version to github gist
-        # Compare REMOTE's lastWritetime with [IO.File]::GetLastWriteTime($this.File)
         if (!$this.Config.remote.IsAbsoluteUri) { throw [System.InvalidOperationException]::new('Could not resolve remote uri') }
-        $this.Config.Import($this.Config.Remote)
-        $this.Config.Save()
+        $og_EncryptionScope = [ArgonCage]::EncryptionScope; try {
+            $this::EncryptionScope = [EncryptionScope]::Machine
+            # if ($this.Config.Remote.LastWriteTime -gt $this.Config.LastWriteTime) {
+            # }
+            # Imports remote configs into current ones, then uploads the updated version to github gist
+            # Compare REMOTE's lastWritetime with [IO.File]::GetLastWriteTime($this.File)
+            $this.Config.Import($this.Config.Remote)
+            $this.Config.Save();
+        } finally {
+            $this::EncryptionScope = $og_EncryptionScope;
+        }
         if ($?) { Write-Host "[ArgonCage] Config Syncing" -NoNewline -f Blue; Write-Host " Completed." -f Green }
     }
     [void] ImportConfigs() {
@@ -3165,7 +3181,14 @@ class ArgonCage : CryptoBase {
                 throw [System.IO.FileNotFoundException]::new("Unable to find file '$($this.Config.File)'")
             }; [void](New-Item -ItemType File -Path $this.Config.File)
         }
-        if ([string]::IsNullOrWhiteSpace([IO.File]::ReadAllText($this.Config.File).Trim())) { $this.Config.Save() }
+        if ([string]::IsNullOrWhiteSpace([IO.File]::ReadAllText($this.Config.File).Trim())) {
+            $og_EncryptionScope = [ArgonCage]::EncryptionScope; try {
+                $this::EncryptionScope = [EncryptionScope]::Machine
+                $this.Config.Save();
+            } finally {
+                $this::EncryptionScope = $og_EncryptionScope;
+            }
+        }
     }
     # Method to validate the password: This Just checks if its a good enough password
     static [bool] ValidatePassword([SecureString]$password) {
@@ -3321,7 +3344,7 @@ class ArgonCage : CryptoBase {
         $ca = @(); if (![IO.File]::Exists($FilePath)) {
             if ($sc.SaveCredsCache) {
                 New-Item -Path $FilePath -ItemType File -Force -ErrorAction Ignore | Out-Null
-                Write-Verbose "Saving default rwsu creds to CACHE ..."
+                Write-Verbose "Saving default cache: rwsu"
                 $ca += [ArgonCage]::UpdateCredsCache((whoami), $_p, 'rwsu', $true)
             } else {
                 Write-Host "[ArgonCage] FileNotFoundException: No such file.`n$(' '*12)File name: $FilePath" -f Yellow
@@ -3374,7 +3397,6 @@ class ArgonCage : CryptoBase {
                         )
                     )
                 ) -Path ($sessionConfig.CachedCredsPath) -Encoding utf8BOM
-                Write-Verbose "Saved Credential hash to CACHE"
             }
         }
         return $results
@@ -3434,7 +3456,7 @@ class ArgonCage : CryptoBase {
                 $process.Dispose()
             }
             Remove-Item $outFile.FullName -Force
-            if ([ArgonCage]::Tmp.vars.UseVerbose) { "[+] FileMonitor Log saved in variable: `$$([fileMonitor]::LogvariableName)" | Write-Host -f Magenta }
+            if ([ArgonCage]::Tmp.vars.UseVerbose) { "[+] FileMonitor Log saved in variable: `$$([fileMonitor]::LogvariableName)" | Write-Host -f Green }
             if ($null -ne $secrets) { [ArgonCage]::UpdateSecrets($secrets, $Path) }
             if ([ArgonCage]::Tmp.vars.UseVerbose) { "[+] Edit secrets completed." | Write-Host -f Magenta }
         }
@@ -3490,11 +3512,13 @@ class ArgonCage : CryptoBase {
             }
         )
         if ($Config.SaveCredsCache) {
-            if ([IO.File]::Exists($Config.CachedCredsPath)) {
-                [ArgonCage]::Tmp.vars.Set('CachedCreds', [ArgonCage]::ReadCredsCache([xconvert]::ToSecurestring($Config.CachedCredsPath)))
-            } else {
-                <# Action when all if and elseif conditions are false #>
-            }
+            [ArgonCage]::Tmp.vars.Set('CachedCreds', $(if ([IO.File]::Exists($Config.CachedCredsPath)) {
+                        [ArgonCage]::ReadCredsCache([xconvert]::ToSecurestring($Config.CachedCredsPath))
+                    } else {
+                        [ArgonCage]::ReadCredsCache()
+                    }
+                )
+            )
         }
     }
     static hidden [hashtable] Get_default_Config() {

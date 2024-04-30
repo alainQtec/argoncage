@@ -2522,7 +2522,7 @@ class RecordMap {
         return $dict
     }
     static [hashtable[]] Read([string]$FilePath) {
-        $pass = $null; $cfg = $null; [AesGCM]::caller = 'ArgonCage'; $FilePath = [AesGCM]::GetResolvedPath($FilePath);
+        $pass = $null; $cfg = $null; [AesGCM]::caller = '[ArgonCage]'; $FilePath = [AesGCM]::GetResolvedPath($FilePath);
         if ([IO.File]::Exists($FilePath)) { if ([string]::IsNullOrWhiteSpace([IO.File]::ReadAllText($FilePath).Trim())) { throw [System.Exception]::new("File is empty: $FilePath") } } else { throw [FileNotFoundException]::new("File not found: $FilePath") }
         Set-Variable -Name pass -Scope Local -Visibility Private -Option Private -Value $([ArgonCage]::Tmp.GetSessionKey('configrw', [PSCustomObject]@{
                     caller = [RecordMap]::caller
@@ -2642,10 +2642,19 @@ class SessionTmp {
             $this.vars.SessionKeys.Set(@{ $Name = $Value })
         }
     }
+    [SecureString] GetSessionKey([string]$Name) {
+        return [ArgonCage]::Tmp.GetSessionKey($Name, [PSCustomObject]@{
+                caller = [RecordMap]::caller
+                prompt = "Paste/write a Password"
+            }
+        )
+    }
     [SecureString] GetSessionKey([string]$Name, [psobject]$Options) {
+        [ValidateNotNullOrEmpty()][string]$Name = $Name
+        [ValidateNotNullOrEmpty()][psobject]$Options = $Options
         if ($null -eq $this.vars.SessionKeys) {
-            $scope = [scriptblock]::Create("$($Options.caller)::EncryptionScope").Invoke()
-            if ([string]::IsNullOrWhiteSpace($scope)) { throw "EncryptionScope not found" }
+            $scope = [scriptblock]::Create("$($Options.caller)::EncryptionScope").Invoke();
+            [ValidateNotNullOrEmpty()][EncryptionScope]$scope = $scope
             $this.SaveSessionKey($Name, $(if ($scope -eq "User") {
                         [CryptoBase]::GetPassword(("{0} {1}" -f $Options.caller, $Options.Prompt))
                     } else {

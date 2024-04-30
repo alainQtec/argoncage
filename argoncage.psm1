@@ -445,6 +445,7 @@ class CryptoBase {
         return [CryptoBase]::GetDerivedBytes($password, 16)
     }
     static [byte[]] GetDerivedBytes([securestring]$password, [int]$Length) {
+        [ValidateNotNullOrEmpty()][securestring]$password = $password
         $pswd = [xconvert]::ToSecurestring($(switch ([CryptoBase]::EncryptionScope.ToString()) {
                     "Machine" {
                         [System.Text.Encoding]::UTF8.GetBytes([CryptoBase]::GetUniqueMachineId())
@@ -459,6 +460,8 @@ class CryptoBase {
         return [CryptoBase]::GetDerivedBytes($pswd, $s6lt, $Length)
     }
     static [byte[]] GetDerivedBytes([securestring]$password, [byte[]]$salt, [int]$Length) {
+        [ValidateNotNullOrEmpty()]$salt = $salt
+        [ValidateNotNullOrEmpty()][securestring]$password = $password
         return [System.Security.Cryptography.Rfc2898DeriveBytes]::new($password, $salt, 1000).GetBytes($Length);
     }
     static [byte[]] GetKey() {
@@ -2428,13 +2431,16 @@ class RecordMap {
     [void] Import([uri]$raw_uri) {
         try {
             $pass = $null; if ([string]::IsNullOrWhiteSpace([AesGCM]::caller)) { [AesGCM]::caller = [RecordMap]::caller }
-            $scope = [scriptblock]::Create("$([RecordMap]::caller)::EncryptionScope").Invoke()
-            if ([string]::IsNullOrWhiteSpace($scope)) { $scope = [CryptoBase]::EncryptionScope.ToString() }
-            Set-Variable -Name pass -Scope Local -Visibility Private -Option Private -Value $(if ($scope -eq "User") { Read-Host -Prompt "$([RecordMap]::caller) Paste/write a Password to decrypt configs" -AsSecureString }else { [xconvert]::ToSecurestring([AesGCM]::GetUniqueMachineId()) })
+            Set-Variable -Name pass -Scope Local -Visibility Private -Option Private -Value $([ArgonCage]::Tmp.GetSessionKey('configrw', [PSCustomObject]@{
+                        caller = [RecordMap]::caller
+                        prompt = "Paste/write a Password to decrypt configs"
+                    }
+                )
+            )
             $_ob = [xconvert]::Deserialize([xconvert]::ToDeCompressed([AesGCM]::Decrypt([base85]::Decode($(Invoke-WebRequest $raw_uri -Verbose:$false).Content), $pass)))
             $this.Set([hashtable[]]$_ob.Properties.Name.ForEach({ @{ $_ = $_ob.$_ } }))
         } catch {
-            throw $_.Exeption
+            throw $_
         } finally {
             Remove-Variable Pass -Force -ErrorAction SilentlyContinue
         }
@@ -2516,12 +2522,14 @@ class RecordMap {
         return $dict
     }
     static [hashtable[]] Read([string]$FilePath) {
-        $pass = $null; $cfg = $null; $FilePath = [AesGCM]::GetResolvedPath($FilePath);
+        $pass = $null; $cfg = $null; [AesGCM]::caller = 'ArgonCage'; $FilePath = [AesGCM]::GetResolvedPath($FilePath);
         if ([IO.File]::Exists($FilePath)) { if ([string]::IsNullOrWhiteSpace([IO.File]::ReadAllText($FilePath).Trim())) { throw [System.Exception]::new("File is empty: $FilePath") } } else { throw [FileNotFoundException]::new("File not found: $FilePath") }
-        if ([string]::IsNullOrWhiteSpace([AesGCM]::caller)) { [AesGCM]::caller = 'ArgonCage' }
-        $scope = [scriptblock]::Create("$([RecordMap]::caller)::EncryptionScope").Invoke()
-        if ([string]::IsNullOrWhiteSpace($scope)) { $scope = [CryptoBase]::EncryptionScope.ToString() }
-        Set-Variable -Name pass -Scope Local -Visibility Private -Option Private -Value $(if ($scope -eq "User") { Read-Host -Prompt "$([RecordMap]::caller) Paste/write a Password to decrypt configs" -AsSecureString }else { [xconvert]::ToSecurestring([AesGCM]::GetUniqueMachineId()) })
+        Set-Variable -Name pass -Scope Local -Visibility Private -Option Private -Value $([ArgonCage]::Tmp.GetSessionKey('configrw', [PSCustomObject]@{
+                    caller = [RecordMap]::caller
+                    prompt = "Paste/write a Password to decrypt configs"
+                }
+            )
+        )
         $txt = [IO.File]::ReadAllText($FilePath)
         $_ob = [xconvert]::Deserialize([xconvert]::ToDeCompressed([AesGCM]::Decrypt([base85]::Decode($txt), $pass)))
         $cfg = [hashtable[]]$_ob.PsObject.Properties.Name.Where({ $_ -notin ('Count', 'Properties', 'IsSynchronized') }).ForEach({ @{ $_ = $_ob.$_ } })
@@ -2576,14 +2584,17 @@ class RecordMap {
     }
     [void] Save() {
         try {
-            $pass = $null; $scope = [scriptblock]::Create("$([RecordMap]::caller)::EncryptionScope").Invoke()
-            if ([string]::IsNullOrWhiteSpace($scope)) { $scope = [CryptoBase]::EncryptionScope.ToString() }
-            Write-Host "$([RecordMap]::caller) Saving records to file: $($this.File) ..." -f Blue
-            Set-Variable -Name pass -Scope Local -Visibility Private -Option Private -Value $(if ($scope -eq "User") { Read-Host -Prompt "$([RecordMap]::caller) Paste/write a Password to encrypt configs" -AsSecureString } else { [xconvert]::ToSecurestring([AesGCM]::GetUniqueMachineId()) })
+            $pass = $null; Write-Host "$([RecordMap]::caller) Saving records to file: $($this.File) ..." -f Blue
+            Set-Variable -Name pass -Scope Local -Visibility Private -Option Private -Value $([ArgonCage]::Tmp.GetSessionKey('configrw', [PSCustomObject]@{
+                        caller = [RecordMap]::caller
+                        prompt = "Paste/write a Password to encrypt configs"
+                    }
+                )
+            ); [ValidateNotNullOrEmpty()][securestring]$pass = $pass
             $this.LastWriteTime = [datetime]::Now; [IO.File]::WriteAllText($this.File, [Base85]::Encode([AesGCM]::Encrypt([xconvert]::ToCompressed($this.ToByte()), $pass)), [System.Text.Encoding]::UTF8)
             Write-Host "$([RecordMap]::caller) Saving records " -f Blue -NoNewline; Write-Host "Completed." -f Green
         } catch {
-            throw $_.Exeption
+            throw $_
         } finally {
             Remove-Variable Pass -Force -ErrorAction SilentlyContinue
         }
@@ -2621,6 +2632,29 @@ class SessionTmp {
     SessionTmp() {
         $this.vars = [RecordMap]::new()
         $this.Paths = [System.Collections.Generic.List[string]]::new()
+    }
+    [void] SaveSessionKey([string]$Name, [SecureString]$Value) {
+        [ValidateNotNullOrEmpty()][string]$Name = $Name
+        if ($null -eq $this.vars.SessionKeys) {
+            $this.vars.Set('SessionKeys', [RecordMap]::new())
+            $this.vars.SessionKeys.Add(@{ $Name = $Value })
+        } else {
+            $this.vars.SessionKeys.Set(@{ $Name = $Value })
+        }
+    }
+    [SecureString] GetSessionKey([string]$Name, [psobject]$Options) {
+        if ($null -eq $this.vars.SessionKeys) {
+            $scope = [scriptblock]::Create("$($Options.caller)::EncryptionScope").Invoke()
+            if ([string]::IsNullOrWhiteSpace($scope)) { throw "EncryptionScope not found" }
+            $this.SaveSessionKey($Name, $(if ($scope -eq "User") {
+                        [CryptoBase]::GetPassword(("{0} {1}" -f $Options.caller, $Options.Prompt))
+                    } else {
+                        [xconvert]::ToSecurestring([cryptoBase]::GetUniqueMachineId())
+                    }
+                )
+            )
+        }
+        return $this.vars.SessionKeys.$Name
     }
     [void] Clear() {
         $this.vars = [RecordMap]::new()
@@ -3060,7 +3094,7 @@ class HKDF2 {
 class ArgonCage : CryptoBase {
     [ValidateNotNullOrEmpty()][RecordMap] $Config
     [ValidateNotNullOrEmpty()][version] $Version
-    static hidden [ValidateNotNull()][SessionTmp] $Tmp
+    static hidden [ValidateNotNull()][SessionTmp] $Tmp = [SessionTmp]::new()
     static [SecretStore] $SecretStore = [SecretStore]::new("secret_Info")
     static [System.Collections.ObjectModel.Collection[CliArt]] $banners = @()
     static [ValidateNotNull()][EncryptionScope] $EncryptionScope = [EncryptionScope]::User
@@ -3202,7 +3236,7 @@ class ArgonCage : CryptoBase {
             # Check if the password meets the minimum length requirement and includes at least one of each required character type
             $IsValid = ($Passw0rd.Length -ge $minLength -and $requiredCharTypes.Count -ge 3)
         } catch {
-            throw $_.Exeption
+            throw $_
         } finally {
             Remove-Variable Passw0rd -Force -ErrorAction SilentlyContinue
             # Zero out the memory used by the variable.

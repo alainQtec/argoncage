@@ -2798,10 +2798,10 @@ class FileMonitor {
 }
 
 class SecretStore {
-    [string]$Name
-    [uri]$Url
+    [ValidateNotNullOrEmpty()][string]$Name
+    [ValidateNotNullOrEmpty()][uri]$Url
     static hidden [ValidateNotNullOrEmpty()][string]$DataPath
-
+    static hidden [bool]$UseVerbose = [bool]$((Get-Variable verbosePreference -ValueOnly) -eq "continue")
     SecretStore([string]$Name) {
         $this.Name = $Name
         if ([string]::IsNullOrWhiteSpace([SecretStore]::DataPath)) {
@@ -2829,6 +2829,139 @@ class SecretStore {
                 }, { throw "Cannot set Size property" }
             )
         )
+    }
+    static [SecretStore] Create([string]$FileName, [uri]$Url) {
+        [ValidateNotNullOrEmpty()][string]$FileName = $FileName
+        [ValidateNotNullOrEmpty()][uri]$Url = $Url
+        $result = [SecretStore]::new($FileName); $__FilePath = [CryptoBase]::GetUnResolvedPath($FileName)
+        $result.File = $(if ([IO.File]::Exists($__FilePath)) {
+                Write-Host "    Found secrets file '$([IO.Path]::GetFileName($__FilePath))'" -f Green
+                Get-Item $__FilePath
+            } else {
+                $result.File
+            }
+        )
+        $result.Name = [IO.Path]::GetFileName($result.File.FullName); $result.Url = $Url
+        if (![IO.File]::Exists($result.File.FullName)) {
+            $result.File = [SecretStore]::FetchSecrets($result.Url, $result.File.FullName)
+        }
+        return $result
+    }
+    [PsObject] GetSecrets() {
+        if (![IO.File]::Exists($this.File.FullName)) {
+            if ([string]::IsNullOrWhiteSpace($this.Url.AbsoluteUri)) { $this.Url = [SecretStore]::get_secrets_RawUri() }
+            $this.File = [SecretStore]::FetchSecrets($this.Url, $this.File.FullName)
+        }
+        return $this.GetSecrets($this.File)
+    }
+    [PsObject] GetSecrets([String]$Path) {
+        # $IsCached = [ArgonCage]::checkCredCache($Path)
+        $password = [AesGCM]::GetPassword("[ArgonCage] password to read secrets")
+        return $this.GetSecrets($Path, $password, [string]::Empty)
+    }
+    [PsObject] GetSecrets([String]$Path, [securestring]$password, [string]$Compression) {
+        [ValidateNotNullOrEmpty()][string]$Path = [CryptoBase]::GetResolvedPath($Path)
+        if (![IO.File]::Exists($Path)) { throw [System.IO.FileNotFoundException]::new("File '$path' does not exist") }
+        if (![string]::IsNullOrWhiteSpace($Compression)) { [CryptoBase]::ValidateCompression($Compression) }
+        $da = [byte[]][AesGCM]::Decrypt([Base85]::Decode([IO.FILE]::ReadAllText($Path)), $Password, [AesGCM]::GetDerivedBytes($Password), $null, $Compression, 1)
+        return $(ConvertFrom-Csv ([System.Text.Encoding]::UTF8.GetString($da).Split('" "'))) | Select-Object -Property @{ l = 'link'; e = { if ($_.link.Contains('"')) { $_.link.replace('"', '') } else { $_.link } } }, 'user', 'pass'
+    }
+    [void] EditSecrets() {
+        if (![IO.File]::Exists($this.File.FullName)) {
+            if ([string]::IsNullOrWhiteSpace($this.Url.AbsoluteUri)) { $this.Url = [SecretStore]::get_secrets_RawUri() }
+            $this.File = [SecretStore]::FetchSecrets($this.Url, $this.File.FullName)
+        }
+        $this.EditSecrets($this.File.FullName)
+    }
+    [void] EditSecrets([String]$Path) {
+        $private:secrets = $null; $fswatcher = $null; $process = $null; $outFile = [IO.FileInfo][IO.Path]::GetTempFileName()
+        try {
+            [NetworkManager]::BlockAllOutbound()
+            if ([SecretStore]::UseVerbose) { "[+] Edit secrets started .." | Write-Host -f Magenta }
+            $this.GetSecrets($Path) | ConvertTo-Json | Out-File $OutFile.FullName -Encoding utf8BOM
+            Set-Variable -Name OutFile -Value $(Rename-Item $outFile.FullName -NewName ($outFile.BaseName + '.json') -PassThru)
+            $process = [System.Diagnostics.Process]::new()
+            $process.StartInfo.FileName = 'nvim'
+            $process.StartInfo.Arguments = $outFile.FullName
+            $process.StartInfo.WindowStyle = [System.Diagnostics.ProcessWindowStyle]::Maximized
+            $process.Start(); $fswatcher = [FileMonitor]::MonitorFile($outFile.FullName, [scriptblock]::Create("Stop-Process -Id $($process.Id) -Force"));
+            if ($null -eq $fswatcher) { Write-Warning "Failed to start FileMonitor"; Write-Host "Waiting nvim process to exit..." $process.WaitForExit() }
+            $private:secrets = [IO.FILE]::ReadAllText($outFile.FullName) | ConvertFrom-Json
+        } finally {
+            [NetworkManager]::UnblockAllOutbound()
+            if ($fswatcher) { $fswatcher.Dispose() }
+            if ($process) {
+                "[+] Neovim process {0} successfully" -f $(if (!$process.HasExited) {
+                        $process.Kill($true)
+                        "closed"
+                    } else {
+                        "exited"
+                    }
+                ) | Write-Host -f Green
+                $process.Close()
+                $process.Dispose()
+            }
+            Remove-Item $outFile.FullName -Force
+            if ([SecretStore]::UseVerbose) { "[+] FileMonitor Log saved in variable: `$$([fileMonitor]::LogvariableName)" | Write-Host -f Green }
+            if ($null -ne $secrets) { $this.UpdateSecrets($secrets, $Path) }
+            if ([SecretStore]::UseVerbosee) { "[+] Edit secrets completed." | Write-Host -f Magenta }
+        }
+    }
+    [IO.FileInfo] FetchSecrets() {
+        if ([string]::IsNullOrWhiteSpace($this.Url.AbsoluteUri)) { $this.Url = [SecretStore]::get_secrets_RawUri() }
+        return $this.FetchSecrets($this.Url)
+    }
+    static [IO.FileInfo] FetchSecrets([uri]$remote, [string]$OutFile) {
+        if ([string]::IsNullOrWhiteSpace($remote.AbsoluteUri)) { throw [System.ArgumentException]::new("Invalid Argument: remote") }
+        if ([SecretStore]::UseVerbose) { "[+] Fetching secrets from gist ..." | Write-Host -f Magenta }
+        [NetworkManager]::DownloadOptions.Set('ShowProgress', $true)
+        $og_PbLength = [NetworkManager]::DownloadOptions.ProgressBarLength
+        $og_pbMsg = [NetworkManager]::DownloadOptions.ProgressMessage
+        $Progress_Msg = "[+] Downloading secrets to {0}" -f $OutFile
+        [NetworkManager]::DownloadOptions.Set(@{
+                ProgressBarLength = $Progress_Msg.Length - 7
+                ProgressMessage   = $Progress_Msg
+            }
+        )
+        $resfile = [NetworkManager]::DownloadFile($remote, $OutFile)
+        [NetworkManager]::DownloadOptions.Set(@{
+                ProgressBarLength = $og_PbLength
+                ProgressMessage   = $og_pbMsg
+            }
+        )
+        [Console]::Write([Environment]::NewLine)
+        return $resfile
+    }
+    static [uri] get_secrets_RawUri() {
+        if ($null -eq [ArgonCage]::Tmp) { [ArgonCage]::Tmp = [SessionTmp]::new() }
+        if ($null -eq [ArgonCage]::Tmp.vars) {
+            [void][ArgonCage]::SetTMPvariables([ArgonCage]::Get_default_Config())
+        }
+        return [SecretStore]::get_secrets_RawUri([ArgonCage]::Tmp.vars.sessionConfig.Remote)
+    }
+    static [uri] get_secrets_RawUri([uri]$remote) {
+        [ValidateNotNullOrEmpty()]$remote = $remote
+        $rem_gist = $null; $raw_uri = [string]::Empty -as [uri]
+        if ([string]::IsNullOrWhiteSpace($remote)) { throw "Failed to get remote uri" }
+        try {
+            $rem_gist = [GitHub]::GetGist($remote)
+        } catch {
+            Write-Host "[-] Error: $_" -f Red
+        } finally {
+            if ($null -ne $rem_gist) {
+                $raw_uri = [uri]::new($rem_gist.files.$([ArgonCage]::SecretStore.Name).raw_url)
+            }
+        }
+        return $raw_uri
+    }
+    [void] UpdateSecrets([psObject]$InputObject, [string]$outFile) {
+        $password = [AesGCM]::GetPassword("[ArgonCage] password to save secrets")
+        $this.UpdateSecrets($InputObject, [CryptoBase]::GetUnResolvedPath($outFile), $password, '')
+    }
+    [void] UpdateSecrets([psObject]$InputObject, [string]$outFile, [securestring]$Password, [string]$Compression) {
+        if ([SecretStore]::UseVerbose) { "[+] Updating secrets .." | Write-Host -f Green }
+        if (![string]::IsNullOrWhiteSpace($Compression)) { [CryptoBase]::ValidateCompression($Compression) }
+        [Base85]::Encode([AesGCM]::Encrypt([System.Text.Encoding]::UTF8.GetBytes([string]($InputObject | ConvertTo-Csv)), $Password, [AesGCM]::GetDerivedBytes($Password), $null, $Compression, 1)) | Out-File $outFile -Encoding utf8BOM
     }
 }
 #region    HKDF2
@@ -3115,7 +3248,7 @@ class ArgonCage : CryptoBase {
         $this.PsObject.properties.add([psscriptproperty]::new('IsOffline', [scriptblock]::Create({ return ((Test-Connection github.com -Count 1).status -ne "Success") })))
     }
     static [void] ShowMenu() {
-        [ArgonCage]::GetSecretStore()
+        Write-Output ([ArgonCage]::SecretStore)
         [ArgonCage]::WriteBanner()
         # code for menu goes here ...
     }
@@ -3302,64 +3435,17 @@ class ArgonCage : CryptoBase {
         $connection.Close()
         return $Passw0rdHash
     }
-    static [SecretStore] GetSecretStore() {
-        if ($null -eq [ArgonCage]::SecretStore.Url) {
-            [ArgonCage]::SecretStore = [ArgonCage]::GetSecretStore([ArgonCage]::SecretStore.Name)
-        }
-        return [ArgonCage]::SecretStore
+
+    static [void] ClearCredsCache() {
+        [ArgonCage]::Tmp.vars.SessionConfig.CachedCredsPath | Remove-Item -Force -ErrorAction Ignore
     }
-    static [SecretStore] GetSecretStore([string]$FileName) {
-        $result = [SecretStore]::new($FileName); $__FilePath = [ArgonCage]::GetUnResolvedPath($FileName)
-        $result.File = $(if ([IO.File]::Exists($__FilePath)) {
-                Write-Host "    Found secrets file '$([IO.Path]::GetFileName($__FilePath))'" -f Green
-                Get-Item $__FilePath
-            } else {
-                [ArgonCage]::SecretStore.File
-            }
-        )
-        $result.Name = [IO.Path]::GetFileName($result.File.FullName)
-        $result.Url = $(if ($null -eq [ArgonCage]::SecretStore.Url) { [ArgonCage]::GetSecretsRawUri() } else { [ArgonCage]::SecretStore.Url })
-        if (![IO.File]::Exists($result.File.FullName)) {
-            if ([ArgonCage]::Tmp.vars.UseVerbose) { "[+] Fetching secrets from gist ..." | Write-Host -f Magenta }
-            [NetworkManager]::DownloadOptions.Set('ShowProgress', $true)
-            $og_PbLength = [NetworkManager]::DownloadOptions.ProgressBarLength
-            $og_pbMsg = [NetworkManager]::DownloadOptions.ProgressMessage
-            $Progress_Msg = "[+] Downloading secrets to {0}" -f $result.File.FullName
-            [NetworkManager]::DownloadOptions.Set(@{
-                    ProgressBarLength = $Progress_Msg.Length - 7
-                    ProgressMessage   = $Progress_Msg
-                }
-            )
-            $result.File = [NetworkManager]::DownloadFile($result.Url, $result.File.FullName)
-            [NetworkManager]::DownloadOptions.Set(@{
-                    ProgressBarLength = $og_PbLength
-                    ProgressMessage   = $og_pbMsg
-                }
-            )
-            [Console]::Write([Environment]::NewLine)
+    static [securestring] ResolveSecret([securestring]$secret, [string]$cacheTag) {
+        $cache = [ArgonCage]::ReadCredsCache().Where({ $_.Tag -eq $cacheTag })
+        if ($null -eq $cache) {
+            throw "Secret not found in cache. Please make sure creds caching is enabled."
         }
-        return $result
-    }
-    static [uri] GetSecretsRawUri() {
-        if ($null -eq [ArgonCage]::Tmp) { [ArgonCage]::Tmp = [SessionTmp]::new() }
-        if ($null -eq [ArgonCage]::Tmp.vars) {
-            [void][ArgonCage]::SetTMPvariables([ArgonCage]::Get_default_Config())
-        }
-        $rem_gist = $null; $raw_uri = [string]::Empty -as [uri]
-        $rem_cUri = [ArgonCage]::Tmp.vars.config.Remote
-        if ([string]::IsNullOrWhiteSpace($rem_cUri)) {
-            throw "Failed to get remote uri"
-        }
-        try {
-            $rem_gist = [GitHub]::GetGist($rem_cUri)
-        } catch {
-            Write-Host "[-] Error: $_" -f Red
-        } finally {
-            if ($null -ne $rem_gist) {
-                $raw_uri = [uri]::new($rem_gist.files.$([ArgonCage]::SecretStore.Name).raw_url)
-            }
-        }
-        return $raw_uri
+        $TokenSTR = $cache.Token
+        return [HKDF2]::Resolve($secret, $TokenSTR)
     }
     static [RecordMap[]] ReadCredsCache() {
         if ($null -eq [ArgonCage]::Tmp) { [ArgonCage]::Tmp = [SessionTmp]::new() }
@@ -3446,80 +3532,6 @@ class ArgonCage : CryptoBase {
     }
     static [bool] CheckCredCache([string]$TagName) {
         return [ArgonCage]::Tmp.vars.CachedCreds.Tag -contains $TagName
-    }
-    static [void] ClearCredsCache() {
-        [ArgonCage]::Tmp.vars.SessionConfig.CachedCredsPath | Remove-Item -Force -ErrorAction Ignore
-    }
-    static [PsObject] GetSecrets() {
-        if (![IO.File]::Exists([ArgonCage]::SecretStore.File) -or ($null -eq [ArgonCage]::SecretStore.Url)) { [ArgonCage]::SecretStore = [ArgonCage]::GetSecretStore() }
-        return [ArgonCage]::GetSecrets([ArgonCage]::SecretStore.File)
-    }
-    static [PsObject] GetSecrets([String]$Path) {
-        # $IsCached = [ArgonCage]::checkCredCache($Path)
-        $password = [AesGCM]::GetPassword("[ArgonCage] password to read secrets")
-        return [ArgonCage]::GetSecrets($Path, $password, [string]::Empty)
-    }
-    static [PsObject] GetSecrets([String]$Path, [securestring]$password, [string]$Compression) {
-        [ValidateNotNullOrEmpty()][string]$Path = [ArgonCage]::GetResolvedPath($Path)
-        if (![IO.File]::Exists($Path)) { throw [System.IO.FileNotFoundException]::new("File '$path' does not exist") }
-        if (![string]::IsNullOrWhiteSpace($Compression)) { [ArgonCage]::ValidateCompression($Compression) }
-        $da = [byte[]][AesGCM]::Decrypt([Base85]::Decode([IO.FILE]::ReadAllText($Path)), $Password, [AesGCM]::GetDerivedBytes($Password), $null, $Compression, 1)
-        return $(ConvertFrom-Csv ([System.Text.Encoding]::UTF8.GetString($da).Split('" "'))) | Select-Object -Property @{ l = 'link'; e = { if ($_.link.Contains('"')) { $_.link.replace('"', '') } else { $_.link } } }, 'user', 'pass'
-    }
-    static [void] EditSecrets() {
-        if (![IO.File]::Exists([ArgonCage]::SecretStore.File.FullName) -or ($null -eq [ArgonCage]::SecretStore.Url)) { [ArgonCage]::SecretStore = [ArgonCage]::GetSecretStore() }
-        [ArgonCage]::EditSecrets([ArgonCage]::SecretStore.File.FullName)
-    }
-    static [void] EditSecrets([String]$Path) {
-        $private:secrets = $null; $fswatcher = $null; $process = $null; $outFile = [IO.FileInfo][IO.Path]::GetTempFileName()
-        try {
-            [NetworkManager]::BlockAllOutbound()
-            if ([ArgonCage]::Tmp.vars.UseVerbose) { "[+] Edit secrets started .." | Write-Host -f Magenta }
-            [ArgonCage]::GetSecrets($Path) | ConvertTo-Json | Out-File $OutFile.FullName -Encoding utf8BOM
-            Set-Variable -Name OutFile -Value $(Rename-Item $outFile.FullName -NewName ($outFile.BaseName + '.json') -PassThru)
-            $process = [System.Diagnostics.Process]::new()
-            $process.StartInfo.FileName = 'nvim'
-            $process.StartInfo.Arguments = $outFile.FullName
-            $process.StartInfo.WindowStyle = [System.Diagnostics.ProcessWindowStyle]::Maximized
-            $process.Start(); $fswatcher = [FileMonitor]::MonitorFile($outFile.FullName, [scriptblock]::Create("Stop-Process -Id $($process.Id) -Force"));
-            if ($null -eq $fswatcher) { Write-Warning "Failed to start FileMonitor"; Write-Host "Waiting nvim process to exit..." $process.WaitForExit() }
-            $private:secrets = [IO.FILE]::ReadAllText($outFile.FullName) | ConvertFrom-Json
-        } finally {
-            [NetworkManager]::UnblockAllOutbound()
-            if ($fswatcher) { $fswatcher.Dispose() }
-            if ($process) {
-                "[+] Neovim process {0} successfully" -f $(if (!$process.HasExited) {
-                        $process.Kill($true)
-                        "closed"
-                    } else {
-                        "exited"
-                    }
-                ) | Write-Host -f Green
-                $process.Close()
-                $process.Dispose()
-            }
-            Remove-Item $outFile.FullName -Force
-            if ([ArgonCage]::Tmp.vars.UseVerbose) { "[+] FileMonitor Log saved in variable: `$$([fileMonitor]::LogvariableName)" | Write-Host -f Green }
-            if ($null -ne $secrets) { [ArgonCage]::UpdateSecrets($secrets, $Path) }
-            if ([ArgonCage]::Tmp.vars.UseVerbose) { "[+] Edit secrets completed." | Write-Host -f Magenta }
-        }
-    }
-    static [void] UpdateSecrets([psObject]$InputObject, [string]$outFile) {
-        $password = [AesGCM]::GetPassword("[ArgonCage] password to save secrets")
-        [ArgonCage]::UpdateSecrets($InputObject, [ArgonCage]::GetUnResolvedPath($outFile), $password, '')
-    }
-    static [void] UpdateSecrets([psObject]$InputObject, [string]$outFile, [securestring]$Password, [string]$Compression) {
-        if ([ArgonCage]::Tmp.vars.UseVerbose) { "[+] Updating secrets .." | Write-Host -f Green }
-        if (![string]::IsNullOrWhiteSpace($Compression)) { [ArgonCage]::ValidateCompression($Compression) }
-        [Base85]::Encode([AesGCM]::Encrypt([System.Text.Encoding]::UTF8.GetBytes([string]($InputObject | ConvertTo-Csv)), $Password, [AesGCM]::GetDerivedBytes($Password), $null, $Compression, 1)) | Out-File $outFile -Encoding utf8BOM
-    }
-    static [securestring] ResolveSecret([securestring]$secret, [string]$cacheTag) {
-        $cache = [ArgonCage]::ReadCredsCache().Where({ $_.Tag -eq $cacheTag })
-        if ($null -eq $cache) {
-            throw "Secret not found in cache. Please make sure creds caching is enabled."
-        }
-        $TokenSTR = $cache.Token
-        return [HKDF2]::Resolve($secret, $TokenSTR)
     }
     static [ConsoleKeyInfo] ReadInput() {
         $originalTreatControlCAsInput = [System.Console]::TreatControlCAsInput

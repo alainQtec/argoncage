@@ -715,7 +715,7 @@ class CryptoBase {
     static [void] Create_Dir([System.IO.DirectoryInfo]$Path) {
         [ValidateNotNullOrEmpty()][System.IO.DirectoryInfo]$Path = $Path
         $nF = @(); $p = $Path; while (!$p.Exists) { $nF += $p; $p = $p.Parent }
-        [Array]::Reverse($nF); $nF | ForEach-Object { $_.Create(); Write-Verbose "Created $_" }
+        [Array]::Reverse($nF); $nF | ForEach-Object { $_.Create(); Write-Debug "Created $_" }
     }
     [securestring] static GetPassword() {
         $ThrowOnFailure = $true
@@ -3387,7 +3387,7 @@ class ArgonCage : CryptoBase {
         $ca = @(); if (![IO.File]::Exists($FilePath)) {
             if ($sc.SaveCredsCache) {
                 New-Item -Path $FilePath -ItemType File -Force -ErrorAction Ignore | Out-Null
-                Write-Verbose "Saving default cache: rwsu"
+                Write-Debug "Saving default cache: rwsu"
                 $ca += [ArgonCage]::UpdateCredsCache((whoami), $_p, 'rwsu', $true)
             } else {
                 Write-Host "[ArgonCage] FileNotFoundException: No such file.`n$(' '*12)File name: $FilePath" -f Yellow

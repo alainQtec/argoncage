@@ -2797,22 +2797,23 @@ class FileMonitor {
     }
 }
 
-class SecretStore {
+class vault {
     [ValidateNotNullOrEmpty()][string]$Name
-    [ValidateNotNullOrEmpty()][uri]$Url
+    [ValidateNotNullOrEmpty()][uri]$Remote
     static hidden [ValidateNotNullOrEmpty()][string]$DataPath
     static hidden [bool]$UseVerbose = [bool]$((Get-Variable verbosePreference -ValueOnly) -eq "continue")
-    SecretStore([string]$Name) {
-        $this.Name = $Name
-        if ([string]::IsNullOrWhiteSpace([SecretStore]::DataPath)) {
-            [SecretStore]::DataPath = [IO.Path]::Combine([cryptobase]::Get_dataPath('ArgonCage', 'Data'), 'secrets')
+    vault([string]$FilePath) {
+        [ValidateNotNullOrEmpty()][string]$FilePath = $FilePath
+        $this.Name = [IO.Path]::GetFileNameWithoutExtension([CryptoBase]::GetUnResolvedPath($FilePath))
+        if ([string]::IsNullOrWhiteSpace([vault]::DataPath)) {
+            [vault]::DataPath = [IO.Path]::Combine([cryptobase]::Get_dataPath('ArgonCage', 'Data'), 'secrets')
         }
         $this.psobject.Properties.Add([psscriptproperty]::new('File', {
-                    return [IO.FileInfo]::new([IO.Path]::Combine([SecretStore]::DataPath, $this.Name))
+                    return [IO.FileInfo]::new([IO.Path]::Combine([vault]::DataPath, $this.Name))
                 }, {
                     param($value)
                     if ($value -is [IO.FileInfo]) {
-                        [SecretStore]::DataPath = $value.Directory.FullName
+                        [vault]::DataPath = $value.Directory.FullName
                         $this.Name = $value.Name
                     } else {
                         throw "Invalid value assigned to File property"
@@ -2829,11 +2830,15 @@ class SecretStore {
                 }, { throw "Cannot set Size property" }
             )
         )
+        if ($null -eq [ArgonCage]::Tmp.vars) { [ArgonCage]::SetTMPvariables() }else {
+            Write-Verbose "3"
+            $this.Remote = [vault]::get_secrets_RawUri($this.Name, [ArgonCage]::Tmp.vars.sessionConfig.Remote)
+        }
     }
-    static [SecretStore] Create([string]$FileName, [uri]$Url) {
-        [ValidateNotNullOrEmpty()][string]$FileName = $FileName
-        [ValidateNotNullOrEmpty()][uri]$Url = $Url
-        $result = [SecretStore]::new($FileName); $__FilePath = [CryptoBase]::GetUnResolvedPath($FileName)
+    static [vault] Create([string]$FilePath, [uri]$RemoteUri) {
+        [ValidateNotNullOrEmpty()][string]$FileName = $FilePath
+        [ValidateNotNullOrEmpty()][uri]$RemoteUri = $RemoteUri
+        $result = [vault]::new($FilePath); $__FilePath = [CryptoBase]::GetUnResolvedPath($FilePath)
         $result.File = $(if ([IO.File]::Exists($__FilePath)) {
                 Write-Host "    Found secrets file '$([IO.Path]::GetFileName($__FilePath))'" -f Green
                 Get-Item $__FilePath
@@ -2841,16 +2846,16 @@ class SecretStore {
                 $result.File
             }
         )
-        $result.Name = [IO.Path]::GetFileName($result.File.FullName); $result.Url = $Url
+        $result.Name = [IO.Path]::GetFileName($result.File.FullName); $result.Remote = $RemoteUri
         if (![IO.File]::Exists($result.File.FullName)) {
-            $result.File = [SecretStore]::FetchSecrets($result.Url, $result.File.FullName)
+            $result.File = [vault]::FetchSecrets($result.Remote, $result.File.FullName)
         }
         return $result
     }
     [PsObject] GetSecrets() {
         if (![IO.File]::Exists($this.File.FullName)) {
-            if ([string]::IsNullOrWhiteSpace($this.Url.AbsoluteUri)) { $this.Url = [SecretStore]::get_secrets_RawUri() }
-            $this.File = [SecretStore]::FetchSecrets($this.Url, $this.File.FullName)
+            if ([string]::IsNullOrWhiteSpace($this.Remote.AbsoluteUri)) { $this.Set_RemoteUri() }
+            $this.File = [vault]::FetchSecrets($this.Remote, $this.File.FullName)
         }
         return $this.GetSecrets($this.File)
     }
@@ -2868,8 +2873,8 @@ class SecretStore {
     }
     [void] EditSecrets() {
         if (![IO.File]::Exists($this.File.FullName)) {
-            if ([string]::IsNullOrWhiteSpace($this.Url.AbsoluteUri)) { $this.Url = [SecretStore]::get_secrets_RawUri() }
-            $this.File = [SecretStore]::FetchSecrets($this.Url, $this.File.FullName)
+            if ([string]::IsNullOrWhiteSpace($this.Remote.AbsoluteUri)) { $this.Set_RemoteUri() }
+            $this.File = [vault]::FetchSecrets($this.Remote, $this.File.FullName)
         }
         $this.EditSecrets($this.File.FullName)
     }
@@ -2877,7 +2882,7 @@ class SecretStore {
         $private:secrets = $null; $fswatcher = $null; $process = $null; $outFile = [IO.FileInfo][IO.Path]::GetTempFileName()
         try {
             [NetworkManager]::BlockAllOutbound()
-            if ([SecretStore]::UseVerbose) { "[+] Edit secrets started .." | Write-Host -f Magenta }
+            if ([vault]::UseVerbose) { "[+] Edit secrets started .." | Write-Host -f Magenta }
             $this.GetSecrets($Path) | ConvertTo-Json | Out-File $OutFile.FullName -Encoding utf8BOM
             Set-Variable -Name OutFile -Value $(Rename-Item $outFile.FullName -NewName ($outFile.BaseName + '.json') -PassThru)
             $process = [System.Diagnostics.Process]::new()
@@ -2902,18 +2907,18 @@ class SecretStore {
                 $process.Dispose()
             }
             Remove-Item $outFile.FullName -Force
-            if ([SecretStore]::UseVerbose) { "[+] FileMonitor Log saved in variable: `$$([fileMonitor]::LogvariableName)" | Write-Host -f Green }
+            if ([vault]::UseVerbose) { "[+] FileMonitor Log saved in variable: `$$([fileMonitor]::LogvariableName)" | Write-Host -f Green }
             if ($null -ne $secrets) { $this.UpdateSecrets($secrets, $Path) }
-            if ([SecretStore]::UseVerbosee) { "[+] Edit secrets completed." | Write-Host -f Magenta }
+            if ([vault]::UseVerbosee) { "[+] Edit secrets completed." | Write-Host -f Magenta }
         }
     }
     [IO.FileInfo] FetchSecrets() {
-        if ([string]::IsNullOrWhiteSpace($this.Url.AbsoluteUri)) { $this.Url = [SecretStore]::get_secrets_RawUri() }
-        return $this.FetchSecrets($this.Url)
+        if ([string]::IsNullOrWhiteSpace($this.Remote.AbsoluteUri)) { $this.Set_RemoteUri() }
+        return $this.FetchSecrets($this.Remote)
     }
     static [IO.FileInfo] FetchSecrets([uri]$remote, [string]$OutFile) {
         if ([string]::IsNullOrWhiteSpace($remote.AbsoluteUri)) { throw [System.ArgumentException]::new("Invalid Argument: remote") }
-        if ([SecretStore]::UseVerbose) { "[+] Fetching secrets from gist ..." | Write-Host -f Magenta }
+        if ([vault]::UseVerbose) { "[+] Fetching secrets from gist ..." | Write-Host -f Magenta }
         [NetworkManager]::DownloadOptions.Set('ShowProgress', $true)
         $og_PbLength = [NetworkManager]::DownloadOptions.ProgressBarLength
         $og_pbMsg = [NetworkManager]::DownloadOptions.ProgressMessage
@@ -2933,14 +2938,15 @@ class SecretStore {
         return $resfile
     }
     static [uri] get_secrets_RawUri() {
-        if ($null -eq [ArgonCage]::Tmp) { [ArgonCage]::Tmp = [SessionTmp]::new() }
-        if ($null -eq [ArgonCage]::Tmp.vars) {
-            [void][ArgonCage]::SetTMPvariables([ArgonCage]::Get_default_Config())
+        if ($null -eq [ArgonCage]::Tmp) {
+            [ArgonCage]::Tmp = [SessionTmp]::new()
+            [ArgonCage]::SetTMPvariables()
         }
-        return [SecretStore]::get_secrets_RawUri([ArgonCage]::Tmp.vars.sessionConfig.Remote)
+        return [vault]::get_secrets_RawUri([ArgonCage]::vault.Name, [ArgonCage]::Tmp.vars.sessionConfig.Remote)
     }
-    static [uri] get_secrets_RawUri([uri]$remote) {
-        [ValidateNotNullOrEmpty()]$remote = $remote
+    static [uri] get_secrets_RawUri([string]$vaultName, [uri]$remote) {
+        [ValidateNotNullOrEmpty()][uri]$remote = $remote
+        [ValidateNotNullOrEmpty()][string]$vaultName = $vaultName
         $rem_gist = $null; $raw_uri = [string]::Empty -as [uri]
         if ([string]::IsNullOrWhiteSpace($remote)) { throw "Failed to get remote uri" }
         try {
@@ -2949,7 +2955,7 @@ class SecretStore {
             Write-Host "[-] Error: $_" -f Red
         } finally {
             if ($null -ne $rem_gist) {
-                $raw_uri = [uri]::new($rem_gist.files.$([ArgonCage]::SecretStore.Name).raw_url)
+                $raw_uri = [uri]::new($rem_gist.files.$vaultName.raw_url)
             }
         }
         return $raw_uri
@@ -2959,9 +2965,16 @@ class SecretStore {
         $this.UpdateSecrets($InputObject, [CryptoBase]::GetUnResolvedPath($outFile), $password, '')
     }
     [void] UpdateSecrets([psObject]$InputObject, [string]$outFile, [securestring]$Password, [string]$Compression) {
-        if ([SecretStore]::UseVerbose) { "[+] Updating secrets .." | Write-Host -f Green }
+        if ([vault]::UseVerbose) { "[+] Updating secrets .." | Write-Host -f Green }
         if (![string]::IsNullOrWhiteSpace($Compression)) { [CryptoBase]::ValidateCompression($Compression) }
         [Base85]::Encode([AesGCM]::Encrypt([System.Text.Encoding]::UTF8.GetBytes([string]($InputObject | ConvertTo-Csv)), $Password, [AesGCM]::GetDerivedBytes($Password), $null, $Compression, 1)) | Out-File $outFile -Encoding utf8BOM
+    }
+    hidden [void] Set_RemoteUri() {
+        if ([string]::IsNullOrWhiteSpace($this.Remote.AbsoluteUri)) {
+            $this.Remote = [vault]::get_secrets_RawUri()
+        } else {
+            $this.Remote = [vault]::get_secrets_RawUri($this.Name, $this.Remote)
+        }
     }
 }
 #region    HKDF2
@@ -3236,19 +3249,22 @@ class HKDF2 {
 class ArgonCage : CryptoBase {
     [ValidateNotNullOrEmpty()][RecordMap] $Config
     [ValidateNotNullOrEmpty()][version] $Version
-    static hidden [ValidateNotNull()][SessionTmp] $Tmp = [SessionTmp]::new()
-    static [SecretStore] $SecretStore = [SecretStore]::new("secret_Info")
+    static hidden [ValidateNotNull()][vault] $vault
+    static hidden [ValidateNotNull()][SessionTmp] $Tmp
     static [System.Collections.ObjectModel.Collection[CliArt]] $banners = @()
     static [ValidateNotNull()][EncryptionScope] $EncryptionScope = [EncryptionScope]::User
 
     ArgonCage() {
         $this.Version = [ArgonCage]::GetVersion()
-        $this.PsObject.properties.add([psscriptproperty]::new('DataPath', [scriptblock]::Create({ $path = [ArgonCage]::Get_dataPath('ArgonCage', 'Data'); [SecretStore]::DataPath = [IO.Path]::Combine($path, 'secrets'); return $path })))
-        $this.SetTMPvariables(); # $this.SyncConfigs()
+        if ($null -eq [ArgonCage]::Tmp) { [ArgonCage]::Tmp = [SessionTmp]::new() }
+        $this.SetConfigs(); [ArgonCage]::SetTMPvariables($this.Config)
+        if ($null -eq [ArgonCage]::vault) { [ArgonCage]::vault = [vault]::new("secret_Info") }
+        $this.PsObject.properties.add([psscriptproperty]::new('DataPath', [scriptblock]::Create({ $path = [ArgonCage]::Get_dataPath('ArgonCage', 'Data'); [vault]::DataPath = [IO.Path]::Combine($path, 'secrets'); return $path })))
+        # $this.SyncConfigs()
         $this.PsObject.properties.add([psscriptproperty]::new('IsOffline', [scriptblock]::Create({ return ((Test-Connection github.com -Count 1).status -ne "Success") })))
     }
     static [void] ShowMenu() {
-        Write-Output ([ArgonCage]::SecretStore)
+        Write-Output ([ArgonCage]::vault)
         [ArgonCage]::WriteBanner()
         # code for menu goes here ...
     }
@@ -3449,7 +3465,7 @@ class ArgonCage : CryptoBase {
     }
     static [RecordMap[]] ReadCredsCache() {
         if ($null -eq [ArgonCage]::Tmp) { [ArgonCage]::Tmp = [SessionTmp]::new() }
-        if ($null -eq [ArgonCage]::Tmp.vars.SessionId) { Write-Verbose "Creating new session ..."; [ArgonCage]::SetTMPvariables([RecordMap]::new([ArgonCage]::Get_default_Config())) }
+        if ($null -eq [ArgonCage]::Tmp.vars.SessionId) { Write-Verbose "Creating new session ..."; [ArgonCage]::SetTMPvariables() }
         $sc = [ArgonCage]::Tmp.vars.SessionConfig; [ValidateNotNullOrEmpty()][RecordMap]$sc = $sc
         #TODO: sessionConfig should be kept as securestring
         #This line should be decrypting the sessionConfig. ie: $sc object.
@@ -3543,9 +3559,8 @@ class ArgonCage : CryptoBase {
         [System.Console]::TreatControlCAsInput = $originalTreatControlCAsInput
         return $key
     }
-    hidden [void] SetTMPvariables() {
-        if ($null -eq $this.Config) { $this.SetConfigs() }
-        [ArgonCage]::SetTMPvariables($this.Config)
+    static hidden [void] SetTMPvariables() {
+        [ArgonCage]::SetTMPvariables([RecordMap]::new([ArgonCage]::Get_default_Config()))
     }
     static hidden [void] SetTMPvariables([RecordMap]$Config) {
         # Sets default variables and stores them in $this::Tmp.vars

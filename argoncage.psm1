@@ -2924,10 +2924,10 @@ class vault {
         )
         $this.psobject.Properties.Add([psscriptproperty]::new('Cache', {
                     if ($null -eq [VaultCache].Object) {
-                        [VaultCache] | Add-Member -Name Object -Force -MemberType ScriptProperty -Value { return [VaultCache]::new() }.GetNewClosure() -SecondValue { throw [System.Management.Automation.SetValueInvocationException]::new() }
+                        [VaultCache] | Add-Member -Name Object -Force -MemberType ScriptProperty -Value { return [VaultCache]::new() }.GetNewClosure() -SecondValue { throw [System.InvalidOperationException]::new("Cannot change Cache") }
                     }
                     return [VaultCache].Object
-                }, { throw "Cannot set Cache property" }
+                }, { throw [System.InvalidOperationException]::new("Cannot set Cache") }
             )
         )
         if ($null -eq [ArgonCage]::Tmp.vars) { [ArgonCage]::SetTMPvariables() }else {
@@ -3348,19 +3348,23 @@ class HKDF2 {
 #     Explanation of the function or its result. You can include multiple examples with additional .EXAMPLE lines
 class ArgonCage : CryptoBase {
     [ValidateNotNullOrEmpty()][RecordMap] $Config
-    [ValidateNotNullOrEmpty()][version] $Version
     static hidden [ValidateNotNull()][vault] $vault
     static hidden [ValidateNotNull()][SessionTmp] $Tmp
     static [System.Collections.ObjectModel.Collection[CliArt]] $banners = @()
     static [ValidateNotNull()][EncryptionScope] $EncryptionScope = [EncryptionScope]::User
 
     ArgonCage() {
-        $this.Version = [ArgonCage]::GetVersion()
         if ($null -eq [ArgonCage]::Tmp) { [ArgonCage]::Tmp = [SessionTmp]::new() }
         $this.SetConfigs(); [ArgonCage]::SetTMPvariables($this.Config)
         $this.PsObject.properties.add([psscriptproperty]::new('DataPath', [scriptblock]::Create({ $path = [ArgonCage]::Get_dataPath('ArgonCage', 'Data'); [vault]::DataPath = [IO.Path]::Combine($path, 'secrets'); return $path })))
         # $this.SyncConfigs()
         $this.PsObject.properties.add([psscriptproperty]::new('IsOffline', [scriptblock]::Create({ return ((Test-Connection github.com -Count 1).status -ne "Success") })))
+        $this.psobject.Properties.Add([psscriptproperty]::new('Version', {
+                    if ($null -eq [ArgonCage].Version) { [ArgonCage] | Add-Member -Name Version -Force -MemberType ScriptProperty -Value { return [ArgonCage]::GetVersion() }.GetNewClosure() -SecondValue { throw [System.InvalidOperationException]::new("Cannot set Version") } }
+                    return [ArgonCage].Version
+                }, { throw [System.InvalidOperationException]::new("Cannot set Version") }
+            )
+        )
     }
     static [void] ShowMenu() {
         Write-Output ([ArgonCage]::vault)

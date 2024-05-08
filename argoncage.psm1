@@ -2797,14 +2797,106 @@ class FileMonitor {
     }
 }
 
+class vaultCache {
+    vaultCache() {}
+    [RecordMap[]] Read() {
+        if ($null -eq [ArgonCage]::Tmp) { [ArgonCage]::Tmp = [SessionTmp]::new() }
+        if ($null -eq [ArgonCage]::Tmp.vars.SessionId) { Write-Verbose "Creating new session ..."; [ArgonCage]::SetTMPvariables() }
+        $sc = [ArgonCage]::Tmp.vars.SessionConfig; [ValidateNotNullOrEmpty()][RecordMap]$sc = $sc
+        #TODO: sessionConfig should be kept as securestring
+        #This line should be decrypting the sessionConfig. ie: $sc object.
+        if ([string]::IsNullOrWhiteSpace($sc.CachedCredsPath)) {
+            throw [IO.FileNotFoundException]::new("No such file. i.e: ::..SessionConfig.CachedCredsPath is not set")
+        }
+        if (!$sc.SavevaultCache) {
+            Write-Warning "Enable credential Caching in your config. or run [ArgonCage]::Tmp.vars.Set('SavevaultCache', `$true)"
+            return $null
+        }
+        return $this.Read([xconvert]::ToSecurestring($sc.CachedCredsPath))
+    }
+    [RecordMap[]] Read([securestring]$CachedCredsPath) {
+        $FilePath = ''; $credspath = ''; $sc = [ArgonCage]::Tmp.vars.SessionConfig; [ValidateNotNullOrEmpty()][RecordMap]$sc = $sc
+        Set-Variable -Name "FilePath" -Visibility Private -Option Private -Value ([xconvert]::Tostring($CachedCredsPath))
+        if ([string]::IsNullOrWhiteSpace($FilePath)) { throw "InvalidArgument: `$FilePath" }
+        Set-Variable -Name "credspath" -Visibility Private -Option Private -Value ([IO.Path]::GetDirectoryName($FilePath))
+        if ([string]::IsNullOrWhiteSpace($credspath)) { throw "InvalidArgument: `$credspath" }
+        if (!(Test-Path -Path $credspath -PathType Container -ErrorAction Ignore)) { [ArgonCage]::Create_Dir($credspath) }
+        $_p = [xconvert]::ToSecurestring([ArgonCage]::GetUniqueMachineId())
+        $ca = @(); if (![IO.File]::Exists($FilePath)) {
+            if ($sc.SavevaultCache) {
+                New-Item -Path $FilePath -ItemType File -Force -ErrorAction Ignore | Out-Null
+                Write-Debug "Saving default cache: rwsu"
+                $ca += [ArgonCage]::vault.Cache.Update((whoami), $_p, 'rwsu', $true)
+            } else {
+                Write-Host "[ArgonCage] FileNotFoundException: No such file.`n$(' '*12)File name: $FilePath" -f Yellow
+            }
+            return $ca
+        }
+        $tc = [IO.FILE]::ReadAllText($FilePath); if ([string]::IsNullOrWhiteSpace($tc.Trim())) { return $ca }
+        $da = [byte[]][AesGCM]::Decrypt([Base85]::Decode($tc), $_p, [AesGCM]::GetDerivedBytes($_p), $null, 'Gzip', 1)
+        $([System.Text.Encoding]::UTF8.GetString($da) | ConvertFrom-Json).ForEach({ $ca += [RecordMap]::new([xconvert]::ToHashTable($_)) })
+        return $ca
+    }
+    [RecordMap[]] Update([string]$userName, [securestring]$password, [string]$TagName) {
+        return $this.Update([pscredential]::new($userName, $password), $TagName, $false)
+    }
+    [RecordMap[]] Update([string]$userName, [securestring]$password, [string]$TagName, [bool]$Force) {
+        return $this.Update([pscredential]::new($userName, $password), $TagName, $Force)
+    }
+    [RecordMap[]] Update([pscredential]$Credential, [string]$TagName, [bool]$Force) {
+        $sessionConfig = [ArgonCage]::Tmp.vars.SessionConfig
+        [ValidateNotNullOrEmpty()][RecordMap]$sessionConfig = $sessionConfig
+        $c_array = @()
+        $c_array += @{ $TagName = $Credential }
+        $results = @(); $c_array.keys | ForEach-Object {
+            $_TagName = $_; $_Credential = $c_array.$_
+            if ([string]::IsNullOrWhiteSpace($_TagName)) { throw "InvalidArgument : TagName" }
+            [ValidateNotNullOrEmpty()][pscredential]$_Credential = $_Credential
+            $results += $this.Read()
+            $IsNewTag = $_TagName -notin $results.Tag
+            if ($IsNewTag) {
+                if (!$Force) {
+                    Throw [System.InvalidOperationException]::new("CACHE_NOT_FOUND! Please make sure the tag already exist, or use -Force to auto add.")
+                }
+            }
+            Write-Verbose "$(if ($IsNewTag) { "Adding new" } else { "Updating" }) tag: '$_TagName' ..."
+            if ($results.Count -eq 0 -or $IsNewTag) {
+                $results += [RecordMap]::new(@{
+                        User  = $_Credential.UserName
+                        Tag   = $_TagName
+                        Token = [HKDF2]::GetToken($_Credential.Password)
+                    }
+                )
+            } else {
+                $results.Where({ $_.Tag -eq $_TagName }).Set('Token', [HKDF2]::GetToken($_Credential.Password))
+            }
+            if ($sessionConfig.SavevaultCache) {
+                $_p = [xconvert]::ToSecurestring([ArgonCage]::GetUniqueMachineId())
+                Set-Content -Value $([Base85]::Encode([AesGCM]::Encrypt(
+                            [System.Text.Encoding]::UTF8.GetBytes([string]($results | ConvertTo-Json)),
+                            $_p, [AesGCM]::GetDerivedBytes($_p), $null, 'Gzip', 1
+                        )
+                    )
+                ) -Path ($sessionConfig.CachedCredsPath) -Encoding utf8BOM
+            }
+        }
+        return $results
+    }
+    [void] Clear() {
+        [vaultCache] | Add-Member -Name Object -Force -MemberType ScriptProperty -Value { $null }.GetNewClosure()
+        [ArgonCage]::Tmp.vars.SessionConfig.CachedCredsPath | Remove-Item -Force -ErrorAction Ignore
+    }
+}
+
 class vault {
     [ValidateNotNullOrEmpty()][string]$Name
     [ValidateNotNullOrEmpty()][uri]$Remote
+    hidden [vaultCache]$Cache
     static hidden [ValidateNotNullOrEmpty()][string]$DataPath
     static hidden [bool]$UseVerbose = [bool]$((Get-Variable verbosePreference -ValueOnly) -eq "continue")
-    vault([string]$FilePath) {
-        [ValidateNotNullOrEmpty()][string]$FilePath = $FilePath
-        $this.Name = [IO.Path]::GetFileNameWithoutExtension([CryptoBase]::GetUnResolvedPath($FilePath))
+    vault([string]$Name) {
+        if ([string]::IsNullOrWhiteSpace($Name)) { throw [InvalidArgumentException]::new($Name) }
+        $this.Name = $Name
         if ([string]::IsNullOrWhiteSpace([vault]::DataPath)) {
             [vault]::DataPath = [IO.Path]::Combine([cryptobase]::Get_dataPath('ArgonCage', 'Data'), 'secrets')
         }
@@ -2830,15 +2922,25 @@ class vault {
                 }, { throw "Cannot set Size property" }
             )
         )
+        $this.psobject.Properties.Add([psscriptproperty]::new('Cache', {
+                    if ($null -eq [vaultCache].Object) {
+                        Write-Debug ":: Add [vaultCache].Object"
+                        [vaultCache] | Add-Member -Name Object -Force -MemberType ScriptProperty -Value { return [vaultCache]::new() }.GetNewClosure() -SecondValue { throw [System.Management.Automation.SetValueInvocationException]::new() }
+                    }
+                    return [vaultCache].Object
+                }, { throw "Cannot set Cache property" }
+            )
+        )
         if ($null -eq [ArgonCage]::Tmp.vars) { [ArgonCage]::SetTMPvariables() }else {
-            Write-Verbose "3"
+            Write-Verbose "Set remote uri for Vault name: $($this.Name)..."
             $this.Remote = [vault]::get_secrets_RawUri($this.Name, [ArgonCage]::Tmp.vars.sessionConfig.Remote)
         }
     }
     static [vault] Create([string]$FilePath, [uri]$RemoteUri) {
         [ValidateNotNullOrEmpty()][string]$FileName = $FilePath
         [ValidateNotNullOrEmpty()][uri]$RemoteUri = $RemoteUri
-        $result = [vault]::new($FilePath); $__FilePath = [CryptoBase]::GetUnResolvedPath($FilePath)
+        $__FilePath = [CryptoBase]::GetUnResolvedPath($FilePath);
+        $result = [vault]::new([IO.Path]::GetFileName($__FilePath));
         $result.File = $(if ([IO.File]::Exists($__FilePath)) {
                 Write-Host "    Found secrets file '$([IO.Path]::GetFileName($__FilePath))'" -f Green
                 Get-Item $__FilePath
@@ -2914,7 +3016,7 @@ class vault {
     }
     [IO.FileInfo] FetchSecrets() {
         if ([string]::IsNullOrWhiteSpace($this.Remote.AbsoluteUri)) { $this.Set_RemoteUri() }
-        return $this.FetchSecrets($this.Remote)
+        return [vault]::FetchSecrets($this.Remote, $this.File.FullName)
     }
     static [IO.FileInfo] FetchSecrets([uri]$remote, [string]$OutFile) {
         if ([string]::IsNullOrWhiteSpace($remote.AbsoluteUri)) { throw [System.ArgumentException]::new("Invalid Argument: remote") }
@@ -3451,100 +3553,13 @@ class ArgonCage : CryptoBase {
         $connection.Close()
         return $Passw0rdHash
     }
-
-    static [void] ClearCredsCache() {
-        [ArgonCage]::Tmp.vars.SessionConfig.CachedCredsPath | Remove-Item -Force -ErrorAction Ignore
-    }
     static [securestring] ResolveSecret([securestring]$secret, [string]$cacheTag) {
-        $cache = [ArgonCage]::ReadCredsCache().Where({ $_.Tag -eq $cacheTag })
+        $cache = [ArgonCage]::vault.Cache.Read().Where({ $_.Tag -eq $cacheTag })
         if ($null -eq $cache) {
             throw "Secret not found in cache. Please make sure creds caching is enabled."
         }
         $TokenSTR = $cache.Token
         return [HKDF2]::Resolve($secret, $TokenSTR)
-    }
-    static [RecordMap[]] ReadCredsCache() {
-        if ($null -eq [ArgonCage]::Tmp) { [ArgonCage]::Tmp = [SessionTmp]::new() }
-        if ($null -eq [ArgonCage]::Tmp.vars.SessionId) { Write-Verbose "Creating new session ..."; [ArgonCage]::SetTMPvariables() }
-        $sc = [ArgonCage]::Tmp.vars.SessionConfig; [ValidateNotNullOrEmpty()][RecordMap]$sc = $sc
-        #TODO: sessionConfig should be kept as securestring
-        #This line should be decrypting the sessionConfig. ie: $sc object.
-        if ([string]::IsNullOrWhiteSpace($sc.CachedCredsPath)) {
-            throw [IO.FileNotFoundException]::new("No such file. i.e: ::..SessionConfig.CachedCredsPath is not set")
-        }
-        if (!$sc.SaveCredsCache) {
-            Write-Warning "Enable credential Caching in your config. or run [ArgonCage]::Tmp.vars.Set('SaveCredsCache', `$true)"
-            return $null
-        }
-        return [ArgonCage]::ReadCredsCache([xconvert]::ToSecurestring($sc.CachedCredsPath))
-    }
-    static [RecordMap[]] ReadCredsCache([securestring]$CachedCredsPath) {
-        $FilePath = ''; $credspath = ''; $sc = [ArgonCage]::Tmp.vars.SessionConfig; [ValidateNotNullOrEmpty()][RecordMap]$sc = $sc
-        Set-Variable -Name "FilePath" -Visibility Public -Value ([xconvert]::Tostring($CachedCredsPath))
-        if ([string]::IsNullOrWhiteSpace($FilePath)) { throw "InvalidArgument: `$FilePath" }
-        Set-Variable -Name "credspath" -Visibility Public -Value ([IO.Path]::GetDirectoryName($FilePath))
-        if ([string]::IsNullOrWhiteSpace($credspath)) { throw "InvalidArgument: `$credspath" }
-        if (!(Test-Path -Path $credspath -PathType Container -ErrorAction Ignore)) { [ArgonCage]::Create_Dir($credspath) }
-        $_p = [xconvert]::ToSecurestring([ArgonCage]::GetUniqueMachineId())
-        $ca = @(); if (![IO.File]::Exists($FilePath)) {
-            if ($sc.SaveCredsCache) {
-                New-Item -Path $FilePath -ItemType File -Force -ErrorAction Ignore | Out-Null
-                Write-Debug "Saving default cache: rwsu"
-                $ca += [ArgonCage]::UpdateCredsCache((whoami), $_p, 'rwsu', $true)
-            } else {
-                Write-Host "[ArgonCage] FileNotFoundException: No such file.`n$(' '*12)File name: $FilePath" -f Yellow
-            }
-            return $ca
-        }
-        $tc = [IO.FILE]::ReadAllText($FilePath); if ([string]::IsNullOrWhiteSpace($tc.Trim())) { return $ca }
-        $da = [byte[]][AesGCM]::Decrypt([Base85]::Decode($tc), $_p, [AesGCM]::GetDerivedBytes($_p), $null, 'Gzip', 1)
-        $([System.Text.Encoding]::UTF8.GetString($da) | ConvertFrom-Json).ForEach({ $ca += [RecordMap]::new([xconvert]::ToHashTable($_)) })
-        return $ca
-    }
-    static [RecordMap[]] UpdateCredsCache([string]$userName, [securestring]$password, [string]$TagName) {
-        return [ArgonCage]::UpdateCredsCache([pscredential]::new($userName, $password), $TagName, $false)
-    }
-    static [RecordMap[]] UpdateCredsCache([string]$userName, [securestring]$password, [string]$TagName, [bool]$Force) {
-        return [ArgonCage]::UpdateCredsCache([pscredential]::new($userName, $password), $TagName, $Force)
-    }
-    static [RecordMap[]] UpdateCredsCache([pscredential]$Credential, [string]$TagName, [bool]$Force) {
-        $sessionConfig = [ArgonCage]::Tmp.vars.SessionConfig
-        [ValidateNotNullOrEmpty()][RecordMap]$sessionConfig = $sessionConfig
-        $c_array = @()
-        $c_array += @{ $TagName = $Credential }
-        $results = @(); $c_array.keys | ForEach-Object {
-            $_TagName = $_; $_Credential = $c_array.$_
-            if ([string]::IsNullOrWhiteSpace($_TagName)) { throw "InvalidArgument : TagName" }
-            [ValidateNotNullOrEmpty()][pscredential]$_Credential = $_Credential
-            $results += [ArgonCage]::ReadCredsCache()
-            $IsNewTag = $_TagName -notin $results.Tag
-            if ($IsNewTag) {
-                if (!$Force) {
-                    Throw [System.InvalidOperationException]::new("CACHE_NOT_FOUND! Please make sure the tag already exist, or use -Force to auto add.")
-                }
-            }
-            Write-Verbose "$(if ($IsNewTag) { "Adding new" } else { "Updating" }) tag: '$_TagName' ..."
-            if ($results.Count -eq 0 -or $IsNewTag) {
-                $results += [RecordMap]::new(@{
-                        User  = $_Credential.UserName
-                        Tag   = $_TagName
-                        Token = [HKDF2]::GetToken($_Credential.Password)
-                    }
-                )
-            } else {
-                $results.Where({ $_.Tag -eq $_TagName }).Set('Token', [HKDF2]::GetToken($_Credential.Password))
-            }
-            if ($sessionConfig.SaveCredsCache) {
-                $_p = [xconvert]::ToSecurestring([ArgonCage]::GetUniqueMachineId())
-                Set-Content -Value $([Base85]::Encode([AesGCM]::Encrypt(
-                            [System.Text.Encoding]::UTF8.GetBytes([string]($results | ConvertTo-Json)),
-                            $_p, [AesGCM]::GetDerivedBytes($_p), $null, 'Gzip', 1
-                        )
-                    )
-                ) -Path ($sessionConfig.CachedCredsPath) -Encoding utf8BOM
-            }
-        }
-        return $results
     }
     static [bool] CheckCredCache([string]$TagName) {
         return [ArgonCage]::Tmp.vars.CachedCreds.Tag -contains $TagName
@@ -3581,14 +3596,8 @@ class ArgonCage : CryptoBase {
                 Finish_reason = [string]::Empty
             }
         )
-        if ($Config.SaveCredsCache) {
-            [ArgonCage]::Tmp.vars.Set('CachedCreds', $(if ([IO.File]::Exists($Config.CachedCredsPath)) {
-                        [ArgonCage]::ReadCredsCache([xconvert]::ToSecurestring($Config.CachedCredsPath))
-                    } else {
-                        [ArgonCage]::ReadCredsCache()
-                    }
-                )
-            )
+        if ($Config.SavevaultCache) {
+            [ArgonCage]::Tmp.vars.Set('CachedCreds', [ArgonCage]::Get_CachedCreds($Config))
         }
     }
     static hidden [hashtable] Get_default_Config() {
@@ -3606,9 +3615,9 @@ class ArgonCage : CryptoBase {
             NoApiKeyHelp    = 'Get your OpenAI API key here: https://platform.openai.com/account/api-keys'
             ThrowNoApiKey   = $false # If false then Chat() will go in offlineMode when no api key is provided, otherwise it will throw an error and exit.
             UsageHelp       = "Usage:`nHere's an example of how to use this Password manager:`n   `$pm = [ArgonCage]::new()`n   `$pm.login()`n`nAnd make sure you have Internet."
-            SaveCredsCache  = $true
+            SavevaultCache  = $true
             SaveEditorLogs  = $true
-            CachedCredsPath = [IO.Path]::Combine($default_DataDir.FullName, "CredsCache.enc")
+            CachedCredsPath = [IO.Path]::Combine($default_DataDir.FullName, "vaultCache.enc")
             LastWriteTime   = [datetime]::Now
         }
         try {
@@ -3623,6 +3632,15 @@ class ArgonCage : CryptoBase {
             Write-Host "            $($_.Exception.PsObject.TypeNames[0]) $($_.Exception.Message)" -f Red
         }
         return $default_Config
+    }
+    static hidden [void] Get_CachedCreds([RecordMap]$Config) {
+        Write-Verbose "Get_CachedCreds ..."
+        if ($null -eq [ArgonCage]::vault) { [ArgonCage]::vault = [vault]::new($Config.FileName) }
+        if ([IO.File]::Exists($Config.CachedCredsPath)) {
+            [ArgonCage]::vault.Cache.Read([xconvert]::ToSecurestring($Config.CachedCredsPath))
+        } else {
+            [ArgonCage]::vault.Cache.Read()
+        }
     }
     static [version] GetVersion() {
         # Returns the current version of the chatbot.

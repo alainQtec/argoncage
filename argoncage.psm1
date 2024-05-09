@@ -2871,6 +2871,9 @@ class VaultCache {
         return $results
     }
     static hidden [string] Get_Local_Path() {
+        return [VaultCache]::Get_Local_Path([ArgonCage]::Get_dataPath('ArgonCage', 'Data'), "SessionHashes.enc")
+    }
+    static hidden [string] Get_Local_Path([System.IO.DirectoryInfo]$DataDir, [string]$FileName) {
         if ($null -eq [ArgonCage]::Tmp) { [ArgonCage]::Tmp = [SessionTmp]::new() }
         if ($null -eq [ArgonCage]::Tmp.vars.SessionId) { Write-Verbose "Creating new session ..."; [ArgonCage]::SetTMPvariables() }
         $sc = [ArgonCage]::Tmp.vars.SessionConfig; [ValidateNotNullOrEmpty()][RecordMap]$sc = $sc
@@ -2879,6 +2882,7 @@ class VaultCache {
         if ([string]::IsNullOrWhiteSpace($sc.CachedCredsPath)) {
             [IO.FileNotFoundException]::new("No such file. i.e: SessionConfig.CachedCredsPath is not set") | Write-Warning
         }
+        [IO.Path]::Combine($DataDir.FullName, "SessionHashes.enc")
         return $sc.CachedCredsPath
     }
     [void] Clear() {
@@ -3578,7 +3582,11 @@ class ArgonCage : CryptoBase {
         return $key
     }
     static hidden [void] SetTMPvariables() {
-        [ArgonCage]::SetTMPvariables([RecordMap]::new([ArgonCage]::Get_default_Config()))
+        if ($null -eq [ArgonCage]::Tmp.vars.SessionConfig) {
+            [ArgonCage]::SetTMPvariables([RecordMap]::new([ArgonCage]::Get_default_Config()))
+        } else {
+            [ArgonCage]::SetTMPvariables([ArgonCage]::Tmp.vars.SessionConfig)
+        }
     }
     static hidden [void] SetTMPvariables([RecordMap]$Config) {
         # Sets default variables and stores them in $this::Tmp.vars
@@ -3608,9 +3616,8 @@ class ArgonCage : CryptoBase {
     }
     static hidden [hashtable] Get_default_Config([string]$Config_FileName) {
         Write-Host "[ArgonCage] Get default Config ..." -f Blue
-        $default_DataDir = [ArgonCage]::Get_dataPath('ArgonCage', 'Data')
         $default_Config = @{
-            File            = [ArgonCage]::GetUnResolvedPath([IO.Path]::Combine($default_DataDir, $Config_FileName))
+            File            = [ArgonCage]::GetUnResolvedPath([IO.Path]::Combine([ArgonCage]::Get_dataPath('ArgonCage', 'Data'), $Config_FileName))
             FileName        = $Config_FileName # Config is stored locally and all it's contents are always encrypted.
             Remote          = [string]::Empty
             GistUri         = 'https://gist.github.com/alainQtec/0710a1d4a833c3b618136e5ea98ca0b2' # replace with yours
@@ -3621,7 +3628,7 @@ class ArgonCage : CryptoBase {
             SaveVaultCache  = $true
             SaveEditorLogs  = $true
             VaultFileName   = "secret_Info" # Should also match the FileName of the remote gist.
-            CachedCredsPath = [IO.Path]::Combine($default_DataDir.FullName, "SessionHashes.enc")
+            CachedCredsPath = [VaultCache]::Get_Local_Path()
             LastWriteTime   = [datetime]::Now
         }
         try {

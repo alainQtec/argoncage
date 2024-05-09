@@ -2800,19 +2800,7 @@ class FileMonitor {
 class VaultCache {
     VaultCache() {}
     [RecordMap[]] Read() {
-        if ($null -eq [ArgonCage]::Tmp) { [ArgonCage]::Tmp = [SessionTmp]::new() }
-        if ($null -eq [ArgonCage]::Tmp.vars.SessionId) { Write-Verbose "Creating new session ..."; [ArgonCage]::SetTMPvariables() }
-        $sc = [ArgonCage]::Tmp.vars.SessionConfig; [ValidateNotNullOrEmpty()][RecordMap]$sc = $sc
-        #TODO: sessionConfig should be kept as securestring
-        #This line should be decrypting the sessionConfig. ie: $sc object.
-        if ([string]::IsNullOrWhiteSpace($sc.CachedCredsPath)) {
-            throw [IO.FileNotFoundException]::new("No such file. i.e: ::..SessionConfig.CachedCredsPath is not set")
-        }
-        if (!$sc.SaveVaultCache) {
-            Write-Warning "Enable credential Caching in your config. or run [ArgonCage]::Tmp.vars.Set('SaveVaultCache', `$true)"
-            return $null
-        }
-        return $this.Read([xconvert]::ToSecurestring($sc.CachedCredsPath))
+        return $this.Read([xconvert]::ToSecurestring([VaultCache]::Get_Local_Path()))
     }
     [RecordMap[]] Read([securestring]$CachedCredsPath) {
         $FilePath = ''; $credspath = ''; $sc = [ArgonCage]::Tmp.vars.SessionConfig; [ValidateNotNullOrEmpty()][RecordMap]$sc = $sc
@@ -2882,9 +2870,23 @@ class VaultCache {
         }
         return $results
     }
+    static hidden [string] Get_Local_Path() {
+        if ($null -eq [ArgonCage]::Tmp) { [ArgonCage]::Tmp = [SessionTmp]::new() }
+        if ($null -eq [ArgonCage]::Tmp.vars.SessionId) { Write-Verbose "Creating new session ..."; [ArgonCage]::SetTMPvariables() }
+        $sc = [ArgonCage]::Tmp.vars.SessionConfig; [ValidateNotNullOrEmpty()][RecordMap]$sc = $sc
+        #TODO: sessionConfig should be kept as securestring
+        #This line should be decrypting the sessionConfig. ie: $sc object.
+        if ([string]::IsNullOrWhiteSpace($sc.CachedCredsPath)) {
+            [IO.FileNotFoundException]::new("No such file. i.e: SessionConfig.CachedCredsPath is not set") | Write-Warning
+        }
+        return $sc.CachedCredsPath
+    }
     [void] Clear() {
         [VaultCache] | Add-Member -Name Object -Force -MemberType ScriptProperty -Value { $null }.GetNewClosure()
         [ArgonCage]::Tmp.vars.SessionConfig.CachedCredsPath | Remove-Item -Force -ErrorAction Ignore
+    }
+    [string] ToString() {
+        return [VaultCache]::Get_Local_Path()
     }
 }
 
@@ -3619,7 +3621,7 @@ class ArgonCage : CryptoBase {
             SaveVaultCache  = $true
             SaveEditorLogs  = $true
             VaultFileName   = "secret_Info" # Should also match the FileName of the remote gist.
-            CachedCredsPath = [IO.Path]::Combine($default_DataDir.FullName, "VaultCache.enc")
+            CachedCredsPath = [IO.Path]::Combine($default_DataDir.FullName, "SessionHashes.enc")
             LastWriteTime   = [datetime]::Now
         }
         try {

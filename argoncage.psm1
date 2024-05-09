@@ -2875,6 +2875,7 @@ class VaultCache {
     }
     static hidden [string] Get_Local_Path([System.IO.DirectoryInfo]$DataDir, [string]$FileName) {
         if ($null -eq [ArgonCage]::Tmp) { [ArgonCage]::Tmp = [SessionTmp]::new() }
+        # Todo: fix this loop
         if ($null -eq [ArgonCage]::Tmp.vars.SessionId) { Write-Verbose "Creating new session ..."; [ArgonCage]::SetTMPvariables() }
         $sc = [ArgonCage]::Tmp.vars.SessionConfig; [ValidateNotNullOrEmpty()][RecordMap]$sc = $sc
         #TODO: sessionConfig should be kept as securestring

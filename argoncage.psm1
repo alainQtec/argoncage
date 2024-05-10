@@ -2800,7 +2800,7 @@ class FileMonitor {
 class VaultCache {
     VaultCache() {}
     [RecordMap[]] Read() {
-        return $this.Read([xconvert]::ToSecurestring([VaultCache]::Get_Local_Path()))
+        return $this.Read([xconvert]::ToSecurestring([ArgonCage]::Get_SessionConfig().CachedCredsPath))
     }
     [RecordMap[]] Read([securestring]$CachedCredsPath) {
         $FilePath = ''; $credspath = ''; $sc = [ArgonCage]::Tmp.vars.SessionConfig; [ValidateNotNullOrEmpty()][RecordMap]$sc = $sc
@@ -2870,28 +2870,12 @@ class VaultCache {
         }
         return $results
     }
-    static hidden [string] Get_Local_Path() {
-        return [VaultCache]::Get_Local_Path([ArgonCage]::Get_dataPath('ArgonCage', 'Data'), "SessionHashes.enc")
-    }
-    static hidden [string] Get_Local_Path([System.IO.DirectoryInfo]$DataDir, [string]$FileName) {
-        if ($null -eq [ArgonCage]::Tmp) { [ArgonCage]::Tmp = [SessionTmp]::new() }
-        # Todo: fix this loop
-        if ($null -eq [ArgonCage]::Tmp.vars.SessionId) { Write-Verbose "Creating new session ..."; [ArgonCage]::SetTMPvariables() }
-        $sc = [ArgonCage]::Tmp.vars.SessionConfig; [ValidateNotNullOrEmpty()][RecordMap]$sc = $sc
-        #TODO: sessionConfig should be kept as securestring
-        #This line should be decrypting the sessionConfig. ie: $sc object.
-        if ([string]::IsNullOrWhiteSpace($sc.CachedCredsPath)) {
-            [IO.FileNotFoundException]::new("No such file. i.e: SessionConfig.CachedCredsPath is not set") | Write-Warning
-        }
-        [IO.Path]::Combine($DataDir.FullName, "SessionHashes.enc")
-        return $sc.CachedCredsPath
-    }
     [void] Clear() {
         [VaultCache] | Add-Member -Name Object -Force -MemberType ScriptProperty -Value { $null }.GetNewClosure()
         [ArgonCage]::Tmp.vars.SessionConfig.CachedCredsPath | Remove-Item -Force -ErrorAction Ignore
     }
     [string] ToString() {
-        return [VaultCache]::Get_Local_Path()
+        return [ArgonCage]::Get_SessionConfig().CachedCredsPath
     }
 }
 
@@ -2899,7 +2883,7 @@ class vault {
     [ValidateNotNullOrEmpty()][string]$Name
     [ValidateNotNullOrEmpty()][uri]$Remote
     hidden [VaultCache]$Cache
-    static hidden [ValidateNotNullOrEmpty()][string]$DataPath
+    static hidden [ValidateNotNullOrEmpty()][string]$DataPath = [IO.Path]::Combine([ArgonCage]::DataPath, 'secrets')
     static hidden [bool]$UseVerbose = [bool]$((Get-Variable verbosePreference -ValueOnly) -eq "continue")
     vault([string]$Name) {
         if ([string]::IsNullOrWhiteSpace($Name)) { throw [InvalidArgumentException]::new($Name) }
@@ -3357,25 +3341,24 @@ class ArgonCage : CryptoBase {
     [ValidateNotNullOrEmpty()][RecordMap] $Config
     static hidden [ValidateNotNull()][vault] $vault
     static hidden [ValidateNotNull()][SessionTmp] $Tmp
+    Static hidden [ValidateNotNull()][IO.DirectoryInfo] $DataPath = [ArgonCage]::Get_dataPath('ArgonCage', 'Data')
     static [System.Collections.ObjectModel.Collection[CliArt]] $banners = @()
     static [ValidateNotNull()][EncryptionScope] $EncryptionScope = [EncryptionScope]::User
 
     ArgonCage() {
         if ($null -eq [ArgonCage]::Tmp) { [ArgonCage]::Tmp = [SessionTmp]::new() }
-        $this.SetConfigs(); [ArgonCage]::SetTMPvariables($this.Config)
-        $this.PsObject.properties.add([psscriptproperty]::new('DataPath', [scriptblock]::Create({ $path = [ArgonCage]::Get_dataPath('ArgonCage', 'Data'); [vault]::DataPath = [IO.Path]::Combine($path, 'secrets'); return $path })))
+        ; $this.SetConfigs(); [ArgonCage]::SetTMPvariables($this.Config)
         # $this.SyncConfigs()
         $this.PsObject.properties.add([psscriptproperty]::new('IsOffline', [scriptblock]::Create({ return ((Test-Connection github.com -Count 1).status -ne "Success") })))
-        $this.psobject.Properties.Add([psscriptproperty]::new('Version', {
-                    if ($null -eq [ArgonCage].Version) { [ArgonCage] | Add-Member -Name Version -Force -MemberType ScriptProperty -Value { return [ArgonCage]::GetVersion() }.GetNewClosure() -SecondValue { throw [System.InvalidOperationException]::new("Cannot set Version") } }
-                    return [ArgonCage].Version
+        [ArgonCage].psobject.Properties.Add([psscriptproperty]::new('Version', {
+                    return [ArgonCage]::GetVersion()
                 }, { throw [System.InvalidOperationException]::new("Cannot set Version") }
             )
         )
     }
     static [void] ShowMenu() {
-        Write-Output ([ArgonCage]::vault)
         [ArgonCage]::WriteBanner()
+        Write-Output "Vault:" ([ArgonCage]::vault)
         # code for menu goes here ...
     }
     static [void] WriteBanner() {
@@ -3465,7 +3448,7 @@ class ArgonCage : CryptoBase {
     [bool] DeleteConfigs() {
         return [bool]$(
             try {
-                $configFiles = ([GitHub]::GetTokenFile() | Split-Path | Get-ChildItem -File -Recurse).FullName, $this.Config.File, ($this.DataPath | Get-ChildItem -File -Recurse).FullName
+                $configFiles = ([GitHub]::GetTokenFile() | Split-Path | Get-ChildItem -File -Recurse).FullName, $this.Config.File, ([ArgonCage]::DataPath | Get-ChildItem -File -Recurse).FullName
                 $configFiles.Foreach({ Remove-Item -Path $_ -Force -Verbose });
                 $true
             } catch { $false }
@@ -3618,7 +3601,7 @@ class ArgonCage : CryptoBase {
     static hidden [hashtable] Get_default_Config([string]$Config_FileName) {
         Write-Host "[ArgonCage] Get default Config ..." -f Blue
         $default_Config = @{
-            File            = [ArgonCage]::GetUnResolvedPath([IO.Path]::Combine([ArgonCage]::Get_dataPath('ArgonCage', 'Data'), $Config_FileName))
+            File            = [ArgonCage]::GetUnResolvedPath([IO.Path]::Combine([ArgonCage]::DataPath, $Config_FileName))
             FileName        = $Config_FileName # Config is stored locally and all it's contents are always encrypted.
             Remote          = [string]::Empty
             GistUri         = 'https://gist.github.com/alainQtec/0710a1d4a833c3b618136e5ea98ca0b2' # replace with yours
@@ -3629,7 +3612,7 @@ class ArgonCage : CryptoBase {
             SaveVaultCache  = $true
             SaveEditorLogs  = $true
             VaultFileName   = "secret_Info" # Should also match the FileName of the remote gist.
-            CachedCredsPath = [VaultCache]::Get_Local_Path()
+            CachedCredsPath = [IO.Path]::Combine([ArgonCage]::DataPath, "SessionHashes.enc")
             LastWriteTime   = [datetime]::Now
         }
         try {
@@ -3644,6 +3627,14 @@ class ArgonCage : CryptoBase {
             Write-Host "            $($_.Exception.PsObject.TypeNames[0]) $($_.Exception.Message)" -f Red
         }
         return $default_Config
+    }
+    static hidden [RecordMap] Get_SessionConfig() {
+        if ($null -eq [ArgonCage]::Tmp) { [ArgonCage]::Tmp = [SessionTmp]::new() }
+        if ($null -eq [ArgonCage]::Tmp.vars.SessionId) {
+            Write-Verbose "Creating new session ..."; [ArgonCage]::SetTMPvariables()
+        }
+        $sc = [ArgonCage]::Tmp.vars.SessionConfig; [ValidateNotNullOrEmpty()][RecordMap]$sc = $sc
+        return $sc
     }
     static hidden [void] Get_CachedCreds([RecordMap]$Config) {
         if ($null -eq [ArgonCage]::vault) { [ArgonCage]::vault = [vault]::new($Config.VaultFileName) }

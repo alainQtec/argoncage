@@ -140,6 +140,36 @@ class InvalidPasswordException : System.Exception {
     InvalidPasswordException([string]$Message, [securestring]$Password, [System.Exception]$InnerException) { ($this.message, $this.Password, $this.InnerException) = ($Message, $Password, $InnerException) }
 }
 
+class StackTracer {
+    static [System.Collections.Concurrent.ConcurrentStack[string]]$stack = [System.Collections.Concurrent.ConcurrentStack[string]]::new()
+
+    static [void] Push([string]$call) {
+        [StackTracer]::stack.Push($call)
+    }
+    static [string] Pop() {
+        $result = $null
+        if ([StackTracer]::stack.TryPop([ref]$result)) {
+            return $result
+        } else {
+            throw "Error: Stack is empty"
+        }
+    }
+    static [string[]] Peek() {
+        $result = $null
+        if ([StackTracer]::stack.TryPeek([ref]$result)) {
+            return ($result -as [string]).Split("`n")
+        } else {
+            throw "Error: Stack is empty"
+        }
+    }
+    static [bool] IsEmpty() {
+        return [StackTracer]::stack.IsEmpty
+    }
+    static [int] Size() {
+        return [StackTracer]::stack.Count
+    }
+}
+
 # .SYNOPSIS
 # A simple progress utility class
 # .EXAMPLE
@@ -2656,6 +2686,7 @@ class SessionTmp {
             $scope = [scriptblock]::Create("$($Options.caller)::EncryptionScope").Invoke();
             [ValidateNotNullOrEmpty()][EncryptionScope]$scope = $scope
             $this.SaveSessionKey($Name, $(if ($scope -eq "User") {
+                        Write-Verbose "Save Sessionkey $Name ..."
                         [CryptoBase]::GetPassword(("{0} {1}" -f $Options.caller, $Options.Prompt))
                     } else {
                         [xconvert]::ToSecurestring([cryptoBase]::GetUniqueMachineId())
@@ -2667,7 +2698,8 @@ class SessionTmp {
     }
     [void] Clear() {
         $this.vars = [RecordMap]::new()
-        $this.Paths | ForEach-Object { Remove-Item "$_" -ErrorAction SilentlyContinue }; $this.Paths = [System.Collections.Generic.List[string]]::new()
+        $this.Paths | ForEach-Object { Remove-Item "$_" -ErrorAction SilentlyContinue };
+        $this.Paths = [System.Collections.Generic.List[string]]::new()
     }
 }
 class FileMonitor {

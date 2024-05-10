@@ -142,31 +142,33 @@ class InvalidPasswordException : System.Exception {
 
 class StackTracer {
     static [System.Collections.Concurrent.ConcurrentStack[string]]$stack = [System.Collections.Concurrent.ConcurrentStack[string]]::new()
-
-    static [void] Push([string]$call) {
-        [StackTracer]::stack.Push($call)
+    static [System.Collections.Generic.List[hashtable]]$CallLog = @()
+    static [void] Push([type]$class) {
+        $str = "[{0}]" -f $class
+        [StackTracer]::stack.Push($str)
+        [StackTracer]::CallLog.Add(@{ ($str + ' @ ' + [datetime]::Now.ToShortTimeString()) = [System.Environment]::StackTrace.Split("`n").Replace(" at ", "").Trim() })
     }
-    static [string] Pop() {
+    static [type] Pop() {
         $result = $null
         if ([StackTracer]::stack.TryPop([ref]$result)) {
             return $result
         } else {
-            throw "Error: Stack is empty"
+            throw [System.InvalidOperationException]::new("Stack is empty!")
         }
     }
-    static [string[]] Peek() {
+    static [string] Peek() {
         $result = $null
         if ([StackTracer]::stack.TryPeek([ref]$result)) {
-            return ($result -as [string]).Split("`n")
+            return $result
         } else {
-            throw "Error: Stack is empty"
+            return [string]::Empty
         }
+    }
+    static [int] GetSize() {
+        return [StackTracer]::stack.Count
     }
     static [bool] IsEmpty() {
         return [StackTracer]::stack.IsEmpty
-    }
-    static [int] Size() {
-        return [StackTracer]::stack.Count
     }
 }
 

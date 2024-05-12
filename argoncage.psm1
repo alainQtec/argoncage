@@ -182,7 +182,7 @@ class StackTracer {
 #     [System.Threading.Thread]::Sleep(50)
 # }
 # (Get-Variable host).Value.UI.RawUI.ForegroundColor = $OgForeground
-# [progressUtil]::WaitJob("waiting", { Start-Sleep -Seconds 3 })
+# [TaskMan]::WaitJob("waiting", { Start-Sleep -Seconds 3 })
 #
 class ProgressUtil {
     static hidden [string] $_block = '■';
@@ -214,43 +214,18 @@ class ProgressUtil {
         }
         [Console]::Write("] {0,3:##0}%", $percent);
     }
-    static [System.Management.Automation.Job] WaitJob([string]$progressMsg, [scriptblock]$Job) {
-        return [ProgressUtil]::WaitJob($progressMsg, $(Start-Job -ScriptBlock $Job))
-    }
-    static [System.Management.Automation.Job] WaitJob([string]$progressMsg, [System.Management.Automation.Job]$Job) {
-        [Console]::CursorVisible = $false;
-        [ProgressUtil]::frames = [ProgressUtil]::_twirl[0]
-        [int]$length = [ProgressUtil]::frames.Length;
-        $originalY = [Console]::CursorTop
-        while ($Job.JobStateInfo.State -notin ('Completed', 'failed')) {
-            for ($i = 0; $i -lt $length; $i++) {
-                [ProgressUtil]::frames.Foreach({ [Console]::Write("$progressMsg $($_[$i])") })
-                [System.Threading.Thread]::Sleep(50)
-                [Console]::Write(("`b" * ($length + $progressMsg.Length)))
-                [Console]::CursorTop = $originalY
-            }
-        }
-        Write-Host "`b$progressMsg ... " -NoNewline -f Magenta
-        [System.Management.Automation.Runspaces.RemotingErrorRecord[]]$Errors = $Job.ChildJobs.Where({
-                $null -ne $_.Error
-            }
-        ).Error;
-        if ($Job.JobStateInfo.State -eq "Failed" -or $Errors.Count -gt 0) {
-            $errormessages = [string]::Empty
-            if ($null -ne $Errors) {
-                $errormessages = $Errors.Exception.Message -join "`n"
-            }
-            Write-Host "Completed with errors.`n`t$errormessages" -f Red
-        } else {
-            Write-Host "Done." -f Green
-        }
-        [Console]::CursorVisible = $true;
-        return $Job
-    }
 }
 
 # A small process managment class
 class TaskMan {
+    static [PSCustomObject] RunInBackground([ScriptBlock]$ScriptBlock, [Object[]]$ArgumentList) {
+        # Implementation goes here
+        return ""
+    }
+    static [PSCustomObject[]] RunInParallel([System.Management.Automation.Job[]]$jobs) {
+        # Implementation goes here
+        return ""
+    }
     static [PSCustomObject] RetryCommand([ScriptBlock]$ScriptBlock) {
         return [TaskMan]::RetryCommand($ScriptBlock, $null)
     }
@@ -313,6 +288,39 @@ class TaskMan {
         Write-Verbose "$fxn $EndMsg"
         # $ErrorActionPreference = $eap;
         return $Result
+    }
+    static [System.Management.Automation.Job] WaitJob([string]$progressMsg, [scriptblock]$Job) {
+        return [TaskMan]::WaitJob($progressMsg, $(Start-Job -ScriptBlock $Job))
+    }
+    static [System.Management.Automation.Job] WaitJob([string]$progressMsg, [System.Management.Automation.Job]$Job) {
+        [Console]::CursorVisible = $false;
+        [ProgressUtil]::frames = [ProgressUtil]::_twirl[0]
+        [int]$length = [ProgressUtil]::frames.Length;
+        $originalY = [Console]::CursorTop
+        while ($Job.JobStateInfo.State -notin ('Completed', 'failed')) {
+            for ($i = 0; $i -lt $length; $i++) {
+                [ProgressUtil]::frames.Foreach({ [Console]::Write("$progressMsg $($_[$i])") })
+                [System.Threading.Thread]::Sleep(50)
+                [Console]::Write(("`b" * ($length + $progressMsg.Length)))
+                [Console]::CursorTop = $originalY
+            }
+        }
+        Write-Host "`b$progressMsg ... " -NoNewline -f Magenta
+        [System.Management.Automation.Runspaces.RemotingErrorRecord[]]$Errors = $Job.ChildJobs.Where({
+                $null -ne $_.Error
+            }
+        ).Error;
+        if ($Job.JobStateInfo.State -eq "Failed" -or $Errors.Count -gt 0) {
+            $errormessages = [string]::Empty
+            if ($null -ne $Errors) {
+                $errormessages = $Errors.Exception.Message -join "`n"
+            }
+            Write-Host "Completed with errors.`n`t$errormessages" -f Red
+        } else {
+            Write-Host "Done." -f Green
+        }
+        [Console]::CursorVisible = $true;
+        return $Job
     }
 }
 class NetworkManager {

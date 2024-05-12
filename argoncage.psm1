@@ -248,6 +248,73 @@ class ProgressUtil {
         return $Job
     }
 }
+
+# A small process managment class
+class TaskMan {
+    static [PSCustomObject] RetryCommand([ScriptBlock]$ScriptBlock) {
+        return [TaskMan]::RetryCommand($ScriptBlock, $null)
+    }
+    static [PSCustomObject] RetryCommand([ScriptBlock]$ScriptBlock, [Object[]]$ArgumentList) {
+        return [TaskMan]::RetryCommand($ScriptBlock, $ArgumentList, [System.Threading.CancellationToken]::None, 3, "Running $([StackTracer]::peek())", 1)
+    }
+    # .SYNOPSIS
+    #     This menod Runs Retriable Commands
+    # .DESCRIPTION
+    #     Retries a script process for a number of times or until it completes without terminating errors.
+    #     All Unnamed arguments will be passed as arguments to the script
+    static [PSCustomObject] RetryCommand([ScriptBlock]$ScriptBlock, [Object[]]$ArgumentList, [System.Threading.CancellationToken]$CancellationToken, [Int]$MaxAttempts, [String]$Message, [Int]$SecondsBetweenAttempts) {
+        # [System.Management.Automation.ActionPreference]$eap = $ErrorActionPreference; $ErrorActionPreference = "SilentlyContinue"
+        [ValidateNotNullOrEmpty()][scriptblock]$ScriptBlock = $ScriptBlock
+        $IsSuccess = $false; $fxn = ('[' + $MyInvocation.MyCommand.Name + ']'); $AttemptStartTime = $null; $EndMsg = [string]::Empty
+        $Output = [string]::Empty; $ErrorRecord = $null; $Attempts = 1
+        $Result = [PSCustomObject]@{
+            Output      = $Output
+            IsSuccess   = [bool]$IsSuccess # $false in this case
+            ErrorRecord = $null
+        }
+        $CommandStartTime = Get-Date
+        while (($Attempts -le $MaxAttempts) -and !$Result.IsSuccess) {
+            $Retries = $MaxAttempts - $Attempts
+            if ($cancellationToken.IsCancellationRequested) {
+                Write-Verbose "$fxn CancellationRequested when $Retries retries were left."
+                throw
+            }
+            try {
+                Write-Verbose "$fxn $Message Retry Attempt # $Attempts/$MaxAttempts ..."
+                $AttemptStartTime = Get-Date
+                if ($null -ne $ArgumentList) {
+                    $Output = Invoke-Command -ScriptBlock $ScriptBlock -ArgumentList $ArgumentList
+                } else {
+                    $Output = Invoke-Command -ScriptBlock $ScriptBlock
+                }
+                $IsSuccess = [bool]$?
+            } catch {
+                $IsSuccess = $false
+                $ErrorRecord = [System.Management.Automation.ErrorRecord]$_
+                # Write-Log $_.Exception.ErrorRecord
+                Write-Verbose "$fxn Error encountered after $([math]::Round(($(Get-Date) - $AttemptStartTime).TotalSeconds, 2)) seconds"
+            } finally {
+                $Result = [PSCustomObject]@{
+                    Output      = $Output
+                    IsSuccess   = $IsSuccess
+                    ErrorRecord = $ErrorRecord
+                }
+                if ($Retries -eq 0 -or $Result.IsSuccess) {
+                    $ElapsedTime = [math]::Round(($(Get-Date) - $CommandStartTime).TotalSeconds, 2)
+                    $EndMsg = $(if ($Result.IsSuccess) { "Completed Successfully. Total time elapsed $ElapsedTime" } else { "Completed With Errors. Total time elapsed $ElapsedTime. Check the log file `$LogPath" })
+                    Write-Verbose "$fxn Returning Objects"
+                } elseif (!$cancellationToken.IsCancellationRequested -and $Retries -ne 0) {
+                    Write-Verbose "$fxn Waiting $SecondsBetweenAttempts seconds before retrying. Retries left: $Retries"
+                    Start-Sleep $SecondsBetweenAttempts
+                }
+                $Attempts++
+            }
+        }
+        Write-Verbose "$fxn $EndMsg"
+        # $ErrorActionPreference = $eap;
+        return $Result
+    }
+}
 class NetworkManager {
     [string] $HostName
     static [System.Net.IPAddress[]] $IPAddresses
@@ -261,7 +328,6 @@ class NetworkManager {
             Force             = $false
         }
     )
-    static [string] $caller
 
     NetworkManager ([string]$HostName) {
         $this.HostName = $HostName
@@ -393,7 +459,7 @@ class NetworkManager {
         return $result
     }
     static [bool] TestConnection ([string]$HostName) {
-        $cs = $null; $cc = [NetworkManager]::caller; if ([string]::IsNullOrWhiteSpace($cc)) { $cc = '[NetworkManager]' }
+        $cs = $null; $cc = [StackTracer]::Peek();
         $re = @{ true = @{ m = "Success"; c = "Green" }; false = @{ m = "Failed"; c = "Red" } }
         if (![NetworkManager]::resolve_ping_dependencies()) {
             Write-Host "$cc Could not resolve ping dependencies" -f Red
@@ -431,7 +497,6 @@ class EncodingBase : System.Text.ASCIIEncoding {
 
 #region    CryptoBase
 class CryptoBase {
-    static hidden [string] $caller
     [ValidateNotNull()][byte[]]hidden $_salt
     [ValidateNotNull()][byte[]]hidden $_bytes
     static [ValidateNotNull()][EncryptionScope] $EncryptionScope
@@ -616,7 +681,7 @@ class CryptoBase {
     }
     static hidden [void] CheckProps([System.Security.Cryptography.Aes]$Aes) {
         $MissingProps = @(); $throw = $false
-        Write-Verbose "$([CryptoBase]::caller) [+] Checking Encryption Properties ... $(('Mode','Padding', 'keysize', 'BlockSize') | ForEach-Object { if ($null -eq $Aes.Algo.$_) { $MissingProps += $_ } };
+        Write-Verbose "$([StackTracer]::Peek()) [+] Checking Encryption Properties ... $(('Mode','Padding', 'keysize', 'BlockSize') | ForEach-Object { if ($null -eq $Aes.Algo.$_) { $MissingProps += $_ } };
             if ($MissingProps.Count -eq 0) { "Done. All AES Props are Good." } else { $throw = $true; "System.ArgumentNullException: $([string]::Join(', ', $MissingProps)) cannot be null." }
         )"
         if ($throw) { throw [System.ArgumentNullException]::new([string]::Join(', ', $MissingProps)) }
@@ -763,8 +828,8 @@ class CryptoBase {
         if ([CryptoBase]::EncryptionScope.ToString() -eq "Machine") {
             return [xconvert]::ToSecurestring([CryptoBase]::GetUniqueMachineId())
         } else {
-            $pswd = [SecureString]::new(); $_caller = 'PasswordManager'; if (![string]::IsNullOrWhiteSpace([CryptoBase]::caller)) { $_caller = [CryptoBase]::caller }
-            Set-Variable -Name pswd -Scope Local -Visibility Private -Option Private -Value $(Read-Host -Prompt "$_caller $Prompt" -AsSecureString);
+            $pswd = [SecureString]::new(); [StackTracer]::Push("ArgonCage")
+            Set-Variable -Name pswd -Scope Local -Visibility Private -Option Private -Value $(Read-Host -Prompt "$([StackTracer]::Peek()) $Prompt" -AsSecureString);
             if ($ThrowOnFailure -and ($null -eq $pswd -or $([string]::IsNullOrWhiteSpace([xconvert]::ToString($pswd))))) {
                 throw [InvalidPasswordException]::new("Please Provide a Password that isn't Null or WhiteSpace.", $pswd, [System.ArgumentNullException]::new("Password"))
             }
@@ -1897,7 +1962,7 @@ class AesGCM : CryptoBase {
     # static hidden [byte[]]$_salt = [convert]::FromBase64String("hsKgmva9wZoDxLeREB1udw==");
     static hidden [EncryptionScope] $Scope = [EncryptionScope]::User
     static [byte[]] Encrypt([byte[]]$bytes) {
-        if ([string]::IsNullOrWhiteSpace([AesGCM]::caller)) { [AesGCM]::caller = '[AesGCM]' }
+        [StackTracer]::push("AesGCM")
         return [AesGCM]::Encrypt($bytes, [AesGCM]::GetPassword());
     }
     static [byte[]] Encrypt([byte[]]$Bytes, [SecureString]$Password) {
@@ -1931,13 +1996,13 @@ class AesGCM : CryptoBase {
         [int]$IV_SIZE = 0; Set-Variable -Name IV_SIZE -Scope Local -Visibility Private -Option Private -Value 12
         [int]$TAG_SIZE = 0; Set-Variable -Name TAG_SIZE -Scope Local -Visibility Private -Option Private -Value 16
         [string]$Key = $null; Set-Variable -Name Key -Scope Local -Visibility Private -Option Private -Value $([convert]::ToBase64String([System.Security.Cryptography.Rfc2898DeriveBytes]::new([xconvert]::ToString($Password), $Salt, 10000, [System.Security.Cryptography.HashAlgorithmName]::SHA1).GetBytes(32)));
-        [System.IntPtr]$th = [System.IntPtr]::new(0); if ([string]::IsNullOrWhiteSpace([AesGCM]::caller)) { [AesGCM]::caller = '[AesGCM]' }
+        [System.IntPtr]$th = [System.IntPtr]::new(0); [StackTracer]::push("AesGCM")
         Set-Variable -Name th -Scope Local -Visibility Private -Option Private -Value $([System.Runtime.InteropServices.Marshal]::StringToHGlobalAnsi($TAG_SIZE));
         try {
             $_bytes = $bytes;
             $aes = $null; Set-Variable -Name aes -Scope Local -Visibility Private -Option Private -Value $([ScriptBlock]::Create("[Security.Cryptography.AesGcm]::new([convert]::FromBase64String('$Key'))").Invoke());
             for ($i = 1; $i -lt $iterations + 1; $i++) {
-                # Write-Host "$([AesGCM]::caller) [+] Encryption [$i/$iterations] ... Done" -f Yellow
+                # Write-Host "$([StackTracer]::Peek()) [+] Encryption [$i/$iterations] ... Done" -f Yellow
                 # if ($Protect) { $_bytes = [xconvert]::ToProtected($_bytes, $Salt, [EncryptionScope]::User) }
                 # Generate a random IV for each iteration:
                 [byte[]]$IV = $null; Set-Variable -Name IV -Scope Local -Visibility Private -Option Private -Value ([System.Security.Cryptography.Rfc2898DeriveBytes]::new([xconvert]::ToString($password), $salt, 1, [System.Security.Cryptography.HashAlgorithmName]::SHA1).GetBytes($IV_SIZE));
@@ -1958,7 +2023,7 @@ class AesGCM : CryptoBase {
         return $_bytes
     }
     static [void] Encrypt([IO.FileInfo]$File) {
-        if ([string]::IsNullOrWhiteSpace([AesGCM]::caller)) { [AesGCM]::caller = '[AesGCM]' }
+        [StackTracer]::push("AesGCM")
         [AesGCM]::Encrypt($File, [AesGCM]::GetPassword());
     }
     static [void] Encrypt([IO.FileInfo]$File, [securestring]$Password) {
@@ -1978,7 +2043,7 @@ class AesGCM : CryptoBase {
         $ba = [byte[]]::New($streamReader.Length);
         [void]$streamReader.Read($ba, 0, [int]$streamReader.Length);
         [void]$streamReader.Close();
-        Write-Verbose "$([AesGCM]::caller) Begin file encryption:"
+        Write-Verbose "$([StackTracer]::Peek()) Begin file encryption:"
         Write-Verbose "[-]  File    : $File"
         Write-Verbose "[-]  OutFile : $OutPath"
         [byte[]]$_salt = [AesGCM]::GetDerivedBytes($Password);
@@ -1990,7 +2055,7 @@ class AesGCM : CryptoBase {
         [void]$streamWriter.Dispose()
     }
     static [byte[]] Decrypt([byte[]]$bytes) {
-        if ([string]::IsNullOrWhiteSpace([AesGCM]::caller)) { [AesGCM]::caller = '[AesGCM]' }
+        [StackTracer]::push("AesGCM")
         return [AesGCM]::Decrypt($bytes, [AesGCM]::GetPassword());
     }
     static [byte[]] Decrypt([byte[]]$Bytes, [SecureString]$Password) {
@@ -2024,13 +2089,13 @@ class AesGCM : CryptoBase {
         [int]$IV_SIZE = 0; Set-Variable -Name IV_SIZE -Scope Local -Visibility Private -Option Private -Value 12
         [int]$TAG_SIZE = 0; Set-Variable -Name TAG_SIZE -Scope Local -Visibility Private -Option Private -Value 16
         [string]$Key = $null; Set-Variable -Name Key -Scope Local -Visibility Private -Option Private -Value $([convert]::ToBase64String([System.Security.Cryptography.Rfc2898DeriveBytes]::new([xconvert]::ToString($Password), $Salt, 10000, [System.Security.Cryptography.HashAlgorithmName]::SHA1).GetBytes(32)));
-        [System.IntPtr]$th = [System.IntPtr]::new(0); if ([string]::IsNullOrWhiteSpace([AesGCM]::caller)) { [AesGCM]::caller = '[AesGCM]' }
+        [System.IntPtr]$th = [System.IntPtr]::new(0); [StackTracer]::push("AesGCM")
         Set-Variable -Name th -Scope Local -Visibility Private -Option Private -Value $([System.Runtime.InteropServices.Marshal]::StringToHGlobalAnsi($TAG_SIZE));
         try {
             $_bytes = if (![string]::IsNullOrWhiteSpace($Compression)) { [xconvert]::ToDecompressed($bytes, $Compression) } else { $bytes }
             $aes = [ScriptBlock]::Create("[Security.Cryptography.AesGcm]::new([convert]::FromBase64String('$Key'))").Invoke()
             for ($i = 1; $i -lt $iterations + 1; $i++) {
-                # Write-Host "$([AesGCM]::caller) [+] Decryption [$i/$iterations] ... Done" -f Yellow
+                # Write-Host "$([StackTracer]::Peek()) [+] Decryption [$i/$iterations] ... Done" -f Yellow
                 # if ($UnProtect) { $_bytes = [xconvert]::ToUnProtected($_bytes, $Salt, [EncryptionScope]::User) }
                 # Split the real encrypted bytes from nonce & tags then decrypt them:
                 ($b, $n1) = [Shuffl3r]::Split($_bytes, $Password, $TAG_SIZE);
@@ -2041,7 +2106,7 @@ class AesGCM : CryptoBase {
             }
         } catch {
             if ($_.FullyQualifiedErrorId -eq "AuthenticationTagMismatchException") {
-                Write-Host "$([AesGCM]::caller) Wrong password" -f Yellow
+                Write-Host "$([StackTracer]::Peek()) Wrong password" -f Yellow
             }
             throw $_
         } finally {
@@ -2051,7 +2116,7 @@ class AesGCM : CryptoBase {
         return $_bytes
     }
     static [void] Decrypt([IO.FileInfo]$File) {
-        if ([string]::IsNullOrWhiteSpace([AesGCM]::caller)) { [AesGCM]::caller = '[AesGCM]' }
+        [StackTracer]::push("AesGCM")
         [AesGCM]::Decrypt($File, [AesGCM]::GetPassword());
     }
     static [void] Decrypt([IO.FileInfo]$File, [securestring]$password) {
@@ -2071,7 +2136,7 @@ class AesGCM : CryptoBase {
         $ba = [byte[]]::New($streamReader.Length);
         [void]$streamReader.Read($ba, 0, [int]$streamReader.Length);
         [void]$streamReader.Close();
-        Write-Verbose "$([AesGCM]::caller) Begin file decryption:"
+        Write-Verbose "$([StackTracer]::Peek()) Begin file decryption:"
         Write-Verbose "[-]  File    : $File"
         Write-Verbose "[-]  OutFile : $OutPath"
         [byte[]]$_salt = [AesGCM]::GetDerivedBytes($Password);
@@ -2154,6 +2219,7 @@ class GitHub {
         return [GitHub]::GetGist($l.Owner, $l.Id)
     }
     static [PsObject] GetGist([string]$UserName, [string]$GistId) {
+        # Todo: create retriable command execution flow
         $t = [GitHub]::GetToken()
         if ($null -eq ([GitHub]::webSession)) {
             [GitHub]::webSession = $(if ($null -eq $t) {
@@ -2447,7 +2513,6 @@ class RecordMap {
     hidden [string] $File
     hidden [bool] $IsSynchronized
     [datetime] $LastWriteTime = [datetime]::Now
-    static hidden [string] $caller = '[ArgonCage]'
     RecordMap() { $this._init() }
     RecordMap([hashtable[]]$array) {
         $this.Add($array); $this._init()
@@ -2462,9 +2527,9 @@ class RecordMap {
     }
     [void] Import([uri]$raw_uri) {
         try {
-            $pass = $null; if ([string]::IsNullOrWhiteSpace([AesGCM]::caller)) { [AesGCM]::caller = [RecordMap]::caller }
+            [StackTracer]::push("Argoncage"); $pass = $null;
             Set-Variable -Name pass -Scope Local -Visibility Private -Option Private -Value $([ArgonCage]::Tmp.GetSessionKey('configrw', [PSCustomObject]@{
-                        caller = [RecordMap]::caller
+                        caller = [StackTracer]::Peek()
                         prompt = "Paste/write a Password to decrypt configs"
                     }
                 )
@@ -2478,9 +2543,9 @@ class RecordMap {
         }
     }
     [void] Import([String]$FilePath) {
-        Write-Host "$([RecordMap]::caller) Import records: $FilePath ..." -f Green
+        Write-Host "$([StackTracer]::Peek()) Import records: $FilePath ..." -f Green
         $this.Set([RecordMap]::Read($FilePath))
-        Write-Host "$([RecordMap]::caller) Import records Complete" -f Green
+        Write-Host "$([StackTracer]::Peek()) Import records Complete" -f Green
     }
     [void] Upload() {
         if ([string]::IsNullOrWhiteSpace($this.Remote)) { throw [InvalidArgumentException]::new('remote') }
@@ -2554,10 +2619,10 @@ class RecordMap {
         return $dict
     }
     static [hashtable[]] Read([string]$FilePath) {
-        $pass = $null; $cfg = $null; [AesGCM]::caller = '[ArgonCage]'; $FilePath = [AesGCM]::GetResolvedPath($FilePath);
+        [StackTracer]::push("Argoncage"); $pass = $null; $cfg = $null; $FilePath = [AesGCM]::GetResolvedPath($FilePath);
         if ([IO.File]::Exists($FilePath)) { if ([string]::IsNullOrWhiteSpace([IO.File]::ReadAllText($FilePath).Trim())) { throw [System.Exception]::new("File is empty: $FilePath") } } else { throw [FileNotFoundException]::new("File not found: $FilePath") }
         Set-Variable -Name pass -Scope Local -Visibility Private -Option Private -Value $([ArgonCage]::Tmp.GetSessionKey('configrw', [PSCustomObject]@{
-                    caller = [RecordMap]::caller
+                    caller = [StackTracer]::Peek()
                     prompt = "Paste/write a Password to decrypt configs"
                 }
             )
@@ -2616,15 +2681,15 @@ class RecordMap {
     }
     [void] Save() {
         try {
-            $pass = $null; Write-Host "$([RecordMap]::caller) Saving records to file: $($this.File) ..." -f Blue
+            $pass = $null; Write-Host "$([StackTracer]::Peek()) Saving records to file: $($this.File) ..." -f Blue
             Set-Variable -Name pass -Scope Local -Visibility Private -Option Private -Value $([ArgonCage]::Tmp.GetSessionKey('configrw', [PSCustomObject]@{
-                        caller = [RecordMap]::caller
+                        caller = [StackTracer]::Peek()
                         prompt = "Paste/write a Password to encrypt configs"
                     }
                 )
             ); [ValidateNotNullOrEmpty()][securestring]$pass = $pass
             $this.LastWriteTime = [datetime]::Now; [IO.File]::WriteAllText($this.File, [Base85]::Encode([AesGCM]::Encrypt([xconvert]::ToCompressed($this.ToByte()), $pass)), [System.Text.Encoding]::UTF8)
-            Write-Host "$([RecordMap]::caller) Saving records " -f Blue -NoNewline; Write-Host "Completed." -f Green
+            Write-Host "$([StackTracer]::Peek()) Saving records " -f Blue -NoNewline; Write-Host "Completed." -f Green
         } catch {
             throw $_
         } finally {
@@ -2676,7 +2741,7 @@ class SessionTmp {
     }
     [SecureString] GetSessionKey([string]$Name) {
         return [ArgonCage]::Tmp.GetSessionKey($Name, [PSCustomObject]@{
-                caller = [RecordMap]::caller
+                caller = [StackTracer]::Peek()
                 prompt = "Paste/write a Password"
             }
         )
@@ -3450,7 +3515,7 @@ class ArgonCage : CryptoBase {
         $og_EncryptionScope = [ArgonCage]::EncryptionScope;
         try {
             $this::EncryptionScope = [EncryptionScope]::Machine
-            [AesGCM]::caller = '[ArgonCage]'; [void]$this.Config.Edit()
+            [StackTracer]::push("Argoncage"); [void]$this.Config.Edit()
         } finally {
             $this::EncryptionScope = $og_EncryptionScope;
         }
@@ -3492,7 +3557,7 @@ class ArgonCage : CryptoBase {
     [void] SetConfigs([string]$ConfigFile) { $this.SetConfigs($ConfigFile, $true) }
     [void] SetConfigs([bool]$throwOnFailure) { $this.SetConfigs([string]::Empty, $throwOnFailure) }
     [void] SetConfigs([string]$ConfigFile, [bool]$throwOnFailure) {
-        [AesGCM]::caller = "[$($this.GetType().Name)]"
+        [StackTracer]::push("Argoncage")
         if ($null -eq $this.Config) { $this.Config = [RecordMap]::new([ArgonCage]::Get_default_Config()) }
         if (![string]::IsNullOrWhiteSpace($ConfigFile)) { $this.Config.File = [ArgonCage]::GetUnResolvedPath($ConfigFile) }
         if (![IO.File]::Exists($this.Config.File)) {

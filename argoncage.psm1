@@ -216,6 +216,17 @@ class ProgressUtil {
     }
 }
 
+class JobResult {
+    [object]$Output
+    [bool]$IsSuccess
+    [object]$LastError
+    JobResult([object]$Output, [bool]$IsSuccess, [object]$LastError) {
+        $this.Output = $Output;
+        $this.IsSuccess = $IsSuccess;
+        $this.LastError = $LastError
+    }
+}
+
 # A small process managment class
 class TaskMan {
     static [System.Management.Automation.PowerShell] RunInBackground([ScriptBlock]$ScriptBlock, [Object[]]$ArgumentList) {
@@ -232,36 +243,35 @@ class TaskMan {
         $results = $threadjobs | Receive-Job -Wait -Auto
         return $results
     }
-    static [PSCustomObject] RetryCommand([ScriptBlock]$ScriptBlock) {
-        return [TaskMan]::RetryCommand($ScriptBlock, $null)
+    static [JobResult] RetryCommand([ScriptBlock]$ScriptBlock) {
+        return [TaskMan]::RetryCommand($ScriptBlock, "")
     }
-    static [PSCustomObject] RetryCommand([ScriptBlock]$ScriptBlock, [Object[]]$ArgumentList) {
-        return [TaskMan]::RetryCommand($ScriptBlock, $ArgumentList, [System.Threading.CancellationToken]::None, 3, "Running $([StackTracer]::peek())", 1)
+    static [JobResult] RetryCommand([ScriptBlock]$ScriptBlock, [string]$Message) {
+        return [TaskMan]::RetryCommand($ScriptBlock, $Message, 3)
     }
-    # .SYNOPSIS
-    #     This menod Runs Retriable Commands
-    # .DESCRIPTION
-    #     Retries a script process for a number of times or until it completes without terminating errors.
-    #     All Unnamed arguments will be passed as arguments to the script
-    static [PSCustomObject] RetryCommand([ScriptBlock]$ScriptBlock, [Object[]]$ArgumentList, [System.Threading.CancellationToken]$CancellationToken, [Int]$MaxAttempts, [String]$Message, [Int]$SecondsBetweenAttempts) {
+    static [JobResult] RetryCommand([ScriptBlock]$ScriptBlock, [string]$Message, [Int]$MaxAttempts) {
+        return [TaskMan]::RetryCommand($ScriptBlock, $null, [System.Threading.CancellationToken]::None, $MaxAttempts, "$Message", 1000)
+    }
+    static [JobResult] RetryCommand([ScriptBlock]$ScriptBlock, [Object[]]$ArgumentList, [string]$Message) {
+        return [TaskMan]::RetryCommand($ScriptBlock, $ArgumentList, [System.Threading.CancellationToken]::None, 3, "$Message", 1000)
+    }
+    static [JobResult] RetryCommand([ScriptBlock]$ScriptBlock, [Object[]]$ArgumentList, [System.Threading.CancellationToken]$CancellationToken, [Int]$MaxAttempts, [String]$Message, [Int]$Timeout) {
         # [System.Management.Automation.ActionPreference]$eap = $ErrorActionPreference; $ErrorActionPreference = "SilentlyContinue"
         [ValidateNotNullOrEmpty()][scriptblock]$ScriptBlock = $ScriptBlock
-        $IsSuccess = $false; $fxn = ('[' + $MyInvocation.MyCommand.Name + ']'); $AttemptStartTime = $null; $EndMsg = [string]::Empty
-        $Output = [string]::Empty; $ErrorRecord = $null; $Attempts = 1
-        $Result = [PSCustomObject]@{
-            Output      = $Output
-            IsSuccess   = [bool]$IsSuccess # $false in this case
-            ErrorRecord = $null
-        }
+        if ([string]::IsNullOrWhiteSpace([stackTracer]::peek())) { [stackTracer]::Push("TaskMan") }
+        $IsSuccess = $false; $fxn = [stackTracer]::peek(); $AttemptStartTime = $null; $EndMsg = [string]::Empty
+        $Output = [string]::Empty; $LastError = $null; $Attempts = 1
+        if ([string]::IsNullOrWhiteSpace($Message)) { $Message = "Invoke Command" }
+        $Result = [JobResult]::new($Output, [bool]$IsSuccess, $LastError)
         $CommandStartTime = Get-Date
         while (($Attempts -le $MaxAttempts) -and !$Result.IsSuccess) {
             $Retries = $MaxAttempts - $Attempts
             if ($cancellationToken.IsCancellationRequested) {
-                Write-Verbose "$fxn CancellationRequested when $Retries retries were left."
+                [TaskMan]::WriteLog("$fxn CancellationRequested when $Retries retries were left.", $false)
                 throw
             }
             try {
-                Write-Verbose "$fxn $Message Retry Attempt # $Attempts/$MaxAttempts ..."
+                [TaskMan]::WriteLog("$fxn $Message Attempt # $Attempts/$MaxAttempts ...", $true)
                 $AttemptStartTime = Get-Date
                 if ($null -ne $ArgumentList) {
                     $Output = Invoke-Command -ScriptBlock $ScriptBlock -ArgumentList $ArgumentList
@@ -269,29 +279,26 @@ class TaskMan {
                     $Output = Invoke-Command -ScriptBlock $ScriptBlock
                 }
                 $IsSuccess = [bool]$?
+                if ($Output -is [bool]) { $IsSuccess = $Output }
             } catch {
                 $IsSuccess = $false
-                $ErrorRecord = [System.Management.Automation.ErrorRecord]$_
+                $LastError = $_
                 # Write-Log $_.Exception.ErrorRecord
-                Write-Verbose "$fxn Error encountered after $([math]::Round(($(Get-Date) - $AttemptStartTime).TotalSeconds, 2)) seconds"
+                [TaskMan]::WriteLog("$fxn Error encountered after $([math]::Round(($(Get-Date) - $AttemptStartTime).TotalSeconds, 2)) seconds", $IsSuccess)
             } finally {
-                $Result = [PSCustomObject]@{
-                    Output      = $Output
-                    IsSuccess   = $IsSuccess
-                    ErrorRecord = $ErrorRecord
-                }
+                $Result.Output = $Output
+                $Result.IsSuccess = $IsSuccess
+                $Result.LastError = $LastError
                 if ($Retries -eq 0 -or $Result.IsSuccess) {
                     $ElapsedTime = [math]::Round(($(Get-Date) - $CommandStartTime).TotalSeconds, 2)
-                    $EndMsg = $(if ($Result.IsSuccess) { "Completed Successfully. Total time elapsed $ElapsedTime" } else { "Completed With Errors. Total time elapsed $ElapsedTime. Check the log file `$LogPath" })
-                    Write-Verbose "$fxn Returning Objects"
+                    $EndMsg = $(if ($Result.IsSuccess) { "$Message Completed Successfully. Total time elapsed $ElapsedTime" } else { "$Message Completed With Errors. Total time elapsed $ElapsedTime." })
                 } elseif (!$cancellationToken.IsCancellationRequested -and $Retries -ne 0) {
-                    Write-Verbose "$fxn Waiting $SecondsBetweenAttempts seconds before retrying. Retries left: $Retries"
-                    Start-Sleep $SecondsBetweenAttempts
+                    Start-Sleep -Milliseconds $Timeout
                 }
                 $Attempts++
             }
         }
-        Write-Verbose "$fxn $EndMsg"
+        [TaskMan]::WriteLog("$fxn $EndMsg", $Result.IsSuccess)
         # $ErrorActionPreference = $eap;
         return $Result
     }
@@ -321,12 +328,21 @@ class TaskMan {
             if ($null -ne $Errors) {
                 $errormessages = $Errors.Exception.Message -join "`n"
             }
-            Write-Host "Completed with errors.`n`t$errormessages" -f Red
+            [taskman]::WriteLog("Completed with errors.`n`t$errormessages", $false)
         } else {
-            Write-Host "Done." -f Green
+            [TaskMan]::WriteLog("Done.", $true)
         }
         [Console]::CursorVisible = $true;
         return $Job
+    }
+    static [void] WriteLog([bool]$IsSuccess) {
+        [TaskMan]::WriteLog($null, $IsSuccess)
+    }
+    static [void] WriteLog([string]$Message, [bool]$IsSuccess) {
+        $re = @{ true = @{ m = "Success"; c = "Green" }; false = @{ m = "Failed"; c = "Red" } }
+        if (![string]::IsNullOrWhiteSpace($Message)) { $re["$IsSuccess"].m = $Message }
+        $re = $re["$IsSuccess"]
+        Write-Host $re.m -f $re.c
     }
 }
 class NetworkManager {
@@ -2233,7 +2249,6 @@ class GitHub {
         return [GitHub]::GetGist($l.Owner, $l.Id)
     }
     static [PsObject] GetGist([string]$UserName, [string]$GistId) {
-        # Todo: create retriable command execution flow
         $t = [GitHub]::GetToken()
         if ($null -eq ([GitHub]::webSession)) {
             [GitHub]::webSession = $(if ($null -eq $t) {
@@ -2243,13 +2258,21 @@ class GitHub {
                 }
             )
         }
-        if (!((Test-Connection github.com -Count 1 -ErrorAction Ignore).status -eq "Success")) {
+        if (![TaskMan]::RetryCommand({ ((Test-Connection github.com -Count 1 -ErrorAction Ignore).status -eq "Success") }, "Test-Connection").Output) {
             throw [System.Net.NetworkInformation.PingException]::new("PingException, PLease check your connection!");
         }
         if ([string]::IsNullOrWhiteSpace($GistId) -or $GistId -eq '*') {
             return Get-Gists -UserName $UserName -SecureToken $t
         }
-        return Invoke-RestMethod -Uri "https://api.github.com/gists/$GistId" -WebSession ([GitHub]::webSession) -Method Get -Verbose:$false
+        $FetchGistId = [scriptblock]::Create({
+                param (
+                    [Parameter(Mandatory = $true)]
+                    [ValidateNotNullOrEmpty()][string]$Id
+                )
+                return Invoke-RestMethod -Uri "https://api.github.com/gists/$Id" -WebSession ([GitHub]::webSession) -Method Get -Verbose:$false
+            }
+        )
+        return [TaskMan]::RetryCommand($FetchGistId, @($GistId), "FetchGist").Output
     }
     Static [string] GetGistContent([string]$FileName, [uri]$GistUri) {
         return [GitHub]::GetGist($GistUri).files.$FileName.content
@@ -2265,8 +2288,17 @@ class GitHub {
                 content = $file.Content
             }
         }
-        $response = Invoke-RestMethod -Uri $url -WebSession ([GitHub]::webSession) -Method Post -Body ($body | ConvertTo-Json) -Verbose:$false
-        return $response
+        $CreateGist = [scriptblock]::Create({
+                param (
+                    [Parameter(Mandatory = $true)]
+                    [ValidateNotNullOrEmpty()][uri]$UriObj,
+                    [Parameter(Mandatory = $true)]
+                    [ValidateNotNullOrEmpty()][string]$JSONBODY
+                )
+                return Invoke-RestMethod -Uri $UriObj -WebSession ([GitHub]::webSession) -Method Post -Body $JSONBODY -Verbose:$false
+            }
+        )
+        return [TaskMan]::RetryCommand($CreateGist, @($url, ($body | ConvertTo-Json)), "CreateGist").Output
     }
     static [PsObject] UpdateGist([GistFile]$gist, [string]$NewContent) {
         return ''
@@ -2343,8 +2375,7 @@ class GitHub {
     }
     static [bool] IsConnected() {
         if (![bool]("System.Net.NetworkInformation.Ping" -as 'type')) { Add-Type -AssemblyName System.Net.NetworkInformation };
-        $cs = $null; $re = @{ true = @{ m = "Success"; c = "Green" }; false = @{ m = "Failed"; c = "Red" } }
-        Write-Host "[Github] Testing Connection ... " -f Blue -NoNewline
+        $cs = $null; Write-Host "[Github] Testing Connection ... " -f Blue -NoNewline
         try {
             [System.Net.NetworkInformation.PingReply]$PingReply = [System.Net.NetworkInformation.Ping]::new().Send("github.com");
             $cs = $PingReply.Status -eq [System.Net.NetworkInformation.IPStatus]::Success
@@ -2354,8 +2385,7 @@ class GitHub {
             $cs = $false;
             Write-Error $_
         }
-        $re = $re[$cs.ToString()]
-        Write-Host $re.m -f $re.c
+        [TaskMan]::WriteLog($cs)
         return $cs
     }
 }

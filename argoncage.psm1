@@ -218,13 +218,19 @@ class ProgressUtil {
 
 # A small process managment class
 class TaskMan {
-    static [PSCustomObject] RunInBackground([ScriptBlock]$ScriptBlock, [Object[]]$ArgumentList) {
-        # Implementation goes here
-        return ""
+    static [System.Management.Automation.PowerShell] RunInBackground([ScriptBlock]$ScriptBlock, [Object[]]$ArgumentList) {
+        $powershell = [System.Management.Automation.PowerShell]::Create()
+        $powershell.AddScript($ScriptBlock).AddParameters($ArgumentList)
+        $runspace = [System.Management.Automation.Runspaces.RunspaceFactory]::CreateRunspace()
+        $runspace.Open()
+        $powershell.Runspace = $runspace
+        $powershell.BeginInvoke()
+        return $powershell
     }
-    static [PSCustomObject[]] RunInParallel([System.Management.Automation.Job[]]$jobs) {
-        # Implementation goes here
-        return ""
+    static [System.Management.Automation.PSObject[]] RunInParallel([System.Management.Automation.Job[]]$jobs) {
+        $threadjobs = $jobs | ForEach-Object { Start-ThreadJob -ScriptBlock ([ScriptBlock]::Create($_.Command)) }
+        $results = $threadjobs | Receive-Job -Wait -Auto
+        return $results
     }
     static [PSCustomObject] RetryCommand([ScriptBlock]$ScriptBlock) {
         return [TaskMan]::RetryCommand($ScriptBlock, $null)

@@ -281,3 +281,5 @@ function Wait-Task {
         return $result
     }
 }
+
+Export-ModuleMember -Function '*' -Variable '*' -Cmdlet '*' -Alias '*' -Verbose:($VerbosePreference -eq "Continue")

@@ -57,3 +57,5 @@ function Show-Stack {
         [StackTracer]::Peek()
     }
 }
+
+Export-ModuleMember -Function '*' -Variable '*' -Cmdlet '*' -Alias '*' -Verbose:($VerbosePreference -eq "Continue")

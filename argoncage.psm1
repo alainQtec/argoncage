@@ -145,8 +145,11 @@ class StackTracer {
     static [System.Collections.Generic.List[hashtable]]$CallLog = @()
     static [void] Push([type]$class) {
         $str = "[{0}]" -f $class
-        [StackTracer]::stack.Push($str)
-        [StackTracer]::CallLog.Add(@{ ($str + ' @ ' + [datetime]::Now.ToShortTimeString()) = [System.Environment]::StackTrace.Split("`n").Replace(" at ", "").Trim() })
+        if ([StackTracer]::Peek() -ne "$class") {
+            [StackTracer]::stack.Push($str)
+            $LAST_ERROR = $(Get-Variable -Name Error -ValueOnly)[0]
+            [StackTracer]::CallLog.Add(@{ ($str + ' @ ' + [datetime]::Now.ToShortTimeString()) = $(if ($null -ne $LAST_ERROR) { $LAST_ERROR.ScriptStackTrace } else { [System.Environment]::StackTrace }).Split("`n").Replace("at ", "# ").Trim() })
+        }
     }
     static [type] Pop() {
         $result = $null
@@ -256,10 +259,9 @@ class TaskMan {
         return [TaskMan]::RetryCommand($ScriptBlock, $ArgumentList, [System.Threading.CancellationToken]::None, 3, "$Message", 1000)
     }
     static [JobResult] RetryCommand([ScriptBlock]$ScriptBlock, [Object[]]$ArgumentList, [System.Threading.CancellationToken]$CancellationToken, [Int]$MaxAttempts, [String]$Message, [Int]$Timeout) {
-        # [System.Management.Automation.ActionPreference]$eap = $ErrorActionPreference; $ErrorActionPreference = "SilentlyContinue"
         [ValidateNotNullOrEmpty()][scriptblock]$ScriptBlock = $ScriptBlock
         if ([string]::IsNullOrWhiteSpace([stackTracer]::peek())) { [stackTracer]::Push("TaskMan") }
-        $IsSuccess = $false; $fxn = [stackTracer]::peek(); $AttemptStartTime = $null; $EndMsg = [string]::Empty
+        $IsSuccess = $false; $fxn = [stackTracer]::peek(); $AttemptStartTime = $null;
         $Output = [string]::Empty; $LastError = $null; $Attempts = 1
         if ([string]::IsNullOrWhiteSpace($Message)) { $Message = "Invoke Command" }
         $Result = [JobResult]::new($Output, [bool]$IsSuccess, $LastError)
@@ -271,7 +273,7 @@ class TaskMan {
                 throw
             }
             try {
-                [TaskMan]::WriteLog("$fxn $Message Attempt # $Attempts/$MaxAttempts ...", $true)
+                Write-Host "$fxn $Message" -NoNewline -f DarkGray; Write-Host " Attempt # $Attempts/$MaxAttempts : " -NoNewline
                 $AttemptStartTime = Get-Date
                 if ($null -ne $ArgumentList) {
                     $Output = Invoke-Command -ScriptBlock $ScriptBlock -ArgumentList $ArgumentList
@@ -281,25 +283,20 @@ class TaskMan {
                 $IsSuccess = [bool]$?
                 if ($Output -is [bool]) { $IsSuccess = $Output }
             } catch {
-                $IsSuccess = $false
-                $LastError = $_
-                # Write-Log $_.Exception.ErrorRecord
-                [TaskMan]::WriteLog("$fxn Error encountered after $([math]::Round(($(Get-Date) - $AttemptStartTime).TotalSeconds, 2)) seconds", $IsSuccess)
+                $IsSuccess = $false; $LastError = $_
+                Write-Host "$fxn Errored after $([math]::Round(($(Get-Date) - $AttemptStartTime).TotalSeconds, 2)) seconds" -f Red -NoNewline
             } finally {
                 $Result.Output = $Output
                 $Result.IsSuccess = $IsSuccess
                 $Result.LastError = $LastError
                 if ($Retries -eq 0 -or $Result.IsSuccess) {
-                    $ElapsedTime = [math]::Round(($(Get-Date) - $CommandStartTime).TotalSeconds, 2)
-                    $EndMsg = $(if ($Result.IsSuccess) { "$Message Completed Successfully. Total time elapsed $ElapsedTime" } else { "$Message Completed With Errors. Total time elapsed $ElapsedTime." })
+                    Write-Host " E.T = $([math]::Round(($(Get-Date) - $CommandStartTime).TotalSeconds, 2)) seconds"
                 } elseif (!$cancellationToken.IsCancellationRequested -and $Retries -ne 0) {
                     Start-Sleep -Milliseconds $Timeout
                 }
                 $Attempts++
             }
         }
-        [TaskMan]::WriteLog("$fxn $EndMsg", $Result.IsSuccess)
-        # $ErrorActionPreference = $eap;
         return $Result
     }
     static [System.Management.Automation.Job] WaitJob([string]$progressMsg, [scriptblock]$Job) {
@@ -339,10 +336,10 @@ class TaskMan {
         [TaskMan]::WriteLog($null, $IsSuccess)
     }
     static [void] WriteLog([string]$Message, [bool]$IsSuccess) {
-        $re = @{ true = @{ m = "Success"; c = "Green" }; false = @{ m = "Failed"; c = "Red" } }
+        $re = @{ true = @{ m = "Success "; c = "Green" }; false = @{ m = "Failed "; c = "Red" } }
         if (![string]::IsNullOrWhiteSpace($Message)) { $re["$IsSuccess"].m = $Message }
         $re = $re["$IsSuccess"]
-        Write-Host $re.m -f $re.c
+        Write-Host $re.m -f $re.c -NoNewline:$IsSuccess
     }
 }
 class NetworkManager {
@@ -1992,7 +1989,6 @@ class AesGCM : CryptoBase {
     # static hidden [byte[]]$_salt = [convert]::FromBase64String("hsKgmva9wZoDxLeREB1udw==");
     static hidden [EncryptionScope] $Scope = [EncryptionScope]::User
     static [byte[]] Encrypt([byte[]]$bytes) {
-        [StackTracer]::push("AesGCM")
         return [AesGCM]::Encrypt($bytes, [AesGCM]::GetPassword());
     }
     static [byte[]] Encrypt([byte[]]$Bytes, [SecureString]$Password) {
@@ -2026,8 +2022,7 @@ class AesGCM : CryptoBase {
         [int]$IV_SIZE = 0; Set-Variable -Name IV_SIZE -Scope Local -Visibility Private -Option Private -Value 12
         [int]$TAG_SIZE = 0; Set-Variable -Name TAG_SIZE -Scope Local -Visibility Private -Option Private -Value 16
         [string]$Key = $null; Set-Variable -Name Key -Scope Local -Visibility Private -Option Private -Value $([convert]::ToBase64String([System.Security.Cryptography.Rfc2898DeriveBytes]::new([xconvert]::ToString($Password), $Salt, 10000, [System.Security.Cryptography.HashAlgorithmName]::SHA1).GetBytes(32)));
-        [System.IntPtr]$th = [System.IntPtr]::new(0); [StackTracer]::push("AesGCM")
-        Set-Variable -Name th -Scope Local -Visibility Private -Option Private -Value $([System.Runtime.InteropServices.Marshal]::StringToHGlobalAnsi($TAG_SIZE));
+        [System.IntPtr]$th = [System.IntPtr]::new(0); Set-Variable -Name th -Scope Local -Visibility Private -Option Private -Value $([System.Runtime.InteropServices.Marshal]::StringToHGlobalAnsi($TAG_SIZE));
         try {
             $_bytes = $bytes;
             $aes = $null; Set-Variable -Name aes -Scope Local -Visibility Private -Option Private -Value $([ScriptBlock]::Create("[Security.Cryptography.AesGcm]::new([convert]::FromBase64String('$Key'))").Invoke());
@@ -2053,7 +2048,6 @@ class AesGCM : CryptoBase {
         return $_bytes
     }
     static [void] Encrypt([IO.FileInfo]$File) {
-        [StackTracer]::push("AesGCM")
         [AesGCM]::Encrypt($File, [AesGCM]::GetPassword());
     }
     static [void] Encrypt([IO.FileInfo]$File, [securestring]$Password) {
@@ -2085,7 +2079,6 @@ class AesGCM : CryptoBase {
         [void]$streamWriter.Dispose()
     }
     static [byte[]] Decrypt([byte[]]$bytes) {
-        [StackTracer]::push("AesGCM")
         return [AesGCM]::Decrypt($bytes, [AesGCM]::GetPassword());
     }
     static [byte[]] Decrypt([byte[]]$Bytes, [SecureString]$Password) {
@@ -2119,8 +2112,7 @@ class AesGCM : CryptoBase {
         [int]$IV_SIZE = 0; Set-Variable -Name IV_SIZE -Scope Local -Visibility Private -Option Private -Value 12
         [int]$TAG_SIZE = 0; Set-Variable -Name TAG_SIZE -Scope Local -Visibility Private -Option Private -Value 16
         [string]$Key = $null; Set-Variable -Name Key -Scope Local -Visibility Private -Option Private -Value $([convert]::ToBase64String([System.Security.Cryptography.Rfc2898DeriveBytes]::new([xconvert]::ToString($Password), $Salt, 10000, [System.Security.Cryptography.HashAlgorithmName]::SHA1).GetBytes(32)));
-        [System.IntPtr]$th = [System.IntPtr]::new(0); [StackTracer]::push("AesGCM")
-        Set-Variable -Name th -Scope Local -Visibility Private -Option Private -Value $([System.Runtime.InteropServices.Marshal]::StringToHGlobalAnsi($TAG_SIZE));
+        [System.IntPtr]$th = [System.IntPtr]::new(0); Set-Variable -Name th -Scope Local -Visibility Private -Option Private -Value $([System.Runtime.InteropServices.Marshal]::StringToHGlobalAnsi($TAG_SIZE));
         try {
             $_bytes = if (![string]::IsNullOrWhiteSpace($Compression)) { [xconvert]::ToDecompressed($bytes, $Compression) } else { $bytes }
             $aes = [ScriptBlock]::Create("[Security.Cryptography.AesGcm]::new([convert]::FromBase64String('$Key'))").Invoke()
@@ -2146,7 +2138,6 @@ class AesGCM : CryptoBase {
         return $_bytes
     }
     static [void] Decrypt([IO.FileInfo]$File) {
-        [StackTracer]::push("AesGCM")
         [AesGCM]::Decrypt($File, [AesGCM]::GetPassword());
     }
     static [void] Decrypt([IO.FileInfo]$File, [securestring]$password) {
@@ -2185,6 +2176,7 @@ class GitHub {
     static $webSession
     static [string] $UserName
     static hidden [bool] $IsInteractive = $false
+    static hidden [EncryptionScope] $EncryptionScope = "Machine"
     static hidden [string] $TokenFile = [GitHub]::GetTokenFile()
 
     static [PSObject] createSession() {
@@ -2240,7 +2232,7 @@ class GitHub {
         return $sectoken
     }
     static [PsObject] GetUserInfo([string]$UserName) {
-        if ([string]::IsNullOrWhiteSpace([GitHub]::userName)) { [GitHub]::createSession() }
+        [stackTracer]::Push("GitHub"); if ([string]::IsNullOrWhiteSpace([GitHub]::userName)) { [GitHub]::createSession() }
         $response = Invoke-RestMethod -Uri "https://api.github.com/user/$UserName" -WebSession ([GitHub]::webSession) -Method Get -Verbose:$false
         return $response
     }
@@ -2249,7 +2241,7 @@ class GitHub {
         return [GitHub]::GetGist($l.Owner, $l.Id)
     }
     static [PsObject] GetGist([string]$UserName, [string]$GistId) {
-        $t = [GitHub]::GetToken()
+        [stackTracer]::Push("GitHub"); $t = [GitHub]::GetToken()
         if ($null -eq ([GitHub]::webSession)) {
             [GitHub]::webSession = $(if ($null -eq $t) {
                     [GitHub]::createSession($UserName)
@@ -2258,7 +2250,7 @@ class GitHub {
                 }
             )
         }
-        if (![TaskMan]::RetryCommand({ ((Test-Connection github.com -Count 1 -ErrorAction Ignore).status -eq "Success") }, "Test-Connection").Output) {
+        if (![TaskMan]::RetryCommand({ [GitHub]::IsConnected() }, "GitHub.IsConnected()").Output) {
             throw [System.Net.NetworkInformation.PingException]::new("PingException, PLease check your connection!");
         }
         if ([string]::IsNullOrWhiteSpace($GistId) -or $GistId -eq '*') {
@@ -2272,7 +2264,7 @@ class GitHub {
                 return Invoke-RestMethod -Uri "https://api.github.com/gists/$Id" -WebSession ([GitHub]::webSession) -Method Get -Verbose:$false
             }
         )
-        return [TaskMan]::RetryCommand($FetchGistId, @($GistId), "FetchGist").Output
+        return [TaskMan]::RetryCommand($FetchGistId, @($GistId), "GitHub.FetchGist()  ").Output
     }
     Static [string] GetGistContent([string]$FileName, [uri]$GistUri) {
         return [GitHub]::GetGist($GistUri).files.$FileName.content
@@ -2725,15 +2717,16 @@ class RecordMap {
     }
     [void] Save() {
         try {
-            $pass = $null; Write-Host "$([StackTracer]::Peek()) Saving records to file: $($this.File) ..." -f Blue
+            $cllr = [StackTracer]::Peek(); [ValidateNotNullOrEmpty()][string]$cllr = $cllr
+            $pass = $null; Write-Host "$cllr Saving records to file: $($this.File) ..." -f Blue
             Set-Variable -Name pass -Scope Local -Visibility Private -Option Private -Value $([ArgonCage]::Tmp.GetSessionKey('configrw', [PSCustomObject]@{
-                        caller = [StackTracer]::Peek()
+                        caller = $cllr
                         prompt = "Paste/write a Password to encrypt configs"
                     }
                 )
             ); [ValidateNotNullOrEmpty()][securestring]$pass = $pass
             $this.LastWriteTime = [datetime]::Now; [IO.File]::WriteAllText($this.File, [Base85]::Encode([AesGCM]::Encrypt([xconvert]::ToCompressed($this.ToByte()), $pass)), [System.Text.Encoding]::UTF8)
-            Write-Host "$([StackTracer]::Peek()) Saving records " -f Blue -NoNewline; Write-Host "Completed." -f Green
+            Write-Host "$cllr Saving records " -f Blue -NoNewline; Write-Host "Completed." -f Green
         } catch {
             throw $_
         } finally {
@@ -2770,6 +2763,7 @@ class RecordMap {
 class SessionTmp {
     [ValidateNotNull()][RecordMap]$vars
     [ValidateNotNull()][System.Collections.Generic.List[string]]$Paths
+    static hidden [EncryptionScope] $EncryptionScope = "Machine"
     SessionTmp() {
         $this.vars = [RecordMap]::new()
         $this.Paths = [System.Collections.Generic.List[string]]::new()
@@ -2794,7 +2788,7 @@ class SessionTmp {
         [ValidateNotNullOrEmpty()][string]$Name = $Name
         [ValidateNotNullOrEmpty()][psobject]$Options = $Options
         if ($null -eq $this.vars.SessionKeys) {
-            $scope = [scriptblock]::Create("$($Options.caller)::EncryptionScope").Invoke();
+            $scope = $this::Get_Enc_Scope($Options.caller)
             [ValidateNotNullOrEmpty()][EncryptionScope]$scope = $scope
             $this.SaveSessionKey($Name, $(if ($scope -eq "User") {
                         Write-Verbose "Save Sessionkey $Name ..."
@@ -2806,6 +2800,13 @@ class SessionTmp {
             )
         }
         return $this.vars.SessionKeys.$Name
+    }
+    static hidden [EncryptionScope] Get_Enc_Scope([string]$caller) {
+        $_scope = [scriptblock]::Create("return $($caller)::EncryptionScope").Invoke();
+        if ([string]::IsNullOrWhiteSpace("$_scope")) {
+            return [SessionTmp]::EncryptionScope
+        }
+        return $_scope
     }
     [void] Clear() {
         $this.vars = [RecordMap]::new()
@@ -3115,7 +3116,7 @@ class vault {
     [void] EditSecrets([String]$Path) {
         $private:secrets = $null; $fswatcher = $null; $process = $null; $outFile = [IO.FileInfo][IO.Path]::GetTempFileName()
         try {
-            [NetworkManager]::BlockAllOutbound()
+            [StackTracer]::Push("vault"); [NetworkManager]::BlockAllOutbound()
             if ([vault]::UseVerbose) { "[+] Edit secrets started .." | Write-Host -f Magenta }
             $this.GetSecrets($Path) | ConvertTo-Json | Out-File $OutFile.FullName -Encoding utf8BOM
             Set-Variable -Name OutFile -Value $(Rename-Item $outFile.FullName -NewName ($outFile.BaseName + '.json') -PassThru)
@@ -3153,7 +3154,7 @@ class vault {
     static [IO.FileInfo] FetchSecrets([uri]$remote, [string]$OutFile) {
         if ([string]::IsNullOrWhiteSpace($remote.AbsoluteUri)) { throw [System.ArgumentException]::new("Invalid Argument: remote") }
         if ([vault]::UseVerbose) { "[+] Fetching secrets from gist ..." | Write-Host -f Magenta }
-        [NetworkManager]::DownloadOptions.Set('ShowProgress', $true)
+        [StackTracer]::Push("vault"); [NetworkManager]::DownloadOptions.Set('ShowProgress', $true)
         $og_PbLength = [NetworkManager]::DownloadOptions.ProgressBarLength
         $og_pbMsg = [NetworkManager]::DownloadOptions.ProgressMessage
         $Progress_Msg = "[+] Downloading secrets to {0}" -f $OutFile
@@ -3199,7 +3200,7 @@ class vault {
         $this.UpdateSecrets($InputObject, [CryptoBase]::GetUnResolvedPath($outFile), $password, '')
     }
     [void] UpdateSecrets([psObject]$InputObject, [string]$outFile, [securestring]$Password, [string]$Compression) {
-        if ([vault]::UseVerbose) { "[+] Updating secrets .." | Write-Host -f Green }
+        [StackTracer]::Push("vault"); if ([vault]::UseVerbose) { "[+] Updating secrets .." | Write-Host -f Green }
         if (![string]::IsNullOrWhiteSpace($Compression)) { [CryptoBase]::ValidateCompression($Compression) }
         [Base85]::Encode([AesGCM]::Encrypt([System.Text.Encoding]::UTF8.GetBytes([string]($InputObject | ConvertTo-Csv)), $Password, [AesGCM]::GetDerivedBytes($Password), $null, $Compression, 1)) | Out-File $outFile -Encoding utf8BOM
     }
@@ -3482,6 +3483,7 @@ class HKDF2 {
 #     Explanation of the function or its result. You can include multiple examples with additional .EXAMPLE lines
 class ArgonCage : CryptoBase {
     [ValidateNotNullOrEmpty()][RecordMap] $Config
+    [ValidateNotNullOrEmpty()][version] $version
     static hidden [ValidateNotNull()][vault] $vault
     static hidden [ValidateNotNull()][SessionTmp] $Tmp
     Static hidden [ValidateNotNull()][IO.DirectoryInfo] $DataPath = [ArgonCage]::Get_dataPath('ArgonCage', 'Data')
@@ -3490,11 +3492,11 @@ class ArgonCage : CryptoBase {
 
     ArgonCage() {
         if ($null -eq [ArgonCage]::Tmp) { [ArgonCage]::Tmp = [SessionTmp]::new() }
-        ; $this.SetConfigs(); [ArgonCage]::SetTMPvariables($this.Config)
+        [StackTracer]::push("Argoncage"); $this.SetConfigs(); [ArgonCage]::SetTMPvariables($this.Config)
         # $this.SyncConfigs()
         $this.PsObject.properties.add([psscriptproperty]::new('IsOffline', [scriptblock]::Create({ return ((Test-Connection github.com -Count 1).status -ne "Success") })))
         [ArgonCage].psobject.Properties.Add([psscriptproperty]::new('Version', {
-                    return [ArgonCage]::GetVersion()
+                    return $this.SetVersion()
                 }, { throw [System.InvalidOperationException]::new("Cannot set Version") }
             )
         )
@@ -3601,7 +3603,6 @@ class ArgonCage : CryptoBase {
     [void] SetConfigs([string]$ConfigFile) { $this.SetConfigs($ConfigFile, $true) }
     [void] SetConfigs([bool]$throwOnFailure) { $this.SetConfigs([string]::Empty, $throwOnFailure) }
     [void] SetConfigs([string]$ConfigFile, [bool]$throwOnFailure) {
-        [StackTracer]::push("Argoncage")
         if ($null -eq $this.Config) { $this.Config = [RecordMap]::new([ArgonCage]::Get_default_Config()) }
         if (![string]::IsNullOrWhiteSpace($ConfigFile)) { $this.Config.File = [ArgonCage]::GetUnResolvedPath($ConfigFile) }
         if (![IO.File]::Exists($this.Config.File)) {
@@ -3759,7 +3760,7 @@ class ArgonCage : CryptoBase {
             LastWriteTime   = [datetime]::Now
         }
         try {
-            Write-Host "     Set Remote uri for config ..." -f Blue
+            Write-Host "     Set Remote uri for config ..." -f Blue; [StackTracer]::Push("ArgonCage")
             $l = [GistFile]::Create([uri]::New($default_Config.GistUri)); [GitHub]::UserName = $l.UserName
             if ($?) {
                 $default_Config.Remote = [uri]::new([GitHub]::GetGist($l.Owner, $l.Id).files."$Config_FileName".raw_url)
@@ -3787,9 +3788,9 @@ class ArgonCage : CryptoBase {
             [ArgonCage]::vault.Cache.Read()
         }
     }
-    static [version] GetVersion() {
-        # Returns the current version of the chatbot.
-        return [version]::New($script:localizedData.ModuleVersion)
+    [version] SetVersion() {
+        $this.version = [version]::New($script:localizedData.ModuleVersion)
+        return $this.version
     }
     static [bool] IsCTRLQ([System.ConsoleKeyInfo]$key) {
         return ($key.modifiers -band [consolemodifiers]::Control) -and ($key.key -eq 'q')

@@ -15,8 +15,6 @@ if ($dataFile.Exists) {
     Write-Warning 'FileNotFound: Unable to find the LocalizedData file argoncage.strings.psd1.'
 }
 #region    Classes
-#region    enums
-
 enum EncryptionScope {
     User    # The encrypted data can be decrypted with the same user on any machine.
     Machine # The encrypted data can only be decrypted with the same user on the same machine it was encrypted on.
@@ -98,24 +96,6 @@ enum CredentialPersistence {
     Enterprise = 3
 }
 
-#endregion enums
-
-class InvalidArgumentException : System.Exception {
-    [string]$paramName
-    [string]$Message
-    InvalidArgumentException() {
-        $this.message = 'Invalid argument'
-    }
-    InvalidArgumentException([string]$paramName) {
-        $this.paramName = $paramName
-        $this.message = "Invalid argument: $paramName"
-    }
-    InvalidArgumentException([string]$paramName, [string]$message) {
-        $this.paramName = $paramName
-        $this.message = $message
-    }
-}
-
 # Static class for calling the native credential functions
 class CredentialNotFoundException : System.Exception, System.Runtime.Serialization.ISerializable {
     [string]$Message; [Exception]$InnerException; hidden $Info; hidden $Context
@@ -130,181 +110,6 @@ class IntegrityCheckFailedException : System.Exception {
     IntegrityCheckFailedException([string]$message) { $this.Message = $message }
     IntegrityCheckFailedException([string]$message, [Exception]$innerException) { $this.Message = $message; $this.InnerException = $innerException }
 }
-class InvalidPasswordException : System.Exception {
-    [string]$Message; [string]hidden $Passw0rd; [securestring]hidden $Password; [System.Exception]$InnerException
-    InvalidPasswordException() { $this.Message = "Invalid password" }
-    InvalidPasswordException([string]$Message) { $this.message = $Message }
-    InvalidPasswordException([string]$Message, [string]$Passw0rd) { ($this.message, $this.Passw0rd, $this.InnerException) = ($Message, $Passw0rd, [System.Exception]::new($Message)) }
-    InvalidPasswordException([string]$Message, [securestring]$Password) { ($this.message, $this.Password, $this.InnerException) = ($Message, $Password, [System.Exception]::new($Message)) }
-    InvalidPasswordException([string]$Message, [string]$Passw0rd, [System.Exception]$InnerException) { ($this.message, $this.Passw0rd, $this.InnerException) = ($Message, $Passw0rd, $InnerException) }
-    InvalidPasswordException([string]$Message, [securestring]$Password, [System.Exception]$InnerException) { ($this.message, $this.Password, $this.InnerException) = ($Message, $Password, $InnerException) }
-}
-
-class NetworkManager {
-    [string] $HostName
-    static [System.Net.IPAddress[]] $IPAddresses
-    static [RecordMap] $DownloadOptions = [RecordMap]::New(@{
-            ShowProgress      = $true
-            ProgressBarLength = [int]([Console]::WindowWidth * 0.7)
-            ProgressMessage   = [string]::Empty
-            RetryTimeout      = 1000 #(milliseconds)
-            Headers           = @{}
-            Proxy             = $null
-            Force             = $false
-        }
-    )
-
-    NetworkManager ([string]$HostName) {
-        $this.HostName = $HostName
-        $this::IPAddresses = [System.Net.Dns]::GetHostAddresses($HostName)
-    }
-    static [string] GetResponse ([string]$URL) {
-        [System.Net.HttpWebRequest]$Request = [System.Net.HttpWebRequest]::Create($URL)
-        $Request.Method = "GET"
-        $Request.Timeout = 10000 # 10 seconds
-        [System.Net.HttpWebResponse]$Response = [System.Net.HttpWebResponse]$Request.GetResponse()
-        if ($Response.StatusCode -eq [System.Net.HttpStatusCode]::OK) {
-            [System.IO.Stream]$ReceiveStream = $Response.GetResponseStream()
-            [System.IO.StreamReader]$ReadStream = [System.IO.StreamReader]::new($ReceiveStream)
-            [string]$Content = $ReadStream.ReadToEnd()
-            $ReadStream.Close()
-            $Response.Close()
-            return $Content
-        } else {
-            throw "The request failed with status code: $($Response.StatusCode)"
-        }
-    }
-    static [void] BlockAllOutbound() {
-        $HostOs = [cryptobase]::Get_Host_Os()
-        if ($HostOs -eq "Linux") {
-            sudo iptables -P OUTPUT DROP
-        } else {
-            netsh advfirewall set allprofiles firewallpolicy blockinbound, blockoutbound
-        }
-    }
-    static [void] UnblockAllOutbound() {
-        $HostOs = [cryptobase]::Get_Host_Os()
-        if ($HostOs -eq "Linux") {
-            sudo iptables -P OUTPUT ACCEPT
-        } else {
-            netsh advfirewall set allprofiles firewallpolicy blockinbound, allowoutbound
-        }
-    }
-    static [IO.FileInfo] DownloadFile([uri]$url) {
-        # No $outFile so we create ones ourselves, and use suffix to prevent duplicaltes
-        $randomSuffix = [Guid]::NewGuid().Guid.subString(15).replace('-', [string]::Join('', (0..9 | Get-Random -Count 1)))
-        return [NetworkManager]::DownloadFile($url, "$(Split-Path $url.AbsolutePath -Leaf)_$randomSuffix");
-    }
-    static [IO.FileInfo] DownloadFile([uri]$url, [string]$outFile) {
-        return [NetworkManager]::DownloadFile($url, $outFile, $false)
-    }
-    static [IO.FileInfo] DownloadFile([uri]$url, [string]$outFile, [bool]$Force) {
-        [ValidateNotNullOrEmpty()][uri]$url = $url; [ValidateNotNull()][bool]$Force = ($Force -as [bool])
-        [ValidateNotNullOrEmpty()][string]$outFile = $outFile; $stream = $null;
-        $fileStream = $null; $name = Split-Path $url -Leaf;
-        $request = [System.Net.HttpWebRequest]::Create($url)
-        $request.UserAgent = "Mozilla/5.0"
-        $response = $request.GetResponse()
-        $contentLength = $response.ContentLength
-        $stream = $response.GetResponseStream()
-        $buffer = New-Object byte[] 1024
-        $outPath = [CryptoBase]::GetUnResolvedPath($outFile)
-        if ([System.IO.Directory]::Exists($outFile)) {
-            if (!$Force) { throw [InvalidArgumentException]::new("outFile", "Please provide valid file path, not a directory.") }
-            $outPath = Join-Path -Path $outFile -ChildPath $name
-        }
-        $Outdir = [IO.Path]::GetDirectoryName($outPath)
-        if (![System.IO.Directory]::Exists($Outdir)) { [void][System.IO.Directory]::CreateDirectory($Outdir) }
-        if ([IO.File]::Exists($outPath)) {
-            if (!$Force) { throw "$outFile already exists" }
-            Remove-Item $outPath -Force -ErrorAction Ignore | Out-Null
-        }
-        $fileStream = [System.IO.FileStream]::new($outPath, [IO.FileMode]::Create, [IO.FileAccess]::ReadWrite, [IO.FileShare]::None)
-        $totalBytesReceived = 0
-        $totalBytesToReceive = $contentLength
-        $OgForeground = (Get-Variable host).Value.UI.RawUI.ForegroundColor
-        $Progress_Msg = [NetworkManager]::DownloadOptions.ProgressMessage
-        if ([string]::IsNullOrWhiteSpace($Progress_Msg)) { $Progress_Msg = "[+] Downloading $name to $Outfile" }
-        Write-Host $Progress_Msg -f Magenta
-        (Get-Variable host).Value.UI.RawUI.ForegroundColor = [ConsoleColor]::Green
-        while ($totalBytesToReceive -gt 0) {
-            $bytesRead = $stream.Read($buffer, 0, 1024)
-            $totalBytesReceived += $bytesRead
-            $totalBytesToReceive -= $bytesRead
-            $fileStream.Write($buffer, 0, $bytesRead)
-            if ([NetworkManager]::DownloadOptions.ShowProgress) {
-                Write-ProgressBar -p ([int]($totalBytesReceived / $contentLength * 100)) -l ([NetworkManager]::DownloadOptions.progressBarLength) -Update
-            }
-        }
-        (Get-Variable host).Value.UI.RawUI.ForegroundColor = $OgForeground
-        try { Invoke-Command -ScriptBlock { $stream.Close(); $fileStream.Close() } -ErrorAction SilentlyContinue } catch { $null }
-        return (Get-Item $outFile)
-    }
-    static [void] UploadFile ([string]$SourcePath, [string]$DestinationURL) {
-        Invoke-RestMethod -Uri $DestinationURL -Method Post -InFile $SourcePath
-    }
-    static [bool] Resolve_Ping_Dependencies () {
-        # Prevent: error: System.PlatformNotSupportedException : The system's ping utility could not be found.
-        # https://github.com/dotnet/runtime/issues/28572
-        $result = [bool](Get-Command ping -ea SilentlyContinue)
-        if ($result) { return $result }
-        $HostOS = [cryptobase]::Get_Host_Os()
-        switch ($HostOS) {
-            "Linux" {
-                $osID = (Get-Content -Path '/etc/os-release' | Where-Object { $_ -match '^ID=' }).Split('=')[1]
-                [bool]$IsPingInstalled = ![string]::IsNullOrWhiteSpace($([string](which ping))); $result = $IsPingInstalled
-                if (!$IsPingInstalled) {
-                    Write-Host "[NetworkManager] Ping is not installed. Installing it now ..." -f Yellow
-                    switch ($osID) {
-                        "ubuntu" { sudo apt-get install iputils-ping }
-                        "debian" { sudo apt-get install iputils-ping }
-                        "fedora" { sudo dnf install iputils }
-                        "centos" { sudo yum install iputils }
-                        "rhel" { sudo yum install iputils }
-                        "arch" { sudo pacman -S iputils }
-                        "opensuse" { sudo zypper install iputils }
-                        "alpine" { sudo apk add iputils }
-                        Default { throw "Unsupported distribution: $osID" }
-                    }
-                    $result = $?
-                    $IsBinInPATH = $env:PATH -split ':' -contains '/bin'
-                    if (!$IsBinInPATH) {
-                        Write-Output 'export PATH=$PATH:/bin' >> ~/.bashrc
-                        source ~/.bashrc
-                    }
-                }
-            }
-            "Windows" {
-                $result = $true
-            }
-            Default {
-                Write-Host "[NetworkManager] Ping could not be installed on HostOS : $HostOS. Please install it manually."
-            }
-        }
-        return $result
-    }
-    static [bool] TestConnection ([string]$HostName) {
-        $cs = $null; $cc = Show-Stack;
-        $re = @{ true = @{ m = "Success"; c = "Green" }; false = @{ m = "Failed"; c = "Red" } }
-        if (![NetworkManager]::resolve_ping_dependencies()) {
-            Write-Host "$cc Could not resolve ping dependencies" -f Red
-        }
-        [ValidateNotNullOrEmpty()][string]$HostName = $HostName
-        if (![bool]("System.Net.NetworkInformation.Ping" -as 'type')) { Add-Type -AssemblyName System.Net.NetworkInformation };
-        try {
-            [System.Net.NetworkInformation.PingReply]$PingReply = [System.Net.NetworkInformation.Ping]::new().Send($HostName);
-            $cs = $PingReply.Status -eq [System.Net.NetworkInformation.IPStatus]::Success
-        } catch [System.Net.Sockets.SocketException], [System.Net.NetworkInformation.PingException] {
-            $cs = $false
-        } catch {
-            $cs = $false;
-            Write-Error $_
-        }
-        $re = $re[$cs.ToString()]
-        Write-Host $re.m -f $re.c
-        return $cs
-    }
-}
 
 class EncodingBase : System.Text.ASCIIEncoding {
     EncodingBase() {}
@@ -318,1039 +123,6 @@ class EncodingBase : System.Text.ASCIIEncoding {
         return [EncodingBase]::new().GetChars($bytes)
     }
 }
-
-#region    CryptoBase
-class CryptoBase {
-    [ValidateNotNull()][byte[]]hidden $_salt
-    [ValidateNotNull()][byte[]]hidden $_bytes
-    static [ValidateNotNull()][EncryptionScope] $EncryptionScope
-    [ValidateNotNull()][securestring]hidden $_Password
-    [ValidateNotNull()][CryptoAlgorithm]hidden $_Algorithm
-
-    CryptoBase() {}
-
-    static [string] GetRandomName() {
-        return [CryptoBase]::GetRandomName((Get-Random -min 16 -max 80));
-    }
-    static [string] GetRandomName([int]$Length) {
-        return [string][CryptoBase]::GetRandomName($Length, $Length);
-    }
-    static [string] GetRandomName([bool]$IncludeNumbers) {
-        $Length = Get-Random -min 16 -max 80
-        return [string][CryptoBase]::GetRandomName($Length, $Length, $IncludeNumbers);
-    }
-    static [string] GetRandomName([int]$Length, [bool]$IncludeNumbers) {
-        return [string][CryptoBase]::GetRandomName($Length, $Length, $IncludeNumbers);
-    }
-    static [string] GetRandomName([int]$minLength, [int]$maxLength) {
-        return [string][CryptoBase]::GetRandomName($minLength, $maxLength, $false);
-    }
-    static [string] GetRandomName([int]$minLength, [int]$maxLength, [bool]$IncludeNumbers) {
-        [int]$iterations = 2; $MinrL = 3; $MaxrL = 999 #Gotta have some restrictions, or one typo could slow down an entire script.
-        if ($minLength -lt $MinrL) { Write-Warning "Length is below the Minimum required 'String Length'. Try $MinrL or greater." ; Break }
-        if ($maxLength -gt $MaxrL) { Write-Warning "Length is greater the Maximum required 'String Length'. Try $MaxrL or lower." ; Break }
-        $samplekeys = if ($IncludeNumbers) {
-            [string]::Join('', ([int[]](97..122) | ForEach-Object { [string][char]$_ }) + (0..9))
-        } else {
-            [string]::Join('', ([int[]](97..122) | ForEach-Object { [string][char]$_ }))
-        }
-        return [string][CryptoBase]::GetRandomSTR($samplekeys, $iterations, $minLength, $maxLength);
-    }
-    static [byte[]] GetDerivedBytes() {
-        return [CryptoBase]::GetDerivedBytes(16)
-    }
-    static [byte[]] GetDerivedBytes([int]$Length) {
-        return [CryptoBase]::GetDerivedBytes([xconvert]::ToSecurestring([CryptoBase]::GetRandomName(16)), $Length)
-    }
-    static [byte[]] GetDerivedBytes([securestring]$password) {
-        return [CryptoBase]::GetDerivedBytes($password, 16)
-    }
-    static [byte[]] GetDerivedBytes([securestring]$password, [int]$Length) {
-        [ValidateNotNullOrEmpty()][securestring]$password = $password
-        $pswd = [xconvert]::ToSecurestring($(switch ([CryptoBase]::EncryptionScope.ToString()) {
-                    "Machine" {
-                        [System.Text.Encoding]::UTF8.GetBytes([CryptoBase]::GetUniqueMachineId())
-                    }
-                    Default {
-                        [convert]::FromBase64String("hsKgmva9wZoDxLeREB1udw==")
-                    }
-                }
-            )
-        )
-        $s6lt = [System.Security.Cryptography.Rfc2898DeriveBytes]::new($password, [System.Text.Encoding]::UTF8.GetBytes([xconvert]::ToString($password))).GetBytes(16)
-        return [CryptoBase]::GetDerivedBytes($pswd, $s6lt, $Length)
-    }
-    static [byte[]] GetDerivedBytes([securestring]$password, [byte[]]$salt, [int]$Length) {
-        [ValidateNotNullOrEmpty()]$salt = $salt
-        [ValidateNotNullOrEmpty()][securestring]$password = $password
-        return [System.Security.Cryptography.Rfc2898DeriveBytes]::new($password, $salt, 1000).GetBytes($Length);
-    }
-    static [byte[]] GetKey() {
-        return [CryptoBase]::GetKey(16);
-    }
-    static [byte[]] GetKey([int]$Length) {
-        return [CryptoBase]::GetKey([xconvert]::ToSecurestring([CryptoBase]::GeneratePassword()), $Length)
-    }
-    static [byte[]] GetKey([securestring]$password) {
-        return [CryptoBase]::GetKey($password, 16)
-    }
-    static [byte[]] GetKey([securestring]$password, [int]$Length) {
-        return [CryptoBase]::GetDerivedBytes($password, $Length)
-    }
-    static [byte[]] GetKey([securestring]$password, [byte[]]$salt) {
-        return [CryptoBase]::GetKey($password, $salt, 16)
-    }
-    static [byte[]] GetKey([securestring]$password, [byte[]]$salt, [int]$Length) {
-        return [CryptoBase]::GetDerivedBytes($password, $salt, $Length)
-    }
-    # can be used to generate random IV
-    static [byte[]] GetRandomEntropy() {
-        [byte[]]$entropy = [byte[]]::new(16);
-        [void][System.Security.Cryptography.RNGCryptoServiceProvider]::new().GetBytes($entropy)
-        return $entropy;
-    }
-    static hidden [string] GetRandomSTR([string]$InputSample, [int]$iterations, [int]$minLength, [int]$maxLength) {
-        if ($maxLength -lt $minLength) { throw [System.ArgumentOutOfRangeException]::new('MinLength', "'MaxLength' cannot be less than 'MinLength'") }
-        if ($iterations -le 0) { Write-Warning 'Negative and Zero Iterations are NOT Possible!'; return [string]::Empty }
-        [char[]]$chars = [char[]]::new($InputSample.Length);
-        $chars = $InputSample.ToCharArray();
-        $Keys = [System.Collections.Generic.List[string]]::new();
-        $rand = [Random]::new();
-        [int]$size = $rand.Next([int]$minLength, [int]$maxLength);
-        for ($i = 0; $i -lt $iterations; $i++) {
-            [byte[]] $data = [Byte[]]::new(1);
-            $crypto = [System.Security.Cryptography.RNGCryptoServiceProvider]::new();
-            $data = [Byte[]]::new($size);
-            $crypto.GetNonZeroBytes($data);
-            $result = [System.Text.StringBuilder]::new($size);
-            foreach ($b In $data) { $result.Append($chars[$b % ($chars.Length - 1)]) };
-            [void]$Keys.Add($result.ToString());
-        }
-        $STR = [string]::Join('', $keys)
-        if ($STR.Length -gt $maxLength) {
-            $STR = $STR.Substring(0, $maxLength);
-        }
-        return $STR;
-    }
-    static [string] GeneratePassword() {
-        return [string][CryptoBase]::GeneratePassword(19);
-    }
-    static [string] GeneratePassword([int]$Length) {
-        return [string][CryptoBase]::GeneratePassword($Length, $false, $false, $false, $false);
-    }
-    static [string] GeneratePassword([int]$Length, [bool]$StartWithLetter) {
-        return [string][CryptoBase]::GeneratePassword($Length, $StartWithLetter, $false, $false, $false);
-    }
-    static [string] GeneratePassword([int]$Length, [bool]$StartWithLetter, [bool]$NoSymbols, [bool]$UseAmbiguousCharacters, [bool]$UseExtendedAscii) {
-        # https://stackoverflow.com/questions/55556/characters-to-avoid-in-automatically-generated-passwords
-        [string]$possibleCharacters = [char[]](33..126 + 161..254); $MinrL = 14; $MaxrL = 999 # Gotta have some restrictions, or one typo could endup creating insanely long or small Passwords, ex 30000 intead of 30.
-        if ($Length -lt $MinrL) { Write-Warning "Length is below the Minimum required 'Password Length'. Try $MinrL or greater."; Break }
-        if ($Length -gt $MaxrL) { Write-Warning "Length is greater the Maximum required 'Password Length'. Try $MaxrL or lower."; Break }
-        # Warn the user if they've specified mutually-exclusive options.
-        if ($NoSymbols -and $UseExtendedAscii) { Write-Warning 'The -NoSymbols parameter was also specified.  No extended ASCII characters will be used.' }
-        do {
-            $Passw0rd = [string]::Empty; $x = $null; $r = 0
-            #This person Wants a really good password, so We retry Until we get a 60% strong password.
-            do {
-                do {
-                    do {
-                        do {
-                            do {
-                                $x = [int][char][string][CryptoBase]::GetRandomSTR($possibleCharacters, 1, 1, 1);
-                                # Write-Verbose "Use character: $([char]$x) : $x"
-                            } While ($x -eq 127 -Or (!$UseExtendedAscii -and $x -gt 127))
-                            # The above Do..While loop does this:
-                            #  1. Don't allow ASCII 127 (delete).
-                            #  2. Don't allow extended ASCII, unless the user wants it.
-                        } While (!$UseAmbiguousCharacters -and ($x -In @(49, 73, 108, 124, 48, 79)))
-                        # The above loop disallows 1 (ASCII 49), I (73), l (108),
-                        # | (124), 0 (48) or O (79) -- unless the user wants those.
-                    } While ($NoSymbols -and ($x -lt 48 -Or ($x -gt 57 -and $x -lt 65) -Or ($x -gt 90 -and $x -lt 97) -Or $x -gt 122))
-                    # If the -NoSymbols parameter was specified, this loop will ensure
-                    # that the character is neither a symbol nor in the extended ASCII
-                    # character set.
-                } While ($r -eq 0 -and $StartWithLetter -and !(($x -ge 65 -and $x -le 90) -Or ($x -ge 97 -and $x -le 122)))
-                # If the -StartWithLetter parameter was specified, this loop will make
-                # sure that the first character is an upper- or lower-case letter.
-                $Passw0rd = $Passw0rd.Trim()
-                $Passw0rd += [string][char]$x; $r++
-            } until ($Passw0rd.length -eq $Length)
-        } until ([int][CryptoBase]::GetPasswordStrength($Passw0rd) -gt 60)
-        return $Passw0rd;
-    }
-    [int] static GetPasswordStrength([string]$passw0rd) {
-        # Inspired by: https://www.security.org/how-secure-is-my-password/
-        $passwordDigits = [System.Text.RegularExpressions.Regex]::new("\d", [System.Text.RegularExpressions.RegexOptions]::Compiled);
-        $passwordNonWord = [System.Text.RegularExpressions.Regex]::new("\W", [System.Text.RegularExpressions.RegexOptions]::Compiled);
-        $passwordUppercase = [System.Text.RegularExpressions.Regex]::new("[A-Z]", [System.Text.RegularExpressions.RegexOptions]::Compiled);
-        $passwordLowercase = [System.Text.RegularExpressions.Regex]::new("[a-z]", [System.Text.RegularExpressions.RegexOptions]::Compiled);
-        [int]$strength = 0; $digits = $passwordDigits.Matches($passw0rd); $NonWords = $passwordNonWord.Matches($passw0rd); $Uppercases = $passwordUppercase.Matches($passw0rd); $Lowercases = $passwordLowercase.Matches($passw0rd);
-        if ($digits.Count -ge 2) { $strength += 10 };
-        if ($digits.Count -ge 5) { $strength += 10 };
-        if ($NonWords.Count -ge 2) { $strength += 10 };
-        if ($NonWords.Count -ge 5) { $strength += 10 };
-        if ($passw0rd.Length -gt 8) { $strength += 10 };
-        if ($passw0rd.Length -ge 16) { $strength += 10 };
-        if ($Lowercases.Count -ge 2) { $strength += 10 };
-        if ($Lowercases.Count -ge 5) { $strength += 10 };
-        if ($Uppercases.Count -ge 2) { $strength += 10 };
-        if ($Uppercases.Count -ge 5) { $strength += 10 };
-        return $strength;
-    }
-    static [bool] IsBase64String([string]$base64) {
-        return $(try { [void][Convert]::FromBase64String($base64); $true } catch { $false })
-    }
-    static [bool] IsValidAES([System.Security.Cryptography.Aes]$aes) {
-        return [bool]$(try { [CryptoBase]::CheckProps($aes); $? } catch { $false })
-    }
-    static hidden [void] CheckProps([System.Security.Cryptography.Aes]$Aes) {
-        $MissingProps = @(); $throw = $false
-        Write-Verbose "$(Show-Stack) [+] Checking Encryption Properties ... $(('Mode','Padding', 'keysize', 'BlockSize') | ForEach-Object { if ($null -eq $Aes.Algo.$_) { $MissingProps += $_ } };
-            if ($MissingProps.Count -eq 0) { "Done. All AES Props are Good." } else { $throw = $true; "System.ArgumentNullException: $([string]::Join(', ', $MissingProps)) cannot be null." }
-        )"
-        if ($throw) { throw [System.ArgumentNullException]::new([string]::Join(', ', $MissingProps)) }
-    }
-    static [string] GetResolvedPath([string]$Path) {
-        return [CryptoBase]::GetResolvedPath($((Get-Variable ExecutionContext).Value.SessionState), $Path)
-    }
-    static [string] GetResolvedPath([System.Management.Automation.SessionState]$session, [string]$Path) {
-        $paths = $session.Path.GetResolvedPSPathFromPSPath($Path);
-        if ($paths.Count -gt 1) {
-            throw [System.IO.IOException]::new([string]::Format([cultureinfo]::InvariantCulture, "Path {0} is ambiguous", $Path))
-        } elseif ($paths.Count -lt 1) {
-            throw [System.IO.IOException]::new([string]::Format([cultureinfo]::InvariantCulture, "Path {0} not Found", $Path))
-        }
-        return $paths[0].Path
-    }
-    static [string] GetUnResolvedPath([string]$Path) {
-        return [CryptoBase]::GetUnResolvedPath($((Get-Variable ExecutionContext).Value.SessionState), $Path)
-    }
-    static [string] GetUnResolvedPath([System.Management.Automation.SessionState]$session, [string]$Path) {
-        return $session.Path.GetUnresolvedProviderPathFromPSPath($Path)
-    }
-    static [System.Type] CreateEnum([string]$Name, [bool]$IsPublic, [string[]]$Members) {
-        # Example:
-        # $MacMseries = [cryptobase]::CreateEnum('Mseries', $true, ('M1', 'M2', 'M3'))
-        # $MacMseries::M1 | gm
-        # Todo: Explore more about [System.Reflection.Emit.EnumBuilder], so we can add more features. ex: Flags, instead of [string[]]$Members we can have [hastable]$Members etc.
-        try {
-            if ([string]::IsNullOrWhiteSpace($Name)) { throw [InvalidArgumentException]::new('Name', 'Name can not be null or space') }
-            $DynAssembly = [System.Reflection.AssemblyName]::new("EmittedEnum")
-            $AssmBuilder = [System.Reflection.Emit.AssemblyBuilder]::DefineDynamicAssembly($DynAssembly, ([System.Reflection.Emit.AssemblyBuilderAccess]::Save -bor [System.Reflection.Emit.AssemblyBuilderAccess]::Run)) # Only run in memory
-            $ModulBuildr = $AssmBuilder.DefineDynamicModule("DynamicModule")
-            $type_attrib = if ($IsPublic) { [System.Reflection.TypeAttributes]::Public }else { [System.Reflection.TypeAttributes]::NotPublic }
-            $enumBuilder = [System.Reflection.Emit.EnumBuilder]$ModulBuildr.DefineEnum($name, $type_attrib, [System.Int32]);
-            for ($i = 0; $i -lt $Members.count; $i++) { [void]$enumBuilder.DefineLiteral($Members[$i], $i) }
-            [void]$enumBuilder.CreateType()
-        } catch {
-            throw $_
-        }
-        return ($Name -as [Type])
-    }
-    static [System.Security.Cryptography.Aes] GetAes() { return [CryptoBase]::GetAes(1) }
-    static [System.Security.Cryptography.Aes] GetAes([int]$Iterations) {
-        $salt = $null; $password = $null;
-        Set-Variable -Name password -Scope Local -Visibility Private -Option Private -Value $([xconvert]::ToSecurestring([CryptoBase]::GeneratePassword()));
-        Set-Variable -Name salt -Scope Local -Visibility Private -Option Private -Value $([CryptoBase]::GetDerivedBytes(16));
-        return [CryptoBase]::GetAes($password, $salt, $Iterations)
-    }
-    static [System.Security.Cryptography.Aes] GetAes([securestring]$password, [byte[]]$salt, [int]$iterations) {
-        $aes = $null; $M = $null; $P = $null; $k = $null;
-        Set-Variable -Name aes -Scope Local -Visibility Private -Option Private -Value $([System.Security.Cryptography.AesManaged]::new());
-        #Note: 'Zeros' Padding was avoided, see: https://crypto.stackexchange.com/questions/1486/how-to-choose-a-padding-mode-with-aes # Personally I prefer PKCS7 as the best padding.
-        for ($i = 1; $i -le $iterations; $i++) { ($M, $P, $k) = ((Get-Random ('ECB', 'CBC')), (Get-Random ('PKCS7', 'ISO10126', 'ANSIX923')), (Get-Random (128, 192, 256))) }
-        $aes.Mode = & ([scriptblock]::Create("[System.Security.Cryptography.CipherMode]::$M"));
-        $aes.Padding = & ([scriptblock]::Create("[System.Security.Cryptography.PaddingMode]::$P"));
-        $aes.keysize = $k;
-        $aes.Key = [CryptoBase]::GetKey($password, $salt);
-        $aes.IV = [CryptoBase]::GetRandomEntropy();
-        return $aes
-    }
-    # Use a cryptographic hash function (SHA-256) to generate a unique machine ID
-    static [string] GetUniqueMachineId() {
-        $Id = [string]($Env:MACHINE_ID)
-        $vp = Get-Variable VerbosePreference -ValueOnly
-        try {
-            Set-Variable VerbosePreference -Value $([System.Management.Automation.ActionPreference]::SilentlyContinue)
-            if ([string]::IsNullOrWhiteSpace($Id)) {
-                $sha256 = [System.Security.Cryptography.SHA256]::Create()
-                $HostOS = $(if ($(Get-Variable PSVersionTable -Value).PSVersion.Major -le 5 -or $(Get-Variable IsWindows -Value)) { "Windows" }elseif ($(Get-Variable IsLinux -Value)) { "Linux" }elseif ($(Get-Variable IsMacOS -Value)) { "macOS" }else { "UNKNOWN" });
-                switch ($HostOS) {
-                    "Windows" {
-                        $_Id = Get-CimInstance -ClassName Win32_ComputerSystemProduct | Select-Object -ExpandProperty UUID
-                        $_Id = $([convert]::ToBase64String($sha256.ComputeHash([System.Text.Encoding]::UTF8.GetBytes($_Id))));
-                    }
-                    "Linux" {
-                        # $_Id = (sudo cat /sys/class/dmi/id/product_uuid).Trim() # sudo prompt is a nono
-                        # Lets use mac addresses
-                        $_Id = ([string[]]$(ip link show | grep "link/ether" | awk '{print $2}') -join '-').Trim()
-                        $_Id = [convert]::ToBase64String($sha256.ComputeHash([System.Text.Encoding]::UTF8.GetBytes($_Id)))
-                    }
-                    "macOS" {
-                        $_Id = (system_profiler SPHardwareDataType | Select-String "UUID").Line.Split(":")[1].Trim()
-                        $_Id = [convert]::ToBase64String($sha256.ComputeHash([System.Text.Encoding]::UTF8.GetBytes($_Id)))
-                    }
-                    Default {
-                        Write-Host "unknown"
-                        throw "Error: HostOS = '$HostOS'. Could not determine the operating system."
-                    }
-                }
-                [System.Environment]::SetEnvironmentVariable("MACHINE_ID", $_Id, [System.EnvironmentVariableTarget]::Process)
-            }
-            $Id = [string]($Env:MACHINE_ID)
-        } catch {
-            throw $_
-        } finally {
-            if ($sha256) { $sha256.Clear(); $sha256.Dispose() }
-            Set-Variable VerbosePreference -Value $vp
-        }
-        return $Id
-    }
-    static [string] Get_Host_Os() {
-        # Todo: Should return one of these: [Enum]::GetNames([System.PlatformID])
-        return $(if ($(Get-Variable IsWindows -Value)) { "Windows" }elseif ($(Get-Variable IsLinux -Value)) { "Linux" }elseif ($(Get-Variable IsMacOS -Value)) { "macOS" }else { "UNKNOWN" })
-    }
-    static [IO.DirectoryInfo] Get_dataPath([string]$appName, [string]$SubdirName) {
-        $_Host_OS = [CryptoBase]::Get_Host_Os()
-        $dataPath = if ($_Host_OS -eq 'Windows') {
-            [System.IO.DirectoryInfo]::new([IO.Path]::Combine($Env:HOME, "AppData", "Roaming", $appName, $SubdirName))
-        } elseif ($_Host_OS -in ('Linux', 'MacOs')) {
-            [System.IO.DirectoryInfo]::new([IO.Path]::Combine((($env:PSModulePath -split [IO.Path]::PathSeparator)[0] | Split-Path | Split-Path), $appName, $SubdirName))
-        } elseif ($_Host_OS -eq 'Unknown') {
-            try {
-                [System.IO.DirectoryInfo]::new([IO.Path]::Combine((($env:PSModulePath -split [IO.Path]::PathSeparator)[0] | Split-Path | Split-Path), $appName, $SubdirName))
-            } catch {
-                Write-Warning "Could not resolve chat data path"
-                Write-Warning "HostOS = '$_Host_OS'. Could not resolve data path."
-                [System.IO.Directory]::CreateTempSubdirectory(($SubdirName + 'Data-'))
-            }
-        } else {
-            throw [InvalidOperationException]::new('Could not resolve data path. Get_Host_OS FAILED!')
-        }
-        if (!$dataPath.Exists) { [CryptoBase]::Create_Dir($dataPath) }
-        return $dataPath
-    }
-    static [void] Create_Dir([string]$Path) {
-        [CryptoBase]::Create_Dir([System.IO.DirectoryInfo]::new($Path))
-    }
-    static [void] Create_Dir([System.IO.DirectoryInfo]$Path) {
-        [ValidateNotNullOrEmpty()][System.IO.DirectoryInfo]$Path = $Path
-        $nF = @(); $p = $Path; while (!$p.Exists) { $nF += $p; $p = $p.Parent }
-        [Array]::Reverse($nF); $nF | ForEach-Object { $_.Create(); Write-Debug "Created $_" }
-    }
-    [securestring] static GetPassword() {
-        $ThrowOnFailure = $true
-        return [CryptoBase]::GetPassword($ThrowOnFailure);
-    }
-    [securestring] static GetPassword([string]$Prompt) {
-        return [CryptoBase]::GetPassword($Prompt, $true)
-    }
-    [securestring] static GetPassword([bool]$ThrowOnFailure) {
-        return [CryptoBase]::GetPassword("Password", $ThrowOnFailure)
-    }
-    static [securestring] GetPassword([string]$Prompt, [bool]$ThrowOnFailure) {
-        if ([CryptoBase]::EncryptionScope.ToString() -eq "Machine") {
-            return [xconvert]::ToSecurestring([CryptoBase]::GetUniqueMachineId())
-        } else {
-            $pswd = [SecureString]::new(); Push-Stack -class "ArgonCage"
-            Set-Variable -Name pswd -Scope Local -Visibility Private -Option Private -Value $(Read-Host -Prompt "$(Show-Stack) $Prompt" -AsSecureString);
-            if ($ThrowOnFailure -and ($null -eq $pswd -or $([string]::IsNullOrWhiteSpace([xconvert]::ToString($pswd))))) {
-                throw [InvalidPasswordException]::new("Please Provide a Password that isn't Null or WhiteSpace.", $pswd, [System.ArgumentNullException]::new("Password"))
-            }
-            return $pswd;
-        }
-    }
-    static [void] ValidateCompression([string]$Compression) {
-        if ($Compression -notin ([Enum]::GetNames('Compression' -as 'Type'))) { Throw [System.InvalidCastException]::new("The name '$Compression' is not a valid [Compression]`$typeName.") };
-    }
-}
-#endregion CryptoBase
-
-#region    Custom_ObjectConverter
-class xconvert : System.ComponentModel.TypeConverter {
-    xconvert() {}
-    static [string] Base32ToHex([string]$base32String) {
-        return [System.BitConverter]::ToString([System.Text.Encoding]::UTF8.GetBytes($base32String)).Replace("-", "").ToLower()
-    }
-    static [string] Base32FromHex([string]$hexString) {
-        return [System.Text.Encoding]::UTF8.GetString(([byte[]] -split ($hexString -replace '..', '0x$& ')))
-    }
-    static [string] GuidFromHex([string]$hexString) {
-        return [System.Guid]::new(([byte[]] -split ($hexString -replace '..', '0x$& '))).ToString()
-    }
-    static [string] ToString([byte[]]$Bytes) {
-        return [string][System.Convert]::ToBase64String($Bytes);
-    }
-    static [string[]] ToString([int[]]$CharCodes) {
-        $String = @(); foreach ($n in $CharCodes) { $String += [string][char]$n }
-        return $String
-    }
-    static [string] ToString([System.Security.SecureString]$SecureString) {
-        [string]$Pstr = [string]::Empty;
-        [IntPtr]$zero = [IntPtr]::Zero;
-        if ($null -eq $SecureString -or $SecureString.Length -eq 0) {
-            return [string]::Empty;
-        }
-        try {
-            Set-Variable -Name zero -Scope Local -Visibility Private -Option Private -Value ([System.Runtime.InteropServices.Marshal]::SecurestringToBSTR($SecureString));
-            Set-Variable -Name Pstr -Scope Local -Visibility Private -Option Private -Value ([System.Runtime.InteropServices.Marshal]::PtrToStringBSTR($zero));
-        } finally {
-            if ($zero -ne [IntPtr]::Zero) {
-                [System.Runtime.InteropServices.Marshal]::ZeroFreeBSTR($zero);
-            }
-        }
-        return $Pstr;
-    }
-    static [string] ToString([int[]]$CharCodes, [string]$separator) {
-        return [string]::Join($separator, [xconvert]::ToString($CharCodes));
-    }
-    static [string] ToString([int]$value, [int]$toBase) {
-        [char[]]$baseChars = switch ($toBase) {
-            # Binary
-            2 { @('0', '1') }
-            # Hexadecimal
-            16 { @('0', '1', '2', '3', '4', '5', '6', '7', '8', '9', 'a', 'b', 'c', 'd', 'e', 'f') }
-            # Hexavigesimal
-            26 { @('0', '1', '2', '3', '4', '5', '6', '7', '8', '9', 'a', 'b', 'c', 'd', 'e', 'f', 'g', 'h', 'i', 'j', 'k', 'l', 'm', 'n', 'o', 'p') }
-            # Sexagesimal
-            60 { @('0', '1', '2', '3', '4', '5', '6', '7', '8', '9', 'A', 'B', 'C', 'D', 'E', 'F', 'G', 'H', 'I', 'J', 'K', 'L', 'M', 'N', 'O', 'P', 'Q', 'R', 'S', 'T', 'U', 'V', 'W', 'X', 'Y', 'Z', 'a', 'b', 'c', 'd', 'e', 'f', 'g', 'h', 'i', 'j', 'k', 'l', 'm', 'n', 'o', 'p', 'q', 'r', 's', 't', 'u', 'v', 'w', 'x') }
-            Default {
-                throw [System.ArgumentException]::new("Invalid Base.")
-            }
-        }
-        return [xconvert]::IntToString($value, $baseChars);
-    }
-    static [string] ToString([guid]$guid) {
-        return [System.Text.Encoding]::UTF8.GetString([xconvert]::FromHexString($guid.ToString().Replace('-', '')))
-        # I just assumed all guids use UTF8 for encoding, but idk maybe they are also encrypted?!
-        # ie: This is just a way to reverse the ToGuid() method. does not apply on real guids.
-    }
-    static [guid] ToGuid([string]$InputText) {
-        # Creates a string that passes guid regex checks (ie: not a real guid)
-        if ($InputText.Trim().Length -ne 16) {
-            throw [System.InvalidOperationException]::new('$InputText.Trim().Length Should Be exactly 16. Ex: [xconvert]::ToGuid([CryptoBase]::GetRandomName(16))')
-        }
-        return [guid]::new([System.BitConverter]::ToString([System.Text.Encoding]::UTF8.GetBytes($InputText)).Replace("-", "").ToLower().Insert(8, "-").Insert(13, "-").Insert(18, "-").Insert(23, "-"))
-    }
-    static [SecureString] ToSecurestring([string]$String) {
-        $SecureString = $null; Set-Variable -Name SecureString -Scope Local -Visibility Private -Option Private -Value ([System.Security.SecureString]::new());
-        if (![string]::IsNullOrEmpty($String)) {
-            $Chars = $String.toCharArray()
-            ForEach ($Char in $Chars) {
-                $SecureString.AppendChar($Char)
-            }
-        }
-        $SecureString.MakeReadOnly();
-        return $SecureString
-    }
-    static [int[]] StringToCharCode([string[]]$string) {
-        [bool]$encoderShouldEmitUTF8Identifier = $false; $Codes = @()
-        $Encodr = [System.Text.UTF8Encoding]::new($encoderShouldEmitUTF8Identifier)
-        for ($i = 0; $i -lt $string.Count; $i++) {
-            $Codes += [int[]]$($Encodr.GetBytes($string[$i]))
-        }
-        return $Codes;
-    }
-    static [datetime] ToDateTime([string]$dateString) {
-        # Dynamically detect the system's date and time format and use it to parse the $dateString.
-        $currentCulture = [System.Threading.Thread]::CurrentThread.CurrentCulture
-        $dateTimeFormat = $currentCulture.DateTimeFormat; $datetime = @()
-        $dateFormats = $dateTimeFormat.GetAllDateTimePatterns()
-        $culture = [System.Globalization.CultureInfo]::InvariantCulture
-        foreach ($format in $dateFormats) {
-            try {
-                $datetime += [DateTime]::ParseExact($dateString, $format, $culture);
-            } catch {
-                continue
-            }
-        }
-        if ($datetime.Count -ne 1) {
-            throw 'An error occurred while parsing the input $dateString to a DateTime object.'
-        }
-        return $datetime[0]
-    }
-    static [bool] StringToBoolean([string]$Text) {
-        $Text = switch -Wildcard ($Text) {
-            "1*" { "true"; break }
-            "0*" { "false"; break }
-            "yes*" { "true"; break }
-            "no*" { "false"; break }
-            "true*" { "true"; break }
-            "false*" { "false"; break }
-            "*true*" { "true"; break }
-            "*false*" { "false"; break }
-            "yeah*" { "true"; break }
-            "y*" { "true"; break }
-            "n*" { "false"; break }
-            Default { "false" }
-        }
-        return [convert]::ToBoolean($Text)
-    }
-    static [string] ToCaesarCipher([string]$Text, [int]$Key) {
-        [ValidateNotNullOrEmpty()][string]$Text = $Text; $Cipher = [string]::Empty;
-        $alphabet = $null; New-Variable -Name alphabet -Option Constant -Value "abcdefghijklmnopqrstuvwxyz" -Force;
-        for ($i = 0; $i -lt $Text.Length; $i++) {
-            if ($Text[$i] -eq " ") {
-                $Cipher += " ";
-            } else {
-                [int]$index = $alphabet.IndexOf($text[$i]) + $Key
-                if ($index -gt 26) {
-                    $index = $index - 26
-                }
-                $Cipher += $alphabet[$index];
-            }
-        }
-        return $Cipher
-    }
-    static [string] FromCaesarCipher([string]$Cipher, [int]$Key) {
-        [ValidateNotNullOrEmpty()][string]$Cipher = $Cipher.ToLower(); $Output = [string]::Empty;
-        $alphabet = $null; New-Variable -Name alphabet -Value "abcdefghijklmnopqrstuvwxyz" -Option Constant -Force;
-        for ($i = 0; $i -lt $Cipher.Length; $i++) {
-            if ($Cipher[$i] -eq " ") {
-                $Output += " ";
-            } else {
-                $Output += $alphabet[($alphabet.IndexOf($Cipher[$i]) - $Key)];
-            }
-        };
-        return $Output;
-    }
-    static [string] ToPolybiusCipher([string]$Text, [string]$Key) {
-        [ValidateNotNullOrEmpty()][string]$Text = $Text.ToLower();
-        [ValidateNotNullOrEmpty()][string]$Key = $Key.ToLower(); $Cipher = [string]::Empty
-        [xconvert]::ValidatePolybiusCipher($Text, $Key, "Encrypt")
-        [Array]$polybiusTable = New-Object 'string[,]' 5, 5;
-        $letter = 0;
-        for ($i = 0; $i -lt 5; $i++) {
-            for ($j = 0; $j -lt 5; $j++) {
-                $polybiusTable[$i, $j] = $Key[$letter];
-                $letter++;
-            }
-        };
-        $Text = $Text.Replace(" ", "");
-        for ($i = 0; $i -lt $Text.Length; $i++) {
-            for ($j = 0; $j -lt 5; $j++) {
-                for ($k = 0; $k -lt 5; $k++) {
-                    if ($polybiusTable[$j, $k] -eq $Text[$i]) {
-                        $Cipher += [string]$j + [string]$k + " ";
-                    }
-                }
-            }
-        }
-        return $Cipher
-    }
-    static [string] FromPolybiusCipher([string]$Cipher, [string]$Key) {
-        [ValidateNotNullOrEmpty()][string]$Cipher = $Cipher.ToLower();
-        [ValidateNotNullOrEmpty()][string]$Key = $Key.ToLower(); $Output = [string]::Empty
-        [xconvert]::ValidatePolybiusCipher($Cipher, $Key, "Decrypt")
-        [Array]$polybiusTable = New-Object 'string[,]' 5, 5;
-        $letter = 0;
-        for ($i = 0; $i -lt 5; $i++) {
-            for ($j = 0; $j -lt 5; $j++) {
-                $polybiusTable[$i, $j] = $Key[$letter];
-                $letter++;
-            }
-        };
-        $SplitInput = $Cipher.Split(" ");
-        foreach ($pair in $SplitInput) {
-            $Output += $polybiusTable[[convert]::ToInt32($pair[0], 10), [convert]::ToInt32($pair[1], 10)];
-        };
-        return $Output;
-    }
-    static hidden [void] ValidatePolybiusCipher([string]$Text, [string]$Key, [string]$Action) {
-        if ($Text -notmatch "^[a-z ]*$" -and ($Action -ne 'Decrypt')) {
-            throw('Text must only have alphabetical characters');
-        }
-        if ($Key.Length -ne 25) {
-            throw('Key must be 25 characters in length');
-        }
-        if ($Key -notmatch "^[a-z]*$") {
-            throw('Key must only have alphabetical characters');
-        }
-        for ($i = 0; $i -lt 25; $i++) {
-            for ($j = 0; $j -lt 25; $j++) {
-                if (($Key[$i] -eq $Key[$j]) -and ($i -ne $j)) {
-                    throw('Key must have no repeating letters');
-                }
-            }
-        }
-    }
-    static [string] StringToBinStR ([string]$string) {
-        return [xconvert]::BinaryToBinStR([xconvert]::BinaryFromString("$string"), $false)
-    }
-    static [string] StringToBinStR ([string]$string, [bool]$Tidy) {
-        return [xconvert]::BinaryToBinStR([xconvert]::BinaryFromString("$string"), $Tidy)
-    }
-    static [string] StringFromBinStR ([string]$BinStR) {
-        return [xconvert]::BinaryToString([xconvert]::BinaryFromBinStR($BinStR))
-    }
-    static [string] ToObfuscated([string]$inputString) {
-        $Inpbytes = [System.Text.Encoding]::UTF8.GetBytes($inputString); $rn = [System.Random]::new(); # Hides Byte Array in a random String
-        return [string]::Join('', $($Inpbytes | ForEach-Object { [string][char]$rn.Next(97, 122) + $_ }));
-    }
-    static [string] ToDeObfuscated([string]$obfuscatedString) {
-        $az = [int[]](97..122) | ForEach-Object { [string][char]$_ };
-        $outbytes = [byte[]][string]::Concat($(($obfuscatedString.ToCharArray() | ForEach-Object { if ($_ -in $az) { [string][char]32 } else { [string]$_ } }) | ForEach-Object { $_ })).Trim().split([string][char]32);
-        return [System.Text.Encoding]::UTF8.GetString($outbytes)
-    }
-    [PSCustomObject[]] static ToPSObject([xml]$XML) {
-        $Out = @(); foreach ($Object in @($XML.Objects.Object)) {
-            $PSObject = [PSCustomObject]::new()
-            foreach ($Property in @($Object.Property)) {
-                $PSObject | Add-Member NoteProperty $Property.Name $Property.InnerText
-            }
-            $Out += $PSObject
-        }
-        return $Out
-    }
-    static [string] ToCsv([System.Object]$Obj) {
-        return [xconvert]::ToCsv($Obj, @('pstypenames', 'BaseType'), 2, 0)
-    }
-    static [string] ToCsv([System.Object]$Obj, [int]$depth) {
-        return [xconvert]::ToCsv($Obj, @('pstypenames', 'BaseType'), $depth, 0)
-    }
-    static [string] ToCsv([System.Object]$Obj, [string[]]$excludedProps, [int]$depth, [int]$currentDepth = 0) {
-        $get_Props = [scriptblock]::Create({
-                param([Object]$Objct, [string[]]$excluded)
-                $Props = $Objct | Get-Member -Force -MemberType Properties; if ($excluded.Count -gt 0) { $Props = $Props | Where-Object { $_.Name -notin $excluded } }
-                $Props = $Props | Select-Object -ExpandProperty Name
-                return $Props
-            }
-        )
-        $Props = $get_Props.Invoke($Obj, $excludedProps)
-        $csv = [string]::Empty
-        $csv += '"' + ($Props -join '","') + '"' + "`n";
-        $vals = @()
-        foreach ($name in $Props) {
-            $_props = $get_Props.Invoke($Obj.$name, $excludedProps)
-            if ($null -ne $_props) {
-                if ($_props.count -gt 0 -and $currentDepth -lt $depth) {
-                    $currentDepth++
-                    $vals += [xconvert]::ToCsv($Obj.$name, $excludedProps, $depth, $currentDepth)
-                } elseif ($null -ne $Obj.$name) {
-                    $vals += $Obj.$name.Tostring()
-                } else {
-                    $vals += $name.Tostring()
-                }
-            }
-        }
-        $fs = '"{' + ((0 .. ($vals.Count - 1)) -join '}","{') + '}"';
-        $csv += $fs -f $vals
-        return $csv
-    }
-    static [PsObject] FromCsv([string]$text) {
-        $obj = $null
-        $lines = $text -split "\r?\n"
-        if ($lines.Count -lt 2) {
-            throw "CSV contains no data"
-        }
-        $header = $lines[0] -split ','
-        $objs = foreach ($line in $lines[1..($lines.Count - 1)]) {
-            $values = $line -split ','
-            $obj = New-Object psobject
-            for ($i = 0; $i -lt $header.Length; $i++) {
-                $prop = $header[$i].Trim('"')
-                if ($null -ne $values[$i]) {
-                    $val = $values[$i].Trim('"')
-                    if (![string]::IsNullOrEmpty($val)) {
-                        $obj | Add-Member -MemberType NoteProperty -Name $prop -Value $val
-                    }
-                }
-            }
-            $obj
-        }
-        return $objs
-    }
-    static [byte[]] FromBase32String([string]$string) {
-        [ValidateNotNullOrEmpty()][string]$string = $string;
-        $string = $string.ToLower(); $B32CHARSET = "abcdefghijklmnopqrstuvwxyz234567"
-        $B32CHARSET_Pattern = "^[A-Z2-7 ]+_*$"; [byte[]]$result = $null
-        if (!($string -match $B32CHARSET_Pattern)) {
-            Throw "Invalid Base32 data encountered in input stream."
-        }
-        $InputStream = [System.IO.MemoryStream]::new([System.Text.Encoding]::UTF8.GetBytes($string), 0, $string.Length)
-        $BinaryReader = [System.IO.BinaryReader]::new($InputStream)
-        $OutputStream = [System.IO.MemoryStream]::new()
-        $BinaryWriter = [System.IO.BinaryWriter]::new($OutputStream)
-        Try {
-            While ([System.Char[]]$CharsRead = $BinaryReader.ReadChars(8)) {
-                [System.Byte[]]$B32Bytes = , 0x00 * 5
-                [System.UInt16]$CharLen = 8 - ($CharsRead -Match "_").Count
-                [System.UInt16]$ByteLen = [Math]::Floor(($CharLen * 5) / 8)
-                [System.Byte[]]$BinChunk = , 0x00 * $ByteLen
-                if ($CharLen -lt 8) {
-                    [System.Char[]]$WorkingChars = , "a" * 8
-                    [Array]::Copy($CharsRead, $WorkingChars, $CharLen)
-                    [Array]::Resize([ref]$CharsRead, 8)
-                    [Array]::Copy($WorkingChars, $CharsRead, 8)
-                }
-                $B32Bytes[0] = (($B32CHARSET.IndexOf($CharsRead[0]) -band 0x1F) -shl 3) -bor (($B32CHARSET.IndexOf($CharsRead[1]) -band 0x1C) -shr 2)
-                $B32Bytes[1] = (($B32CHARSET.IndexOf($CharsRead[1]) -band 0x03) -shl 6) -bor (($B32CHARSET.IndexOf($CharsRead[2]) -band 0x1F) -shl 1) -bor (($B32CHARSET.IndexOf($CharsRead[3]) -band 0x10) -shr 4)
-                $B32Bytes[2] = (($B32CHARSET.IndexOf($CharsRead[3]) -band 0x0F) -shl 4) -bor (($B32CHARSET.IndexOf($CharsRead[4]) -band 0x1E) -shr 1)
-                $B32Bytes[3] = (($B32CHARSET.IndexOf($CharsRead[4]) -band 0x01) -shl 7) -bor (($B32CHARSET.IndexOf($CharsRead[5]) -band 0x1F) -shl 2) -bor (($B32CHARSET.IndexOf($CharsRead[6]) -band 0x18) -shr 3)
-                $B32Bytes[4] = (($B32CHARSET.IndexOf($CharsRead[6]) -band 0x07) -shl 5) -bor ($B32CHARSET.IndexOf($CharsRead[7]) -band 0x1F)
-                [System.Buffer]::BlockCopy($B32Bytes, 0, $BinChunk, 0, $ByteLen)
-                $BinaryWriter.Write($BinChunk)
-            }
-            $result = $OutputStream.ToArray()
-        } catch {
-            Write-Error "Exception: $($_.Exception.Message)"
-            Break
-        } finally {
-            $BinaryReader.Close()
-            $BinaryReader.Dispose()
-            $BinaryWriter.Close()
-            $BinaryWriter.Dispose()
-            $InputStream.Close()
-            $InputStream.Dispose()
-            $OutputStream.Close()
-            $OutputStream.Dispose()
-        }
-        return $result
-    }
-    static [string] ToBase32String([byte[]]$bytes) {
-        return [xconvert]::ToBase32String($bytes, $false)
-    }
-    static [string] ToBase32String([string]$String) {
-        return [xconvert]::ToBase32String($String, $false)
-    }
-    static [string] ToBase32String([byte[]]$bytes, [bool]$Formatt) {
-        return [xconvert]::ToBase32String([System.IO.MemoryStream]::New($bytes), $Formatt)
-    }
-    static [string] ToBase32String([string]$String, [bool]$Formatt) {
-        return [xconvert]::ToBase32String([System.Text.Encoding]::ASCII.GetBytes($String), $Formatt)
-    }
-    static [string] ToBase32String([System.IO.Stream]$Stream, [bool]$Formatt) {
-        $BinaryReader = [System.IO.BinaryReader]::new($Stream);
-        $Base32Output = [System.Text.StringBuilder]::new(); $result = [string]::Empty
-        $B32CHARSET = "abcdefghijklmnopqrstuvwxyz234567"
-        Try {
-            While ([byte[]]$BytesRead = $BinaryReader.ReadBytes(5)) {
-                [System.Boolean]$AtEnd = ($BinaryReader.BaseStream.Length -eq $BinaryReader.BaseStream.Position)
-                [System.UInt16]$ByteLength = $BytesRead.Length
-                if ($ByteLength -lt 5) {
-                    [byte[]]$WorkingBytes = , 0x00 * 5
-                    [System.Buffer]::BlockCopy($BytesRead, 0, $WorkingBytes, 0, $ByteLength)
-                    [Array]::Resize([ref]$BytesRead, 5)
-                    [System.Buffer]::BlockCopy($WorkingBytes, 0, $BytesRead, 0, 5)
-                }
-                [System.Char[]]$B32Chars = , 0x00 * 8
-                [System.Char[]]$B32Chunk = , "_" * 8
-                $B32Chars[0] = ($B32CHARSET[($BytesRead[0] -band 0xF8) -shr 3])
-                $B32Chars[1] = ($B32CHARSET[(($BytesRead[0] -band 0x07) -shl 2) -bor (($BytesRead[1] -band 0xC0) -shr 6)])
-                $B32Chars[2] = ($B32CHARSET[($BytesRead[1] -band 0x3E) -shr 1])
-                $B32Chars[3] = ($B32CHARSET[(($BytesRead[1] -band 0x01) -shl 4) -bor (($BytesRead[2] -band 0xF0) -shr 4)])
-                $B32Chars[4] = ($B32CHARSET[(($BytesRead[2] -band 0x0F) -shl 1) -bor (($BytesRead[3] -band 0x80) -shr 7)])
-                $B32Chars[5] = ($B32CHARSET[($BytesRead[3] -band 0x7C) -shr 2])
-                $B32Chars[6] = ($B32CHARSET[(($BytesRead[3] -band 0x03) -shl 3) -bor (($BytesRead[4] -band 0xE0) -shr 5)])
-                $B32Chars[7] = ($B32CHARSET[$BytesRead[4] -band 0x1F])
-                [Array]::Copy($B32Chars, $B32Chunk, ([Math]::Ceiling(($ByteLength / 5) * 8)))
-                if ($BinaryReader.BaseStream.Position % 8 -eq 0 -and $Formatt -and !$AtEnd) {
-                    [void]$Base32Output.Append($B32Chunk)
-                    [void]$Base32Output.Append("`r`n")
-                } else {
-                    [void]$Base32Output.Append($B32Chunk)
-                }
-            }
-            [string]$result = $Base32Output.ToString()
-        } catch {
-            Write-Error "Exception: $($_.Exception.Message)"
-            Break
-        } finally {
-            $BinaryReader.Close()
-            $BinaryReader.Dispose()
-            $Stream.Close()
-            $Stream.Dispose()
-        }
-        return $result
-    }
-    [PsCustomObject] static ToPSObject([System.Object]$Obj) {
-        $PSObj = [PSCustomObject]::new();
-        $Obj | Get-Member -MemberType Properties | ForEach-Object {
-            $Name = $_.Name; $PSObj | Add-Member -Name $Name -MemberType NoteProperty -Value $(if ($null -ne $Obj.$Name) { if ("Deserialized" -in (($Obj.$Name | Get-Member).TypeName.Split('.') | Sort-Object -Unique)) { $([xconvert]::ToPSObject($Obj.$Name)) } else { $Obj.$Name } } else { $null })
-        }
-        return $PSObj
-    }
-    static [System.Object] FromPSObject([PSCustomObject]$PSObject) {
-        return [xconvert]::FromPSObject($PSObject, $PSObject.PSObject.TypeNames[0])
-    }
-    static [System.Object] FromPSObject([PSCustomObject]$PSObject, [string]$typeName) {
-        # /!\ not working as expected /!\
-        $Type = [Type]::GetType($typeName, $false)
-        if ($Type) {
-            $Obj = [Activator]::CreateInstance($Type)
-            $PSObject.PSObject.Properties | ForEach-Object {
-                $Name = $_.Name
-                $Value = $_.Value
-                if ($Value -is [PSCustomObject]) {
-                    $Value = [xconvert]::FromPSObject($Value)
-                }
-                $Obj.$Name = $Value
-            }
-            return $Obj
-        } else {
-            return $PSObject
-        }
-    }
-    static [byte[]] ToProtected([byte[]]$Bytes) {
-        $p = [xconvert]::ToSecurestring([CryptoBase]::GetUniqueMachineId())
-        return [AesGCM]::Encrypt($Bytes, $p, [CryptoBase]::GetDerivedBytes($p))
-    }
-    static [byte[]] ToUnProtected([byte[]]$Bytes) {
-        $p = [xconvert]::ToSecurestring([CryptoBase]::GetUniqueMachineId())
-        return [AesGCM]::Decrypt($Bytes, $p, [CryptoBase]::GetDerivedBytes($p))
-    }
-    static [byte[]] ToCompressed([byte[]]$Bytes) {
-        return [xconvert]::ToCompressed($Bytes, 'Gzip');
-    }
-    static [string] ToCompressed([string]$Plaintext) {
-        return [convert]::ToBase64String([xconvert]::ToCompressed([System.Text.Encoding]::UTF8.GetBytes($Plaintext)));
-    }
-    static [byte[]] ToCompressed([byte[]]$Bytes, [string]$Compression) {
-        if (("$Compression" -as 'Compression') -isnot 'Compression') {
-            Throw [System.InvalidCastException]::new("Compression type '$Compression' is unknown! Valid values: $([Enum]::GetNames([compression]) -join ', ')");
-        }
-        $outstream = [System.IO.MemoryStream]::new()
-        $Comstream = switch ($Compression) {
-            "Gzip" { New-Object System.IO.Compression.GzipStream($outstream, [System.IO.Compression.CompressionLevel]::Optimal) }
-            "Deflate" { New-Object System.IO.Compression.DeflateStream($outstream, [System.IO.Compression.CompressionLevel]::Optimal) }
-            "ZLib" { New-Object System.IO.Compression.ZLibStream($outstream, [System.IO.Compression.CompressionLevel]::Optimal) }
-            Default { throw "Failed to Compress Bytes. Could Not resolve Compression!" }
-        }
-        [void]$Comstream.Write($Bytes, 0, $Bytes.Length); $Comstream.Close(); $Comstream.Dispose();
-        [byte[]]$OutPut = $outstream.ToArray(); $outStream.Close()
-        return $OutPut;
-    }
-    static [byte[]] ToDeCompressed([byte[]]$Bytes) {
-        return [xconvert]::ToDeCompressed($Bytes, 'Gzip');
-    }
-    static [string] ToDecompressed([string]$Base64Text) {
-        return [System.Text.Encoding]::UTF8.GetString([xconvert]::ToDecompressed([convert]::FromBase64String($Base64Text)));
-    }
-    static [byte[]] ToDeCompressed([byte[]]$Bytes, [string]$Compression) {
-        if (("$Compression" -as 'Compression') -isnot 'Compression') {
-            Throw [System.InvalidCastException]::new("Compression type '$Compression' is unknown! Valid values: $([Enum]::GetNames([compression]) -join ', ')");
-        }
-        $inpStream = [System.IO.MemoryStream]::new($Bytes)
-        $ComStream = switch ($Compression) {
-            "Gzip" { New-Object System.IO.Compression.GzipStream($inpStream, [System.IO.Compression.CompressionMode]::Decompress); }
-            "Deflate" { New-Object System.IO.Compression.DeflateStream($inpStream, [System.IO.Compression.CompressionMode]::Decompress); }
-            "ZLib" { New-Object System.IO.Compression.ZLibStream($inpStream, [System.IO.Compression.CompressionMode]::Decompress); }
-            Default { throw "Failed to DeCompress Bytes. Could Not resolve Compression!" }
-        }
-        $outStream = [System.IO.MemoryStream]::new();
-        [void]$Comstream.CopyTo($outStream); $Comstream.Close(); $Comstream.Dispose(); $inpStream.Close()
-        [byte[]]$OutPut = $outstream.ToArray(); $outStream.Close()
-        return $OutPut;
-    }
-    static [string] ToRegexEscapedString([string]$LiteralText) {
-        if ([string]::IsNullOrEmpty($LiteralText)) { $LiteralText = [string]::Empty }
-        return [regex]::Escape($LiteralText);
-    }
-    static [System.Collections.Hashtable] FromRegexCapture([System.Text.RegularExpressions.Match]$Match, [regex]$Regex) {
-        if (!$Match.Groups[0].Success) {
-            throw New-Object System.ArgumentException('Match does not contain any captures.', 'Match')
-        }
-        $h = @{}
-        foreach ($name in $Regex.GetGroupNames()) {
-            if ($name -eq 0) {
-                continue
-            }
-            $h.$name = $Match.Groups[$name].Value
-        }
-        return $h
-    }
-    static [System.Collections.Hashtable] ToHashTable([PsObject]$object) {
-        $ht = @{}; foreach ($property in $object.PsObject.Properties) {
-            $ht[$property.Name] = $property.Value
-        }
-        return $ht
-    }
-    static hidden [string] IntToString([Int]$value, [char[]]$baseChars) {
-        [int]$i = 32;
-        [char[]]$buffer = [Char[]]::new($i);
-        [int]$targetBase = $baseChars.Length;
-        do {
-            $buffer[--$i] = $baseChars[$value % $targetBase];
-            $value = $value / $targetBase;
-        } while ($value -gt 0);
-        [char[]]$result = [Char[]]::new(32 - $i);
-        [Array]::Copy($buffer, $i, $result, 0, 32 - $i);
-        return [string]::new($result)
-    }
-    static [string] ToHexString([byte[]]$Bytes) {
-        return [string][System.BitConverter]::ToString($bytes).replace('-', [string]::Empty).Tolower();
-    }
-    static [byte[]] FromHexString([string]$HexString) {
-        $outputLength = $HexString.Length / 2;
-        $output = [byte[]]::new($outputLength);
-        $numeral = [char[]]::new(2);
-        for ($i = 0; $i -lt $outputLength; $i++) {
-            $HexString.CopyTo($i * 2, $numeral, 0, 2);
-            $output[$i] = [Convert]::ToByte([string]::new($numeral), 16);
-        }
-        return $output;
-    }
-    static [byte[]] Serialize($Obj) {
-        return [Text.Encoding]::UTF8.GetBytes([System.Management.Automation.PSSerializer]::Serialize($Obj))
-    }
-    static [Object] Deserialize([byte[]]$data) {
-        return [System.Management.Automation.PSSerializer]::Deserialize([Text.Encoding]::UTF8.GetString($data))
-    }
-    static [Object[]] DeserializeAsList([byte[]]$data) {
-        return [System.Management.Automation.PSSerializer]::DeserializeAsList([Text.Encoding]::UTF8.GetString($data))
-    }
-    [System.Collections.BitArray] static BinaryFromString([string]$string) {
-        [string]$BinStR = [string]::Empty;
-        foreach ($ch In $string.ToCharArray()) {
-            $BinStR += [Convert]::ToString([int]$ch, 2).PadLeft(8, '0');
-        }
-        return [xconvert]::BinaryFromBinStR($BinStR)
-    }
-    static [string] BinaryToString([System.Collections.BitArray]$BitArray) {
-        [string]$finalString = [string]::Empty;
-        # Manually read the first 8 bits and
-        while ($BitArray.Length -gt 0) {
-            $ba_tempBitArray = [System.Collections.BitArray]::new($BitArray.Length - 8);
-            $int_binaryValue = 0;
-            if ($BitArray[0]) { $int_binaryValue += 1 };
-            if ($BitArray[1]) { $int_binaryValue += 2 };
-            if ($BitArray[2]) { $int_binaryValue += 4 };
-            if ($BitArray[3]) { $int_binaryValue += 8 };
-            if ($BitArray[4]) { $int_binaryValue += 16 };
-            if ($BitArray[5]) { $int_binaryValue += 32 };
-            if ($BitArray[6]) { $int_binaryValue += 64 };
-            if ($BitArray[7]) { $int_binaryValue += 128 };
-            $finalString += [Char]::ConvertFromUtf32($int_binaryValue);
-            $int_counter = 0;
-            for ($i = 8; $i -lt $BitArray.Length; $i++) {
-                $ba_tempBitArray[$int_counter++] = $BitArray[$i];
-            }
-            $BitArray = $ba_tempBitArray;
-        }
-        return $finalString;
-    }
-    static [string] BytesToBinStR([byte[]]$Bytes) {
-        return [xconvert]::BytesToBinStR($Bytes, $true);
-    }
-    static [string] BytesToBinStR([byte[]]$Bytes, [bool]$Tidy) {
-        $bitArray = [System.Collections.BitArray]::new($Bytes);
-        return [xconvert]::BinaryToBinStR($bitArray, $Tidy);
-    }
-    static [byte[]] BytesFromBinStR([string]$binary) {
-        $binary = [string]::Join('', $binary.Split())
-        $length = $binary.Length; if ($length % 8 -ne 0) {
-            Throw [System.IO.InvalidDataException]::new("Your string is invalid. Make sure it has no typos.")
-        }
-        $list = [System.Collections.Generic.List[Byte]]::new()
-        for ($i = 0; $i -lt $length; $i += 8) {
-            [string]$binStr = $binary.Substring($i, 8)
-            [void]$list.Add([Convert]::ToByte($binStr, 2));
-        }
-        return $list.ToArray();
-    }
-    static [byte[]] BytesFromBinary([System.Collections.BitArray]$binary) {
-        return [xconvert]::BytesFromBinStR([xconvert]::BinaryToBinStR($binary))
-    }
-    static [string] BinaryToBinStR([System.Collections.BitArray]$binary) {
-        $BinStR = [string]::Empty # (Binary String)
-        for ($i = 0; $i -lt $binary.Length; $i++) {
-            if ($binary[$i]) {
-                $BinStR += "1 ";
-            } else {
-                $BinStR += "0 ";
-            }
-        }
-        return $BinStR.Trim()
-    }
-    static [string] BinaryToBinStR([System.Collections.BitArray]$binary, [bool]$Tidy) {
-        [string]$binStr = [xconvert]::BinaryToBinStR($binary)
-        if ($Tidy) { $binStr = [string]::Join('', $binStr.Split()) }
-        return $binStr
-    }
-    [System.Collections.BitArray] static BinaryFromBinStR([string]$binary) {
-        return [System.Collections.BitArray]::new([xconvert]::BytesFromBinStR($binary))
-    }
-    static [void] ObjectToFile($Object, [string]$OutFile) {
-        [xconvert]::ObjectToFile($Object, $OutFile, $false);
-    }
-    static [void] ObjectToFile($Object, [string]$OutFile, [bool]$encrypt) {
-        try {
-            $OutFile = [CryptoBase]::GetUnResolvedPath($OutFile)
-            try {
-                $resolved = [CryptoBase]::GetResolvedPath($OutFile);
-                if ($?) { $OutFile = $resolved }
-            } catch [System.Management.Automation.ItemNotFoundException] {
-                New-Item -Path $OutFile -ItemType File | Out-Null
-            } catch {
-                throw $_
-            }
-            Export-Clixml -InputObject $Object -Path $OutFile
-            if ($encrypt) { $(Get-Item $OutFile).Encrypt() }
-        } catch {
-            Write-Error $_
-        }
-    }
-    [Object[]] static ToOrdered($InputObject) {
-        $obj = $InputObject
-        $convert = [scriptBlock]::Create({
-                Param($obj)
-                if ($obj -is [System.Management.Automation.PSCustomObject]) {
-                    # a custom object: recurse on its properties
-                    $oht = [ordered]@{}
-                    foreach ($prop in $obj.psobject.Properties) {
-                        $oht.Add($prop.Name, $(Invoke-Command -ScriptBlock $convert -ArgumentList $prop.Value))
-                    }
-                    return $oht
-                } elseif ($obj -isnot [string] -and $obj -is [System.Collections.IEnumerable] -and $obj -isnot [System.Collections.IDictionary]) {
-                    # A collection of sorts (other than a string or dictionary (hash table)), recurse on its elements.
-                    return @(foreach ($el in $obj) { Invoke-Command -ScriptBlock $convert -ArgumentList $el })
-                } else {
-                    # a non-custom object, including .NET primitives and strings: use as-is.
-                    return $obj
-                }
-            }
-        )
-        return $(Invoke-Command -ScriptBlock $convert -ArgumentList $obj)
-    }
-    [object] static ObjectFromFile([string]$FilePath) {
-        return [xconvert]::ObjectFromFile($FilePath, $false)
-    }
-    [object] static ObjectFromFile([string]$FilePath, [string]$Type) {
-        return [xconvert]::ObjectFromFile($FilePath, $Type, $false);
-    }
-    [object] static ObjectFromFile([string]$FilePath, [bool]$Decrypt) {
-        $FilePath = [CryptoBase]::GetResolvedPath($FilePath); $Object = $null
-        try {
-            if ($Decrypt) { $(Get-Item $FilePath).Decrypt() }
-            $Object = Import-Clixml -Path $FilePath
-        } catch {
-            Write-Error $_
-        }
-        return $Object
-    }
-    [object] static ObjectFromFile([string]$FilePath, [string]$Type, [bool]$Decrypt) {
-        $FilePath = [CryptoBase]::GetResolvedPath($FilePath); $Object = $null
-        try {
-            if ($Decrypt) { $(Get-Item $FilePath).Decrypt() }
-            $Object = (Import-Clixml -Path $FilePath) -as "$Type"
-        } catch {
-            Write-Error $_
-        }
-        return $Object
-    }
-    static [byte[]] StreamToByteArray([System.IO.Stream]$Stream) {
-        $ms = [System.IO.MemoryStream]::new();
-        $Stream.CopyTo($ms);
-        $arr = $ms.ToArray();
-        if ($null -ne $ms) { $ms.Flush(); $ms.Close(); $ms.Dispose() } else { Write-Warning "[x] MemoryStream was Not closed!" };
-        return $arr;
-    }
-    [string]hidden static Reverse([string]$text) {
-        [char[]]$array = $text.ToCharArray(); [array]::Reverse($array);
-        return [String]::new($array);
-    }
-}
-#endregion Custom_ObjectConverter
 
 #region    Base85
 # .SYNOPSIS
@@ -1452,12 +224,12 @@ class Base85 : EncodingBase {
         [Base85]::Encode($File, $Protect, $File.FullName);
     }
     static [void] Encode([IO.FileInfo]$File, [bool]$Protect, [string]$OutFile) {
-        [Base85]::Encode($File, [securestring]$(if ($Protect) { [AesGCM]::GetPassword() }else { [securestring]::new() }), $OutFile)
+        [Base85]::Encode($File, [securestring]$(if ($Protect) { (AesGCM)::GetPassword() }else { [securestring]::new() }), $OutFile)
     }
     static [void] Encode([IO.FileInfo]$File, [securestring]$Password, [string]$OutFile) {
-        [ValidateNotNullOrEmpty()][string]$OutFile = [CryptoBase]::GetUnResolvedPath($OutFile);
-        [ValidateNotNullOrEmpty()][IO.FileInfo]$File = [CryptoBase]::GetResolvedPath($File.FullName);
-        if (![string]::IsNullOrWhiteSpace([xconvert]::ToString($Password))) { [AesGCM]::Encrypt($File, $Password, $File.FullName) };
+        [ValidateNotNullOrEmpty()][string]$OutFile = (CryptoBase)::GetUnResolvedPath($OutFile);
+        [ValidateNotNullOrEmpty()][IO.FileInfo]$File = (CryptoBase)::GetResolvedPath($File.FullName);
+        if (![string]::IsNullOrWhiteSpace((xconvert)::ToString($Password))) { (AesGCM)::Encrypt($File, $Password, $File.FullName) };
         $streamReader = [System.IO.FileStream]::new($File.FullName, [System.IO.FileMode]::Open)
         $ba = [byte[]]::New($streamReader.Length);
         [void]$streamReader.Read($ba, 0, [int]$streamReader.Length);
@@ -1541,15 +313,15 @@ class Base85 : EncodingBase {
         [Base85]::Decode($File, $UnProtect, $File);
     }
     static [void] Decode([IO.FileInfo]$File, [bool]$UnProtect, [string]$OutFile) {
-        [Base85]::Decode($File, [securestring]$(if ($UnProtect) { [AesGCM]::GetPassword() }else { [securestring]::new() }), $OutFile)
+        [Base85]::Decode($File, [securestring]$(if ($UnProtect) { (AesGCM)::GetPassword() }else { [securestring]::new() }), $OutFile)
     }
     static [void] Decode([IO.FileInfo]$File, [securestring]$Password, [string]$OutFile) {
-        [ValidateNotNullOrEmpty()][string]$OutFile = [CryptoBase]::GetUnResolvedPath($OutFile);
-        [ValidateNotNullOrEmpty()][IO.FileInfo]$File = [CryptoBase]::GetResolvedPath($File.FullName);
+        [ValidateNotNullOrEmpty()][string]$OutFile = (CryptoBase)::GetUnResolvedPath($OutFile);
+        [ValidateNotNullOrEmpty()][IO.FileInfo]$File = (CryptoBase)::GetResolvedPath($File.FullName);
         [byte[]]$ba = [IO.FILE]::ReadAllBytes($File.FullName)
         [byte[]]$da = [Base85]::Decode([EncodingBase]::new().GetString($ba))
         [void][IO.FILE]::WriteAllBytes($OutFile, $da)
-        if (![string]::IsNullOrWhiteSpace([xconvert]::ToString($Password))) { [AesGCM]::Decrypt([IO.FileInfo]::new($OutFile), $Password, $OutFile) }
+        if (![string]::IsNullOrWhiteSpace((xconvert)::ToString($Password))) { (AesGCM)::Decrypt([IO.FileInfo]::new($OutFile), $Password, $OutFile) }
     }
 }
 #endregion Base85
@@ -1645,328 +417,18 @@ class CliArt {
         $this.Base64String = $Base64String
     }
     static [string] ToBase64String([byte[]]$ArtBytes) {
-        return [convert]::ToBase64String([xconvert]::ToCompressed([System.Text.Encoding]::UTF8.GetBytes([base85]::Encode($ArtBytes))))
+        return [convert]::ToBase64String((xconvert)::ToCompressed([System.Text.Encoding]::UTF8.GetBytes([base85]::Encode($ArtBytes))))
     }
     static [string] ToBase64String([IO.FileInfo]$Artfile) {
         return [CliArt]::ToBase64String([IO.File]::ReadAllBytes($Artfile.FullName))
     }
     static [string] FromBase64String([string]$B64String) {
-        return [System.Text.Encoding]::UTF8.GetString([Base85]::Decode([System.Text.Encoding]::UTF8.GetString([xconvert]::ToDeCompressed([convert]::FromBase64String($B64String)))))
+        return [System.Text.Encoding]::UTF8.GetString([Base85]::Decode([System.Text.Encoding]::UTF8.GetString((xconvert)::ToDeCompressed([convert]::FromBase64String($B64String)))))
     }
     [string] ToString() {
         return [CliArt]::FromBase64String($this.Base64String)
     }
 }
-
-
-#region    Shuffl3r
-# .SYNOPSIS
-#     Shuffles bytes and nonce into a jumbled byte[] mess that can be split using a password.
-#     Can be used to Combine the encrypted data with the initialization vector (IV) and other data.
-# .DESCRIPTION
-#     Everyone is appending the IV to encrypted bytes, such that when decrypting, $CryptoProvider.IV = $encyptedBytes[0..15];
-#     They say its safe since IV is basically random and changes every encryption. but this small loophole can allow an advanced attacker to use some tools to find that IV at the end.
-#     This class aim to prevent that; or at least make it nearly impossible. ie: As long as your source code isn't leaked :)
-#     By using an int[] of indices as a lookup table to rearrange the $nonce and $bytes.
-#     The int[] array is derrivated from the password that the user provides.
-# .EXAMPLE
-#     $_bytes = [System.text.Encoding]::UTF8.GetBytes('** _H4ck_z3_W0rld_ **');
-#     $Nonce1 = [CryptoBase]::GetRandomEntropy();
-#     $Nonce2 = [CryptoBase]::GetRandomEntropy();
-#     $Passwd = [xconvert]::ToSecurestring('OKay_&~rVJ+T?NpJ(8TqL');
-#     $shuffld = [Shuffl3r]::Combine([Shuffl3r]::Combine($_bytes, $Nonce2, $Passwd), $Nonce1, $Passwd);
-#     ($b,$n1) = [Shuffl3r]::Split($shuffld, $Passwd, $Nonce1.Length);
-#     ($b,$n2) = [Shuffl3r]::Split($b, $Passwd, $Nonce2.Length);
-#     [System.text.Encoding]::UTF8.GetString($b) -eq '** _H4ck_z3_W0rld_ **' # should be $true
-class Shuffl3r {
-    static [Byte[]] Combine([Byte[]]$Bytes, [Byte[]]$Nonce, [securestring]$Passwod) {
-        return [Shuffl3r]::Combine($bytes, $Nonce, [xconvert]::ToString($Passwod))
-    }
-    static [Byte[]] Combine([Byte[]]$Bytes, [Byte[]]$Nonce, [string]$Passw0d) {
-        # if ($Bytes.Length -lt 16) { throw [InvalidArgumentException]::New('Bytes', 'Input bytes.length should be > 16. ie: $minLength = 17, since the common $nonce length is 16') }
-        if ($bytes.Length -lt ($Nonce.Length + 1)) {
-            Write-Debug "Bytes.Length = $($Bytes.Length) but Nonce.Length = $($Nonce.Length)" -Debug
-            throw [System.ArgumentOutOfRangeException]::new("Nonce", 'Make sure $Bytes.length > $Nonce.Length')
-        }
-        if ([string]::IsNullOrWhiteSpace($Passw0d)) { throw [System.ArgumentNullException]::new('$Passw0d') }
-        [int[]]$Indices = [int[]]::new($Nonce.Length);
-        Set-Variable -Name Indices -Scope local -Visibility Public -Option ReadOnly -Value ([Shuffl3r]::GenerateIndices($Nonce.Length, $Passw0d, $bytes.Length));
-        [Byte[]]$combined = [Byte[]]::new($bytes.Length + $Nonce.Length);
-        for ([int]$i = 0; $i -lt $Indices.Length; $i++) {
-            $combined[$Indices[$i]] = $Nonce[$i]
-        }
-        $i = 0; $ir = (0..($combined.Length - 1)) | Where-Object { $_ -NotIn $Indices };
-        foreach ($j in $ir) { $combined[$j] = $bytes[$i]; $i++ }
-        return $combined
-    }
-    static [array] Split([Byte[]]$ShuffledBytes, [securestring]$Passwod, [int]$NonceLength) {
-        return [Shuffl3r]::Split($ShuffledBytes, [xconvert]::ToString($Passwod), [int]$NonceLength);
-    }
-    static [array] Split([Byte[]]$ShuffledBytes, [string]$Passw0d, [int]$NonceLength) {
-        if ($null -eq $ShuffledBytes) { throw [System.ArgumentNullException]::new('$ShuffledBytes') }
-        if ([string]::IsNullOrWhiteSpace($Passw0d)) { throw [System.ArgumentNullException]::new('$Passw0d') }
-        [int[]]$Indices = [int[]]::new([int]$NonceLength);
-        Set-Variable -Name Indices -Scope local -Visibility Private -Option ReadOnly -Value ([Shuffl3r]::GenerateIndices($NonceLength, $Passw0d, ($ShuffledBytes.Length - $NonceLength)));
-        $Nonce = [Byte[]]::new($NonceLength);
-        $bytes = [Byte[]]$((0..($ShuffledBytes.Length - 1)) | Where-Object { $_ -NotIn $Indices } | Select-Object *, @{l = 'bytes'; e = { $ShuffledBytes[$_] } }).bytes
-        for ($i = 0; $i -lt $NonceLength; $i++) { $Nonce[$i] = $ShuffledBytes[$Indices[$i]] };
-        return ($bytes, $Nonce)
-    }
-    static [string] Scramble([string]$string, [securestring]$password) {
-        if ([string]::IsNullOrWhiteSpace($string)) {
-            throw [System.Management.Automation.ValidationMetadataException]::new("The variable cannot be validated because the value '$string' is not a valid value for the `$string variable.")
-        }; [ValidateNotNullOrEmpty()][securestring]$password = $password
-        $in = [shuffl3r]::GenerateIndices($string, $password) + 0
-        $ca = $string.ToCharArray()
-        return [string]::Join('', $in.ForEach({ $ca[$_] }))
-    }
-    static [string] UnScramble([string]$string, [securestring]$password) {
-        if ([string]::IsNullOrWhiteSpace($string)) {
-            throw [System.Management.Automation.ValidationMetadataException]::new("The variable cannot be validated because the value '$string' is not a valid value for the `$string variable.")
-        }; [ValidateNotNullOrEmpty()][securestring]$password = $password
-        $in = [shuffl3r]::GenerateIndices($string, $password) + 0
-        $ca = $string.ToCharArray()
-        $re = @(); 0..$ca.Count | ForEach-Object {
-            $re += [PSCustomObject]@{
-                char  = $ca[$_]
-                index = $in[$_]
-            }
-        }
-        return [string]::Join('', ($re | Sort-Object -Property index).char)
-    }
-    static [int[]] GenerateIndices([string]$string, [securestring]$password) {
-        return [Shuffl3r]::GenerateIndices(($string.Length - 1), [convert]::ToBase64String([cryptobase]::GetDerivedBytes($password)), $string.Length)
-    }
-    static [int[]] GenerateIndices([int]$Count, [string]$string, [int]$HighestIndex) {
-        if ($HighestIndex -lt 3 -or $Count -ge $HighestIndex) { throw [System.ArgumentOutOfRangeException]::new('$HighestIndex >= 3 is required; and $Count should be less than $HighestIndex') }
-        if ([string]::IsNullOrWhiteSpace($string)) { throw [System.ArgumentNullException]::new('$string') }
-        [Byte[]]$hash = [Shuffl3r]::ComputeHash($string)
-        [int[]]$indices = [int[]]::new($Count)
-        for ($i = 0; $i -lt $Count; $i++) {
-            [int]$nextIndex = [Convert]::ToInt32($hash[$i] % $HighestIndex)
-            while ($indices -contains $nextIndex) {
-                $nextIndex = ($nextIndex + 1) % $HighestIndex
-            }
-            $indices[$i] = $nextIndex
-        }
-        return $indices
-    }
-    static [byte[]] ComputeHash([string]$string) {
-        # returns the same hash even if the input string is scrambled.
-        return [System.Security.Cryptography.SHA1]::Create().ComputeHash($([System.Text.Encoding]::UTF8.GetBytes([string]$string) | Sort-Object))
-    }
-}
-#endregion Shuffl3r
-
-#region    AesGCM
-# .SYNOPSIS
-#     A custom AesCGM class, with nerdy Options like compression, iterrations, protection ...
-# .DESCRIPTION
-#     Both AesCng and AesGcm are secure encryption algorithms, but AesGcm is generally considered to be more secure than AesCng in most scenarios.
-#     AesGcm is an authenticated encryption mode that provides both confidentiality and integrity protection. It uses a Galois/Counter Mode (GCM) to encrypt the data, and includes an authentication tag that protects against tampering with or forging the ciphertext.
-#     AesCng, on the other hand, only provides confidentiality protection and does not include an authentication tag. This means that an attacker who can modify the ciphertext may be able to undetectably alter the decrypted plaintext.
-#     Therefore, it is recommended to use AesGcm whenever possible, as it provides stronger security guarantees compared to AesCng.
-# .EXAMPLE
-#     $bytes = GetbytesFromObj('Text_Message1'); $Password = [xconvert]::ToSecurestring('X-aP0jJ_:No=08TfdQ'); $salt = [CryptoBase]::GetRandomEntropy();
-#     $enc = [AesGCM]::Encrypt($bytes, $Password, $salt)
-#     $dec = [AesGCM]::Decrypt($enc, $Password, $salt)
-#     echo ([System.Text.Encoding]::UTF8.GetString($dec).Trim()) # should be: Text_Message1
-# .EXAMPLE
-#     $bytes = [System.Text.Encoding]::UTF8.GetBytes("S3crEt message...")
-#     $enc = [Aesgcm]::Encrypt($bytes, (Read-Host -AsSecureString -Prompt "Encryption Password"), 4) # encrypt 4 times!
-#     $secmessage = [convert]::ToBase64String($enc)
-#
-#     # On recieving PC:
-#     $dec = [AesGcm]::Decrypt([convert]::FromBase64String($secmessage), (Read-Host -AsSecureString -Prompt "Decryption Password"), 4)
-#     echo ([System.Text.Encoding]::UTF8.GetString($dec)) # should be: S3crEt message...
-# .NOTES
-#  Todo: Find a working/cross-platform way to protect bytes (Like DPAPI for windows but better) then
-#  add static [byte[]] Encrypt([byte[]]$Bytes, [SecureString]$Password, [byte[]]$Salt, [byte[]]$associatedData, [bool]$Protect, [string]$Compression, [int]$iterations)
-class AesGCM : CryptoBase {
-    # static hidden [byte[]]$_salt = [convert]::FromBase64String("hsKgmva9wZoDxLeREB1udw==");
-    static hidden [EncryptionScope] $Scope = [EncryptionScope]::User
-    static [byte[]] Encrypt([byte[]]$bytes) {
-        return [AesGCM]::Encrypt($bytes, [AesGCM]::GetPassword());
-    }
-    static [byte[]] Encrypt([byte[]]$Bytes, [SecureString]$Password) {
-        [byte[]]$_salt = [AesGCM]::GetDerivedBytes($Password)
-        return [AesGCM]::Encrypt($bytes, $Password, $_salt);
-    }
-    static [byte[]] Encrypt([byte[]]$Bytes, [SecureString]$Password, [byte[]]$Salt) {
-        return [AesGCM]::Encrypt($bytes, $Password, $Salt, $null, $null, 1);
-    }
-    static [string] Encrypt([string]$text, [SecureString]$Password, [int]$iterations) {
-        return [convert]::ToBase64String([AesGCM]::Encrypt([System.Text.Encoding]::UTF8.GetBytes("$text"), $Password, $iterations));
-    }
-    static [byte[]] Encrypt([byte[]]$Bytes, [SecureString]$Password, [int]$iterations) {
-        [byte[]]$_salt = [AesGCM]::GetDerivedBytes($Password)
-        return [AesGCM]::Encrypt($bytes, $Password, $_salt, $null, $null, $iterations);
-    }
-    static [byte[]] Encrypt([byte[]]$Bytes, [SecureString]$Password, [byte[]]$Salt, [int]$iterations) {
-        return [AesGCM]::Encrypt($bytes, $Password, $Salt, $null, $null, $iterations);
-    }
-    static [byte[]] Encrypt([byte[]]$Bytes, [SecureString]$Password, [int]$iterations, [string]$Compression) {
-        [byte[]]$_salt = [AesGCM]::GetDerivedBytes($Password)
-        return [AesGCM]::Encrypt($bytes, $Password, $_salt, $null, $Compression, $iterations);
-    }
-    static [byte[]] Encrypt([byte[]]$Bytes, [SecureString]$Password, [byte[]]$Salt, [byte[]]$associatedData, [int]$iterations) {
-        return [AesGCM]::Encrypt($bytes, $Password, $Salt, $associatedData, $null, $iterations);
-    }
-    static [byte[]] Encrypt([byte[]]$Bytes, [SecureString]$Password, [byte[]]$Salt, [byte[]]$associatedData) {
-        return [AesGCM]::Encrypt($bytes, $Password, $Salt, $associatedData, $null, 1);
-    }
-    static [byte[]] Encrypt([byte[]]$Bytes, [SecureString]$Password, [byte[]]$Salt, [byte[]]$associatedData, [string]$Compression, [int]$iterations) {
-        [int]$IV_SIZE = 0; Set-Variable -Name IV_SIZE -Scope Local -Visibility Private -Option Private -Value 12
-        [int]$TAG_SIZE = 0; Set-Variable -Name TAG_SIZE -Scope Local -Visibility Private -Option Private -Value 16
-        [string]$Key = $null; Set-Variable -Name Key -Scope Local -Visibility Private -Option Private -Value $([convert]::ToBase64String([System.Security.Cryptography.Rfc2898DeriveBytes]::new([xconvert]::ToString($Password), $Salt, 10000, [System.Security.Cryptography.HashAlgorithmName]::SHA1).GetBytes(32)));
-        [System.IntPtr]$th = [System.IntPtr]::new(0); Set-Variable -Name th -Scope Local -Visibility Private -Option Private -Value $([System.Runtime.InteropServices.Marshal]::StringToHGlobalAnsi($TAG_SIZE));
-        try {
-            $_bytes = $bytes;
-            $aes = $null; Set-Variable -Name aes -Scope Local -Visibility Private -Option Private -Value $([ScriptBlock]::Create("[Security.Cryptography.AesGcm]::new([convert]::FromBase64String('$Key'))").Invoke());
-            for ($i = 1; $i -lt $iterations + 1; $i++) {
-                # Write-Host "$(Show-Stack) [+] Encryption [$i/$iterations] ... Done" -f Yellow
-                # if ($Protect) { $_bytes = [xconvert]::ToProtected($_bytes, $Salt, [EncryptionScope]::User) }
-                # Generate a random IV for each iteration:
-                [byte[]]$IV = $null; Set-Variable -Name IV -Scope Local -Visibility Private -Option Private -Value ([System.Security.Cryptography.Rfc2898DeriveBytes]::new([xconvert]::ToString($password), $salt, 1, [System.Security.Cryptography.HashAlgorithmName]::SHA1).GetBytes($IV_SIZE));
-                $tag = [byte[]]::new($TAG_SIZE);
-                $Encrypted = [byte[]]::new($_bytes.Length);
-                [void]$aes.Encrypt($IV, $_bytes, $Encrypted, $tag, $associatedData);
-                $_bytes = [Shuffl3r]::Combine([Shuffl3r]::Combine($Encrypted, $IV, $Password), $tag, $Password);
-            }
-        } catch {
-            throw $_
-        } finally {
-            [void][System.Runtime.InteropServices.Marshal]::ZeroFreeGlobalAllocAnsi($th);
-            Remove-Variable IV_SIZE, TAG_SIZE, th -ErrorAction SilentlyContinue
-        }
-        if (![string]::IsNullOrWhiteSpace($Compression)) {
-            $_bytes = [xconvert]::ToCompressed($_bytes, $Compression);
-        }
-        return $_bytes
-    }
-    static [void] Encrypt([IO.FileInfo]$File) {
-        [AesGCM]::Encrypt($File, [AesGCM]::GetPassword());
-    }
-    static [void] Encrypt([IO.FileInfo]$File, [securestring]$Password) {
-        [AesGCM]::Encrypt($File, $Password, $null);
-    }
-    static [void] Encrypt([IO.FileInfo]$File, [securestring]$Password, [string]$OutPath) {
-        [AesGCM]::Encrypt($File, $password, $OutPath, 1, $null);
-    }
-    static [void] Encrypt([IO.FileInfo]$File, [securestring]$Password, [string]$OutPath, [int]$iterations) {
-        [AesGCM]::Encrypt($File, $password, $OutPath, $iterations, $null);
-    }
-    static [void] Encrypt([IO.FileInfo]$File, [securestring]$Password, [string]$OutPath, [int]$iterations, [string]$Compression) {
-        [ValidateNotNullOrEmpty()][IO.FileInfo]$File = [AesGCM]::GetResolvedPath($File.FullName); if ([string]::IsNullOrWhiteSpace($OutPath)) { $OutPath = $File.FullName }
-        [ValidateNotNullOrEmpty()][string]$OutPath = [AesGCM]::GetUnResolvedPath($OutPath);
-        if (![string]::IsNullOrWhiteSpace($Compression)) { [AesGCM]::ValidateCompression($Compression) }
-        $streamReader = [System.IO.FileStream]::new($File.FullName, [System.IO.FileMode]::Open)
-        $ba = [byte[]]::New($streamReader.Length);
-        [void]$streamReader.Read($ba, 0, [int]$streamReader.Length);
-        [void]$streamReader.Close();
-        Write-Verbose "$(Show-Stack) Begin file encryption:"
-        Write-Verbose "[-]  File    : $File"
-        Write-Verbose "[-]  OutFile : $OutPath"
-        [byte[]]$_salt = [AesGCM]::GetDerivedBytes($Password);
-        $encryptdbytes = [AesGCM]::Encrypt($ba, $Password, $_salt, $null, $Compression, $iterations)
-        $streamWriter = [System.IO.FileStream]::new($OutPath, [System.IO.FileMode]::OpenOrCreate);
-        [void]$streamWriter.Write($encryptdbytes, 0, $encryptdbytes.Length);
-        [void]$streamWriter.Close()
-        [void]$streamReader.Dispose()
-        [void]$streamWriter.Dispose()
-    }
-    static [byte[]] Decrypt([byte[]]$bytes) {
-        return [AesGCM]::Decrypt($bytes, [AesGCM]::GetPassword());
-    }
-    static [byte[]] Decrypt([byte[]]$Bytes, [SecureString]$Password) {
-        [byte[]]$_salt = [AesGCM]::GetDerivedBytes($Password)
-        return [AesGCM]::Decrypt($bytes, $Password, $_salt);
-    }
-    static [byte[]] Decrypt([byte[]]$Bytes, [SecureString]$Password, [byte[]]$Salt) {
-        return [AesGCM]::Decrypt($bytes, $Password, $Salt, $null, $null, 1);
-    }
-    static [string] Decrypt([string]$text, [SecureString]$Password, [int]$iterations) {
-        return [System.Text.Encoding]::UTF8.GetString([AesGCM]::Decrypt([convert]::FromBase64String($text), $Password, $iterations));
-    }
-    static [byte[]] Decrypt([byte[]]$Bytes, [SecureString]$Password, [int]$iterations) {
-        [byte[]]$_salt = [AesGCM]::GetDerivedBytes($Password)
-        return [AesGCM]::Decrypt($bytes, $Password, $_salt, $null, $null, $iterations);
-    }
-    static [byte[]] Decrypt([byte[]]$Bytes, [SecureString]$Password, [byte[]]$Salt, [int]$iterations) {
-        return [AesGCM]::Decrypt($bytes, $Password, $Salt, $null, $null, 1);
-    }
-    static [byte[]] Decrypt([byte[]]$Bytes, [SecureString]$Password, [int]$iterations, [string]$Compression) {
-        [byte[]]$_salt = [AesGCM]::GetDerivedBytes($Password)
-        return [AesGCM]::Decrypt($bytes, $Password, $_salt, $null, $Compression, $iterations);
-    }
-    static [byte[]] Decrypt([byte[]]$Bytes, [SecureString]$Password, [byte[]]$Salt, [byte[]]$associatedData, [int]$iterations) {
-        return [AesGCM]::Decrypt($bytes, $Password, $Salt, $associatedData, $null, $iterations);
-    }
-    static [byte[]] Decrypt([byte[]]$Bytes, [SecureString]$Password, [byte[]]$Salt, [byte[]]$associatedData) {
-        return [AesGCM]::Decrypt($bytes, $Password, $Salt, $associatedData, $null, 1);
-    }
-    static [byte[]] Decrypt([byte[]]$Bytes, [SecureString]$Password, [byte[]]$Salt, [byte[]]$associatedData, [string]$Compression, [int]$iterations) {
-        [int]$IV_SIZE = 0; Set-Variable -Name IV_SIZE -Scope Local -Visibility Private -Option Private -Value 12
-        [int]$TAG_SIZE = 0; Set-Variable -Name TAG_SIZE -Scope Local -Visibility Private -Option Private -Value 16
-        [string]$Key = $null; Set-Variable -Name Key -Scope Local -Visibility Private -Option Private -Value $([convert]::ToBase64String([System.Security.Cryptography.Rfc2898DeriveBytes]::new([xconvert]::ToString($Password), $Salt, 10000, [System.Security.Cryptography.HashAlgorithmName]::SHA1).GetBytes(32)));
-        [System.IntPtr]$th = [System.IntPtr]::new(0); Set-Variable -Name th -Scope Local -Visibility Private -Option Private -Value $([System.Runtime.InteropServices.Marshal]::StringToHGlobalAnsi($TAG_SIZE));
-        try {
-            $_bytes = if (![string]::IsNullOrWhiteSpace($Compression)) { [xconvert]::ToDecompressed($bytes, $Compression) } else { $bytes }
-            $aes = [ScriptBlock]::Create("[Security.Cryptography.AesGcm]::new([convert]::FromBase64String('$Key'))").Invoke()
-            for ($i = 1; $i -lt $iterations + 1; $i++) {
-                # Write-Host "$(Show-Stack) [+] Decryption [$i/$iterations] ... Done" -f Yellow
-                # if ($UnProtect) { $_bytes = [xconvert]::ToUnProtected($_bytes, $Salt, [EncryptionScope]::User) }
-                # Split the real encrypted bytes from nonce & tags then decrypt them:
-                ($b, $n1) = [Shuffl3r]::Split($_bytes, $Password, $TAG_SIZE);
-                ($b, $n2) = [Shuffl3r]::Split($b, $Password, $IV_SIZE);
-                $Decrypted = [byte[]]::new($b.Length);
-                $aes.Decrypt($n2, $b, $n1, $Decrypted, $associatedData);
-                $_bytes = $Decrypted;
-            }
-        } catch {
-            if ($_.FullyQualifiedErrorId -eq "AuthenticationTagMismatchException") {
-                Write-Host "$(Show-Stack) Wrong password" -f Yellow
-            }
-            throw $_
-        } finally {
-            [void][System.Runtime.InteropServices.Marshal]::ZeroFreeGlobalAllocAnsi($th);
-            Remove-Variable IV_SIZE, TAG_SIZE, th -ErrorAction SilentlyContinue
-        }
-        return $_bytes
-    }
-    static [void] Decrypt([IO.FileInfo]$File) {
-        [AesGCM]::Decrypt($File, [AesGCM]::GetPassword());
-    }
-    static [void] Decrypt([IO.FileInfo]$File, [securestring]$password) {
-        [AesGCM]::Decrypt($File, $password, $null);
-    }
-    static [void] Decrypt([IO.FileInfo]$File, [securestring]$Password, [string]$OutPath) {
-        [AesGCM]::Decrypt($File, $password, $OutPath, 1, $null);
-    }
-    static [void] Decrypt([IO.FileInfo]$File, [securestring]$Password, [string]$OutPath, [int]$iterations) {
-        [AesGCM]::Decrypt($File, $password, $OutPath, $iterations, $null);
-    }
-    static [void] Decrypt([IO.FileInfo]$File, [securestring]$Password, [string]$OutPath, [int]$iterations, [string]$Compression) {
-        [ValidateNotNullOrEmpty()][IO.FileInfo]$File = [AesGCM]::GetResolvedPath($File.FullName); if ([string]::IsNullOrWhiteSpace($OutPath)) { $OutPath = $File.FullName }
-        [ValidateNotNullOrEmpty()][string]$OutPath = [AesGCM]::GetUnResolvedPath($OutPath);
-        if (![string]::IsNullOrWhiteSpace($Compression)) { [AesGCM]::ValidateCompression($Compression) }
-        $streamReader = [System.IO.FileStream]::new($File.FullName, [System.IO.FileMode]::Open)
-        $ba = [byte[]]::New($streamReader.Length);
-        [void]$streamReader.Read($ba, 0, [int]$streamReader.Length);
-        [void]$streamReader.Close();
-        Write-Verbose "$(Show-Stack) Begin file decryption:"
-        Write-Verbose "[-]  File    : $File"
-        Write-Verbose "[-]  OutFile : $OutPath"
-        [byte[]]$_salt = [AesGCM]::GetDerivedBytes($Password);
-        $decryptdbytes = [AesGCM]::Decrypt($ba, $Password, $_salt, $null, $Compression, $iterations)
-        $streamWriter = [System.IO.FileStream]::new($OutPath, [System.IO.FileMode]::OpenOrCreate);
-        [void]$streamWriter.Write($decryptdbytes, 0, $decryptdbytes.Length);
-        [void]$streamWriter.Close()
-        [void]$streamReader.Dispose()
-        [void]$streamWriter.Dispose()
-    }
-}
-#endregion AesGCM
 
 #region     GitHub
 class GitHub {
@@ -1976,6 +438,7 @@ class GitHub {
     static hidden [EncryptionScope] $EncryptionScope = "Machine"
     static hidden [string] $TokenFile = [GitHub]::GetTokenFile()
 
+    GitHub() {}
     static [PSObject] createSession() {
         return [Github]::createSession([Github]::UserName)
     }
@@ -1985,7 +448,7 @@ class GitHub {
     }
     static [Psobject] createSession([string]$GitHubUserName, [securestring]$clientSecret) {
         [ValidateNotNullOrEmpty()][string]$GitHubUserName = $GitHubUserName
-        [ValidateNotNullOrEmpty()][string]$GithubToken = $GithubToken = [xconvert]::Tostring([securestring]$clientSecret)
+        [ValidateNotNullOrEmpty()][string]$GithubToken = $GithubToken = (xconvert)::Tostring([securestring]$clientSecret)
         $encodedAuth = [Convert]::ToBase64String([System.Text.Encoding]::UTF8.GetBytes("$($GitHubUserName):$($GithubToken)"))
         $web_session = New-Object Microsoft.PowerShell.Commands.WebRequestSession
         [void]$web_session.Headers.Add('Authorization', "Basic $($encodedAuth)")
@@ -1994,14 +457,14 @@ class GitHub {
         return $web_session
     }
     static [void] SetToken() {
-        [GitHub]::SetToken([xconvert]::Tostring((Read-Host -Prompt "[GitHub] Paste/write your api token" -AsSecureString)), $(Read-Host -Prompt "[GitHub] Paste/write a Password to encrypt the token" -AsSecureString))
+        [GitHub]::SetToken((xconvert)::Tostring((Read-Host -Prompt "[GitHub] Paste/write your api token" -AsSecureString)), $(Read-Host -Prompt "[GitHub] Paste/write a Password to encrypt the token" -AsSecureString))
     }
     static [void] SetToken([string]$token, [securestring]$password) {
         if (![IO.File]::Exists([GitHub]::TokenFile)) { New-Item -Type File -Path ([GitHub]::TokenFile) -Force | Out-Null }
-        [IO.File]::WriteAllText([GitHub]::TokenFile, [convert]::ToBase64String([AesGCM]::Encrypt([system.Text.Encoding]::UTF8.GetBytes($token), $password)), [System.Text.Encoding]::UTF8);
+        [IO.File]::WriteAllText([GitHub]::TokenFile, [convert]::ToBase64String((AesGCM)::Encrypt([system.Text.Encoding]::UTF8.GetBytes($token), $password)), [System.Text.Encoding]::UTF8);
     }
     static [securestring] GetToken() {
-        $sectoken = $null; $session_pass = [xconvert]::ToSecurestring('123');
+        $sectoken = $null; $session_pass = (xconvert)::ToSecurestring('123');
         try {
             if ([GitHub]::IsInteractive) {
                 if ([string]::IsNullOrWhiteSpace((Get-Content ([GitHub]::TokenFile) -ErrorAction Ignore))) {
@@ -2017,10 +480,10 @@ class GitHub {
             } else {
                 #Fix: Temporary Workaround: Thisz a pat from one of my GitHub a/cs.It Can only read/write gists. Will expire on 1/1/2025. DoNot Abuse this or I'll take it down!!
                 $et = "+yDHse2ViCRxp7dBqhOa6Lju6Ww67ldUU2OaxG8w8aKqLsCmvsQB92Kv5YmYD7RFklr7Bc1dTeQlji38W3ha6RF9PneH1+7xd/8IFCkknVB6POZZANiSiaflmzq1dWxMIUzI6dzDBwNi6Xi0MSsRr6kjI+dqcQ5wZA=="
-                [GitHub]::SetToken([system.Text.Encoding]::UTF8.GetString([AesGCM]::Decrypt([convert]::FromBase64String($et), $session_pass)), $session_pass)
+                [GitHub]::SetToken([system.Text.Encoding]::UTF8.GetString((AesGCM)::Decrypt([convert]::FromBase64String($et), $session_pass)), $session_pass)
             }
-            $sectoken = [xconvert]::ToSecurestring([system.Text.Encoding]::UTF8.GetString(
-                    [AesGCM]::Decrypt([Convert]::FromBase64String([IO.File]::ReadAllText([GitHub]::GetTokenFile())), $session_pass)
+            $sectoken = (xconvert)::ToSecurestring([system.Text.Encoding]::UTF8.GetString(
+                    (AesGCM)::Decrypt([Convert]::FromBase64String([IO.File]::ReadAllText([GitHub]::GetTokenFile())), $session_pass)
                 )
             )
         } catch {
@@ -2367,7 +830,7 @@ class RecordMap {
                     }
                 )
             )
-            $_ob = [xconvert]::Deserialize([xconvert]::ToDeCompressed([AesGCM]::Decrypt([base85]::Decode($(Invoke-WebRequest $raw_uri -Verbose:$false).Content), $pass)))
+            $_ob = (xconvert)::Deserialize((xconvert)::ToDeCompressed((AesGCM)::Decrypt([base85]::Decode($(Invoke-WebRequest $raw_uri -Verbose:$false).Content), $pass)))
             $this.Set([hashtable[]]$_ob.Properties.Name.ForEach({ @{ $_ = $_ob.$_ } }))
         } catch {
             throw $_
@@ -2381,7 +844,7 @@ class RecordMap {
         Write-Host "$(Show-Stack) Import records Complete" -f Green
     }
     [void] Upload() {
-        if ([string]::IsNullOrWhiteSpace($this.Remote)) { throw [InvalidArgumentException]::new('remote') }
+        if ([string]::IsNullOrWhiteSpace($this.Remote)) { throw [System.ArgumentException]::new('remote') }
         # $gisturi = 'https://gist.github.com/' + $this.Remote.Segments[2] + $this.Remote.Segments[2].replace('/', '')
         # [GitHub]::UpdateGist($gisturi, $content)
     }
@@ -2452,7 +915,7 @@ class RecordMap {
         return $dict
     }
     static [hashtable[]] Read([string]$FilePath) {
-        Push-Stack -class "ArgonCage"; $pass = $null; $cfg = $null; $FilePath = [AesGCM]::GetResolvedPath($FilePath);
+        Push-Stack -class "ArgonCage"; $pass = $null; $cfg = $null; $FilePath = (AesGCM)::GetResolvedPath($FilePath);
         if ([IO.File]::Exists($FilePath)) { if ([string]::IsNullOrWhiteSpace([IO.File]::ReadAllText($FilePath).Trim())) { throw [System.Exception]::new("File is empty: $FilePath") } } else { throw [FileNotFoundException]::new("File not found: $FilePath") }
         Set-Variable -Name pass -Scope Local -Visibility Private -Option Private -Value $([ArgonCage]::Tmp.GetSessionKey('configrw', [PSCustomObject]@{
                     caller = Show-Stack
@@ -2461,7 +924,7 @@ class RecordMap {
             )
         )
         $txt = [IO.File]::ReadAllText($FilePath)
-        $_ob = [xconvert]::Deserialize([xconvert]::ToDeCompressed([AesGCM]::Decrypt([base85]::Decode($txt), $pass)))
+        $_ob = (xconvert)::Deserialize((xconvert)::ToDeCompressed((AesGCM)::Decrypt([base85]::Decode($txt), $pass)))
         $cfg = [hashtable[]]$_ob.PsObject.Properties.Name.Where({ $_ -notin ('Count', 'Properties', 'IsSynchronized') }).ForEach({ @{ $_ = $_ob.$_ } })
         return $cfg
     }
@@ -2472,12 +935,12 @@ class RecordMap {
     }
     [hashtable[]] Edit([string]$FilePath) {
         $result = @(); $private:config_ob = $null; $fswatcher = $null; $process = $null;
-        $FilePath = [AesGCM]::GetResolvedPath($FilePath);
+        $FilePath = (AesGCM)::GetResolvedPath($FilePath);
         if ([IO.File]::Exists($FilePath)) { if ([string]::IsNullOrWhiteSpace([IO.File]::ReadAllText($FilePath).Trim())) { throw [System.Exception]::new("File is empty: $FilePath") } } else { throw [FileNotFoundException]::new("File not found: $FilePath") }
         $OutFile = [IO.FileInfo][IO.Path]::GetTempFileName()
         $UseVerbose = [bool]$((Get-Variable verbosePreference -ValueOnly) -eq "continue")
         try {
-            [NetworkManager]::BlockAllOutbound()
+            (NetworkManager)::BlockAllOutbound()
             if ($UseVerbose) { "[+] Edit Config started .." | Write-Host -f Magenta }
             $parsed_content = [RecordMap]::Read("$FilePath");
             [ValidateNotNullOrEmpty()][hashtable[]]$parsed_content = $parsed_content
@@ -2491,7 +954,7 @@ class RecordMap {
             if ($null -eq $fswatcher) { Write-Warning "Failed to start FileMonitor"; Write-Host "Waiting nvim process to exit..." $process.WaitForExit() }
             $private:config_ob = [IO.FILE]::ReadAllText($outFile.FullName) | ConvertFrom-Json
         } finally {
-            [NetworkManager]::UnblockAllOutbound()
+            (NetworkManager)::UnblockAllOutbound()
             if ($fswatcher) { $fswatcher.Dispose() }
             if ($process) {
                 "[+] Neovim process {0} successfully" -f $(if (!$process.HasExited) {
@@ -2507,7 +970,7 @@ class RecordMap {
             Remove-Item $outFile.FullName -Force
             Set-Variable -Name ([FileMonitor]::LogvariableName) -Scope Global -Value ([FileMonitor]::GetLogSummary()) | Out-Null
             if ($UseVerbose) { "[+] FileMonitor Log saved in variable: `$$([fileMonitor]::LogvariableName)" | Write-Host -f Magenta }
-            if ($null -ne $config_ob) { $result = $config_ob.ForEach({ [xconvert]::ToHashTable($_) }) }
+            if ($null -ne $config_ob) { $result = $config_ob.ForEach({ (xconvert)::ToHashTable($_) }) }
             if ($UseVerbose) { "[+] Edit Config completed." | Write-Host -f Magenta }
         }
         return $result
@@ -2522,7 +985,7 @@ class RecordMap {
                     }
                 )
             ); [ValidateNotNullOrEmpty()][securestring]$pass = $pass
-            $this.LastWriteTime = [datetime]::Now; [IO.File]::WriteAllText($this.File, [Base85]::Encode([AesGCM]::Encrypt([xconvert]::ToCompressed($this.ToByte()), $pass)), [System.Text.Encoding]::UTF8)
+            $this.LastWriteTime = [datetime]::Now; [IO.File]::WriteAllText($this.File, [Base85]::Encode((AesGCM)::Encrypt((xconvert)::ToCompressed($this.ToByte()), $pass)), [System.Text.Encoding]::UTF8)
             Write-Host "$cllr Saving records " -f Blue -NoNewline; Write-Host "Completed." -f Green
         } catch {
             throw $_
@@ -2531,7 +994,7 @@ class RecordMap {
         }
     }
     [byte[]] ToByte() {
-        return [xconvert]::Serialize($this)
+        return (xconvert)::Serialize($this)
     }
     [string] ToString() {
         $r = $this.ToArray(); $s = ''
@@ -2589,9 +1052,9 @@ class SessionTmp {
             [ValidateNotNullOrEmpty()][EncryptionScope]$scope = $scope
             $this.SaveSessionKey($Name, $(if ($scope -eq "User") {
                         Write-Verbose "Save Sessionkey $Name ..."
-                        [CryptoBase]::GetPassword(("{0} {1}" -f $Options.caller, $Options.Prompt))
+                        (CryptoBase)::GetPassword(("{0} {1}" -f $Options.caller, $Options.Prompt))
                     } else {
-                        [xconvert]::ToSecurestring([cryptoBase]::GetUniqueMachineId())
+                        (xconvert)::ToSecurestring((CryptoBase)::GetUniqueMachineId())
                     }
                 )
             )
@@ -2627,7 +1090,7 @@ class FileMonitor {
         return [FileMonitor]::monitorFile($File, { Write-Host "[+] File monitor Completed" -f Green })
     }
     static [System.IO.FileSystemWatcher] MonitorFile([string]$File, [scriptblock]$Action) {
-        [ValidateNotNull()][IO.FileInfo]$File = [IO.FileInfo][CryptoBase]::GetUnResolvedPath($File)
+        [ValidateNotNull()][IO.FileInfo]$File = [IO.FileInfo](CryptoBase)::GetUnResolvedPath($File)
         if (![IO.File]::Exists($File.FullName)) {
             throw "The file does not exist"
         }
@@ -2741,16 +1204,16 @@ class FileMonitor {
 class VaultCache {
     VaultCache() {}
     [RecordMap[]] Read() {
-        return $this.Read([xconvert]::ToSecurestring([ArgonCage]::Get_SessionConfig().CachedCredsPath))
+        return $this.Read((xconvert)::ToSecurestring([ArgonCage]::Get_SessionConfig().CachedCredsPath))
     }
     [RecordMap[]] Read([securestring]$CachedCredsPath) {
         $FilePath = ''; $credspath = ''; $sc = [ArgonCage]::Tmp.vars.SessionConfig; [ValidateNotNullOrEmpty()][RecordMap]$sc = $sc
-        Set-Variable -Name "FilePath" -Visibility Private -Option Private -Value ([xconvert]::Tostring($CachedCredsPath))
+        Set-Variable -Name "FilePath" -Visibility Private -Option Private -Value ((xconvert)::Tostring($CachedCredsPath))
         if ([string]::IsNullOrWhiteSpace($FilePath)) { throw "InvalidArgument: `$FilePath" }
         Set-Variable -Name "credspath" -Visibility Private -Option Private -Value ([IO.Path]::GetDirectoryName($FilePath))
         if ([string]::IsNullOrWhiteSpace($credspath)) { throw "InvalidArgument: `$credspath" }
-        if (!(Test-Path -Path $credspath -PathType Container -ErrorAction Ignore)) { [ArgonCage]::Create_Dir($credspath) }
-        $_p = [xconvert]::ToSecurestring([ArgonCage]::GetUniqueMachineId())
+        if (!(Test-Path -Path $credspath -PathType Container -ErrorAction Ignore)) { (cryptobase)::Create_Dir($credspath) }
+        $_p = (xconvert)::ToSecurestring((CryptoBase)::GetUniqueMachineId())
         $ca = @(); if (![IO.File]::Exists($FilePath)) {
             if ($sc.SaveVaultCache) {
                 New-Item -Path $FilePath -ItemType File -Force -ErrorAction Ignore | Out-Null
@@ -2762,8 +1225,8 @@ class VaultCache {
             return $ca
         }
         $tc = [IO.FILE]::ReadAllText($FilePath); if ([string]::IsNullOrWhiteSpace($tc.Trim())) { return $ca }
-        $da = [byte[]][AesGCM]::Decrypt([Base85]::Decode($tc), $_p, [AesGCM]::GetDerivedBytes($_p), $null, 'Gzip', 1)
-        $([System.Text.Encoding]::UTF8.GetString($da) | ConvertFrom-Json).ForEach({ $ca += [RecordMap]::new([xconvert]::ToHashTable($_)) })
+        $da = [byte[]](AesGCM)::Decrypt([Base85]::Decode($tc), $_p, (AesGCM)::GetDerivedBytes($_p), $null, 'Gzip', 1)
+        $([System.Text.Encoding]::UTF8.GetString($da) | ConvertFrom-Json).ForEach({ $ca += [RecordMap]::new((xconvert)::ToHashTable($_)) })
         return $ca
     }
     [RecordMap[]] Update([string]$userName, [securestring]$password, [string]$TagName) {
@@ -2793,17 +1256,17 @@ class VaultCache {
                 $results += [RecordMap]::new(@{
                         User  = $_Credential.UserName
                         Tag   = $_TagName
-                        Token = [HKDF2]::GetToken($_Credential.Password)
+                        Token = (HKDF2)::GetToken($_Credential.Password)
                     }
                 )
             } else {
-                $results.Where({ $_.Tag -eq $_TagName }).Set('Token', [HKDF2]::GetToken($_Credential.Password))
+                $results.Where({ $_.Tag -eq $_TagName }).Set('Token', (HKDF2)::GetToken($_Credential.Password))
             }
             if ($sessionConfig.SaveVaultCache) {
-                $_p = [xconvert]::ToSecurestring([ArgonCage]::GetUniqueMachineId())
-                Set-Content -Value $([Base85]::Encode([AesGCM]::Encrypt(
+                $_p = (xconvert)::ToSecurestring((CryptoBase)::GetUniqueMachineId())
+                Set-Content -Value $([Base85]::Encode((AesGCM)::Encrypt(
                             [System.Text.Encoding]::UTF8.GetBytes([string]($results | ConvertTo-Json)),
-                            $_p, [AesGCM]::GetDerivedBytes($_p), $null, 'Gzip', 1
+                            $_p, (AesGCM)::GetDerivedBytes($_p), $null, 'Gzip', 1
                         )
                     )
                 ) -Path ($sessionConfig.CachedCredsPath) -Encoding utf8BOM
@@ -2827,10 +1290,10 @@ class vault {
     static hidden [ValidateNotNullOrEmpty()][string]$DataPath = [IO.Path]::Combine([ArgonCage]::DataPath, 'secrets')
     static hidden [bool]$UseVerbose = [bool]$((Get-Variable verbosePreference -ValueOnly) -eq "continue")
     vault([string]$Name) {
-        if ([string]::IsNullOrWhiteSpace($Name)) { throw [InvalidArgumentException]::new($Name) }
+        if ([string]::IsNullOrWhiteSpace($Name)) { throw [System.ArgumentException]::new($Name) }
         $this.Name = $Name
         if ([string]::IsNullOrWhiteSpace([vault]::DataPath)) {
-            [vault]::DataPath = [IO.Path]::Combine([cryptobase]::Get_dataPath('ArgonCage', 'Data'), 'secrets')
+            [vault]::DataPath = [IO.Path]::Combine((CryptoBase)::Get_dataPath('ArgonCage', 'Data'), 'secrets')
         }
         $this.psobject.Properties.Add([psscriptproperty]::new('File', {
                     return [IO.FileInfo]::new([IO.Path]::Combine([vault]::DataPath, $this.Name))
@@ -2869,7 +1332,7 @@ class vault {
     static [vault] Create([string]$FilePath, [uri]$RemoteUri) {
         [ValidateNotNullOrEmpty()][string]$FileName = $FilePath
         [ValidateNotNullOrEmpty()][uri]$RemoteUri = $RemoteUri
-        $__FilePath = [CryptoBase]::GetUnResolvedPath($FilePath);
+        $__FilePath = (CryptoBase)::GetUnResolvedPath($FilePath);
         $result = [vault]::new([IO.Path]::GetFileName($__FilePath));
         $result.File = $(if ([IO.File]::Exists($__FilePath)) {
                 Write-Host "    Found secrets file '$([IO.Path]::GetFileName($__FilePath))'" -f Green
@@ -2893,14 +1356,14 @@ class vault {
     }
     [PsObject] GetSecrets([String]$Path) {
         # $IsCached = [ArgonCage]::checkCredCache($Path)
-        $password = [AesGCM]::GetPassword("[ArgonCage] password to read secrets")
+        $password = (AesGCM)::GetPassword("[ArgonCage] password to read secrets")
         return $this.GetSecrets($Path, $password, [string]::Empty)
     }
     [PsObject] GetSecrets([String]$Path, [securestring]$password, [string]$Compression) {
-        [ValidateNotNullOrEmpty()][string]$Path = [CryptoBase]::GetResolvedPath($Path)
+        [ValidateNotNullOrEmpty()][string]$Path = (CryptoBase)::GetResolvedPath($Path)
         if (![IO.File]::Exists($Path)) { throw [System.IO.FileNotFoundException]::new("File '$path' does not exist") }
-        if (![string]::IsNullOrWhiteSpace($Compression)) { [CryptoBase]::ValidateCompression($Compression) }
-        $da = [byte[]][AesGCM]::Decrypt([Base85]::Decode([IO.FILE]::ReadAllText($Path)), $Password, [AesGCM]::GetDerivedBytes($Password), $null, $Compression, 1)
+        if (![string]::IsNullOrWhiteSpace($Compression)) { (CryptoBase)::ValidateCompression($Compression) }
+        $da = [byte[]](AesGCM)::Decrypt([Base85]::Decode([IO.FILE]::ReadAllText($Path)), $Password, (AesGCM)::GetDerivedBytes($Password), $null, $Compression, 1)
         return $(ConvertFrom-Csv ([System.Text.Encoding]::UTF8.GetString($da).Split('" "'))) | Select-Object -Property @{ l = 'link'; e = { if ($_.link.Contains('"')) { $_.link.replace('"', '') } else { $_.link } } }, 'user', 'pass'
     }
     [void] EditSecrets() {
@@ -2913,7 +1376,7 @@ class vault {
     [void] EditSecrets([String]$Path) {
         $private:secrets = $null; $fswatcher = $null; $process = $null; $outFile = [IO.FileInfo][IO.Path]::GetTempFileName()
         try {
-            Push-Stack "vault"; [NetworkManager]::BlockAllOutbound()
+            Push-Stack "vault"; (NetworkManager)::BlockAllOutbound()
             if ([vault]::UseVerbose) { "[+] Edit secrets started .." | Write-Host -f Magenta }
             $this.GetSecrets($Path) | ConvertTo-Json | Out-File $OutFile.FullName -Encoding utf8BOM
             Set-Variable -Name OutFile -Value $(Rename-Item $outFile.FullName -NewName ($outFile.BaseName + '.json') -PassThru)
@@ -2925,7 +1388,7 @@ class vault {
             if ($null -eq $fswatcher) { Write-Warning "Failed to start FileMonitor"; Write-Host "Waiting nvim process to exit..." $process.WaitForExit() }
             $private:secrets = [IO.FILE]::ReadAllText($outFile.FullName) | ConvertFrom-Json
         } finally {
-            [NetworkManager]::UnblockAllOutbound()
+            (NetworkManager)::UnblockAllOutbound()
             if ($fswatcher) { $fswatcher.Dispose() }
             if ($process) {
                 "[+] Neovim process {0} successfully" -f $(if (!$process.HasExited) {
@@ -2951,21 +1414,15 @@ class vault {
     static [IO.FileInfo] FetchSecrets([uri]$remote, [string]$OutFile) {
         if ([string]::IsNullOrWhiteSpace($remote.AbsoluteUri)) { throw [System.ArgumentException]::new("Invalid Argument: remote") }
         if ([vault]::UseVerbose) { "[+] Fetching secrets from gist ..." | Write-Host -f Magenta }
-        Push-Stack "vault"; [NetworkManager]::DownloadOptions.Set('ShowProgress', $true)
-        $og_PbLength = [NetworkManager]::DownloadOptions.ProgressBarLength
-        $og_pbMsg = [NetworkManager]::DownloadOptions.ProgressMessage
+        Push-Stack "vault"; (NetworkManager)::DownloadOptions.ShowProgress = $true
+        $og_PbLength = (NetworkManager)::DownloadOptions.ProgressBarLength
+        $og_pbMsg = (NetworkManager)::DownloadOptions.ProgressMessage
         $Progress_Msg = "[+] Downloading secrets to {0}" -f $OutFile
-        [NetworkManager]::DownloadOptions.Set(@{
-                ProgressBarLength = $Progress_Msg.Length - 7
-                ProgressMessage   = $Progress_Msg
-            }
-        )
-        $resfile = [NetworkManager]::DownloadFile($remote, $OutFile)
-        [NetworkManager]::DownloadOptions.Set(@{
-                ProgressBarLength = $og_PbLength
-                ProgressMessage   = $og_pbMsg
-            }
-        )
+        (NetworkManager)::DownloadOptions.ProgressBarLength = $Progress_Msg.Length - 7
+        (NetworkManager)::DownloadOptions.ProgressMessage = $Progress_Msg
+        $resfile = (NetworkManager)::DownloadFile($remote, $OutFile)
+        (NetworkManager)::DownloadOptions.ProgressBarLength = $og_PbLength
+        (NetworkManager)::DownloadOptions.ProgressMessage = $og_pbMsg
         [Console]::Write([Environment]::NewLine)
         return $resfile
     }
@@ -2993,13 +1450,13 @@ class vault {
         return $raw_uri
     }
     [void] UpdateSecrets([psObject]$InputObject, [string]$outFile) {
-        $password = [AesGCM]::GetPassword("[ArgonCage] password to save secrets")
-        $this.UpdateSecrets($InputObject, [CryptoBase]::GetUnResolvedPath($outFile), $password, '')
+        $password = (AesGCM)::GetPassword("[ArgonCage] password to save secrets")
+        $this.UpdateSecrets($InputObject, (CryptoBase)::GetUnResolvedPath($outFile), $password, '')
     }
     [void] UpdateSecrets([psObject]$InputObject, [string]$outFile, [securestring]$Password, [string]$Compression) {
         Push-Stack "vault"; if ([vault]::UseVerbose) { "[+] Updating secrets .." | Write-Host -f Green }
-        if (![string]::IsNullOrWhiteSpace($Compression)) { [CryptoBase]::ValidateCompression($Compression) }
-        [Base85]::Encode([AesGCM]::Encrypt([System.Text.Encoding]::UTF8.GetBytes([string]($InputObject | ConvertTo-Csv)), $Password, [AesGCM]::GetDerivedBytes($Password), $null, $Compression, 1)) | Out-File $outFile -Encoding utf8BOM
+        if (![string]::IsNullOrWhiteSpace($Compression)) { (CryptoBase)::ValidateCompression($Compression) }
+        [Base85]::Encode((AesGCM)::Encrypt([System.Text.Encoding]::UTF8.GetBytes([string]($InputObject | ConvertTo-Csv)), $Password, (AesGCM)::GetDerivedBytes($Password), $null, $Compression, 1)) | Out-File $outFile -Encoding utf8BOM
     }
     hidden [void] Set_RemoteUri() {
         if ([string]::IsNullOrWhiteSpace($this.Remote.AbsoluteUri)) {
@@ -3009,261 +1466,6 @@ class vault {
         }
     }
 }
-#region    HKDF2
-# .SYNOPSIS
-#     A custom HMAC Key Derivation class (System.Security.Cryptography.HKDF) using PBKDF2 algorithm.
-# .DESCRIPTION
-#     Here's a basic scenario of why I use this:
-#     IRL when a user inputs a password, instead of storing the password in cleartext, we hash the password and store the username and hash pair in the database table.
-#     When the user logs in, we hash the input password and compare the calculated hash with what we have in the database.
-#     Cool and that's what this class does but also checks if the password has expired or not.
-#
-#     The token basically stores expiration date and hash of the Password.
-#     but the token is encryptd /jumbled and can only be read if the InputPassword's hash matches the CalculatedHash.
-#
-#     This class can also be used to check the validity of the input password before deriving it.
-# .EXAMPLE
-#
-#     The main use is to never store the actual input password, rather keep its hash
-#     # STEP 1. Create Hash and Store it somewhere secure.
-#     $hashSTR = [HKDF2]::GetToken((Read-Host -Prompt "password" -AsSecureString))
-#     $hashSTR | Out-File ReallySecureFilePath; # keep the hash string it in a file Or in a database
-#
-#     # STEP 2. Use the Hash to verify if $InputPassword is legit, then login/orNot
-#     [SecureString]$InputPassword = Read-Host -Prompt "password" -AsSecureString
-#     $IsValidPasswd = [HKDF2]::VerifyToken((cat ReallySecureFilePath), $InputPassword)
-#
-#    Real Use case:
-#    # STEP 1.
-#    $InputPass = Read-Host -Prompt "Password to encrypt" -AsSecureString
-#    [HKDF2]::GetToken($InputPass) | Out-File ReallySecureFilePath; # keep the hash string it in a file Or in a database
-#    $Password2Use = [HKDF2]::Resolve($InputPass, (cat ReallySecureFilePath)) # get derived password, and use itinstead of input password
-#
-#    # STEP 2.
-#    $Password2Use = [HKDF2]::Resolve((Read-Host -Prompt "password ro decrypt" -AsSecureString), (cat ReallySecureFilePath))
-# .NOTES
-#     Inspired by: - https://asecuritysite.com/powershell/enc07
-#                  - https://stackoverflow.com/questions/51941509/what-is-the-process-of-checking-passwords-in-databases/51961121#51961121
-class HKDF2 {
-    [byte[]] $Salt
-    [int] $IterationCount
-    [int] $BlockSize
-    [UInt32] $BlockIndex
-    [byte[]] $BufferBytes
-    [int] $BufferStartIndex
-    [int] $BufferEndIndex
-    [System.Security.Cryptography.HMAC] $Algorithm
-
-    HKDF2() {}
-    HKDF2([byte[]]$bytes) {
-        $ob = [HKDF2]::Create($bytes)
-        $this.PsObject.Properties.Name.ForEach({ $this.$_ = $ob.$_ })
-    }
-    HKDF2([securestring]$secretKey) {
-        $ob = [HKDF2]::Create($secretKey)
-        $this.PsObject.Properties.Name.ForEach({ $this.$_ = $ob.$_ })
-    }
-    HKDF2([securestring]$secretKey, [byte[]]$salt) {
-        $ob = [HKDF2]::Create($secretKey, $salt)
-        $this.PsObject.Properties.Name.ForEach({ $this.$_ = $ob.$_ })
-    }
-    [byte[]] GetBytes() {
-        return $this.GetBytes(32)
-    }
-    [byte[]] GetBytes([int]$count) {
-        # Returns a pseudo-random key. $count is number of bytes to return.
-        $result = [byte[]]::New($count)
-        $resultOffset = 0
-        $bufferCount = $this.BufferEndIndex - $this.BufferStartIndex
-
-        if ($bufferCount -gt 0) {
-            if ($count -lt $bufferCount) {
-                [Buffer]::BlockCopy($this.BufferBytes, $this.BufferStartIndex, $result, 0, $count)
-                $this.BufferStartIndex += $count
-                return $result
-            }
-            [Buffer]::BlockCopy($this.BufferBytes, $this.BufferStartIndex, $result, 0, $bufferCount)
-            $this.BufferStartIndex = $this.BufferEndIndex = 0
-            $resultOffset += $bufferCount
-        }
-        while ($resultOffset -lt $count) {
-            $needCount = $count - $resultOffset
-            $this.BufferBytes = $this.GetHashBuffer()
-            if ($needCount -gt $this.BlockSize) {
-                [Buffer]::BlockCopy($this.BufferBytes, 0, $result, $resultOffset, $this.BlockSize)
-                $resultOffset += $this.BlockSize
-            } else {
-                [Buffer]::BlockCopy($this.BufferBytes, 0, $result, $resultOffset, $needCount)
-                $this.BufferStartIndex = $needCount
-                $this.BufferEndIndex = $this.BlockSize
-                return $result
-            }
-        }
-        return $result
-    }
-    [byte[]] GetHashBuffer() {
-        $hash1Input = [byte[]]::New(($this.Salt.Length + 4))
-        [Buffer]::BlockCopy($this.Salt, 0, $hash1Input, 0, $this.Salt.Length)
-        [Buffer]::BlockCopy($this.GetBytesFromInt($this.BlockIndex), 0, $hash1Input, $this.Salt.Length, 4)
-        $hash1 = $this.Algorithm.ComputeHash($hash1Input)
-
-        $finalHash = $hash1
-        for ($i = 2; $i -le $this.IterationCount; $i++) {
-            $hash1 = $this.Algorithm.ComputeHash($hash1, 0, $hash1.Length)
-            for ($j = 0; $j -lt $this.BlockSize; $j++) {
-                $finalHash[$j] = [byte]($finalHash[$j] -bxor $hash1[$j])
-            }
-        }
-        if ($this.BlockIndex -eq [UInt32]::MaxValue) { throw "Derived key too long." }
-        $this.BlockIndex += 1
-        return $finalHash
-    }
-    [byte[]] GetBytesFromInt([UInt32] $i) {
-        $bytes = [BitConverter]::GetBytes($i)
-        if ([BitConverter]::IsLittleEndian) {
-            return @($bytes[3], $bytes[2], $bytes[1], $bytes[0])
-        } else {
-            return $bytes
-        }
-    }
-    static [HKDF2] Create([byte[]]$bytes) {
-        $dsalt = [cryptobase]::GetDerivedBytes([xconvert]::ToSecurestring([System.Text.Encoding]::UTF8.GetString($bytes)))
-        return [HKDF2]::Create($bytes, $dsalt)
-    }
-    static [HKDF2] Create([securestring]$secretKey) {
-        $bytes = [System.Text.Encoding]::UTF8.GetBytes([xconvert]::Tostring($secretKey))
-        $dsalt = [cryptobase]::GetDerivedBytes([xconvert]::ToSecurestring([System.Text.Encoding]::UTF8.GetString($bytes)))
-        return [HKDF2]::Create($bytes, $dsalt)
-    }
-    static [HKDF2] Create([byte[]]$secretKey, [byte[]]$salt) {
-        return [HKDF2]::Create([byte[]]$secretKey, [System.Security.Cryptography.HMACSHA256]::new(), [byte[]]$salt, 10000)
-    }
-    static [HKDF2] Create([securestring]$secretKey, [byte[]]$salt) {
-        return [HKDF2]::Create([System.Text.Encoding]::UTF8.GetBytes([xconvert]::Tostring($secretKey)), $salt)
-    }
-    static [HKDF2] Create([byte[]]$secretKey, [System.Security.Cryptography.HMAC]$algorithm, [byte[]]$salt, [int]$iterations) {
-        if (!$algorithm) { throw "Algorithm cannot be null." }
-        if (!$salt) { throw "Salt cannot be null." }
-        if (!$secretKey) { throw "secretKey cannot be null." }
-        $ob = [HKDF2]::new()
-        $ob.Algorithm = $algorithm
-        $ob.Algorithm.Key = $secretKey
-        $ob.Salt = $salt
-        $ob.IterationCount = $iterations
-        $ob.BlockSize = $ob.Algorithm.HashSize / 8
-        $ob.BufferBytes = [byte[]]::new($ob.BlockSize)
-        return $ob
-    }
-    static [string] GetToken([string]$secretKey) {
-        return [HKDF2]::GetToken([xconvert]::ToSecurestring($secretKey))
-    }
-    static [string] GetToken([securestring]$secretKey) {
-        return [HKDF2]::GetToken($secretKey, [cryptobase]::GetDerivedBytes($secretKey))
-    }
-    static [string] GetToken([securestring]$secretKey, [int]$seconds) {
-        return [HKDF2]::GetToken($secretKey, [CryptoBase]::GetDerivedBytes($secretKey), $seconds)
-    }
-    static [string] GetToken([securestring]$secretKey, [byte[]]$salt) {
-        return [HKDF2]::GetToken($secretKey, $salt, [timespan]::new(365 * 68, 0, 0, 0))
-    }
-    static [string] GetToken([securestring]$secretKey, [timespan]$expires) {
-        return [HKDF2]::GetToken($secretKey, [CryptoBase]::GetDerivedBytes($secretKey), $expires.TotalSeconds)
-    }
-    static [string] GetToken([securestring]$secretKey, [datetime]$expires) {
-        return [HKDF2]::GetToken($secretKey, ($expires - [datetime]::Now).TotalSeconds)
-    }
-    static [string] GetToken([securestring]$secretKey, [byte[]]$salt, [int]$seconds) {
-        $_mdhsbytes = [HKDF2]::new($secretKey, $salt).GetBytes(4)
-        $_secretKey = [cryptoBase]::GetKey([xconvert]::ToSecurestring([xconvert]::ToHexString($_mdhsbytes)))
-        $_token_str = [xconvert]::ToBase32String([shuffl3r]::Combine([System.Text.Encoding]::UTF8.GetBytes([Datetime]::Now.AddSeconds($seconds).ToFileTime()), $_mdhsbytes, $_secretKey)).Replace("_", '')
-        return [Shuffl3r]::Scramble($_token_str, $secretKey)
-    }
-    static [string] GetToken([securestring]$secretKey, [byte[]]$salt, [timespan]$expires) {
-        if ($expires.TotalSeconds -gt [int]::MaxValue) {
-            Throw [InvalidArgumentException]::new('Expires', "Token max timespan is $([Math]::Floor([timespan]::new(0, 0, 0, [int]::MaxValue).TotalDays/365)) years.")
-        }
-        return [HKDF2]::GetToken($secretKey, $salt, $expires.TotalSeconds)
-    }
-    static [bool] VerifyToken([string]$TokenSTR, [securestring]$secretKey) {
-        return [HKDF2]::VerifyToken($TokenSTR, $secretKey, [CryptoBase]::GetDerivedBytes($secretKey))
-    }
-    static [bool] VerifyToken([string]$TokenSTR, [securestring]$secretKey, [byte[]]$salt) {
-        $_calcdhash = [HKDF2]::new($secretKey, $salt).GetBytes(4)
-        $_secretKey = [cryptoBase]::GetKey([xconvert]::ToSecurestring([xconvert]::ToHexString($_calcdhash)))
-        $_Token_STR = [Shuffl3r]::UnScramble($TokenSTR.Trim(), $secretKey)
-        ($fb, $mdh) = [shuffl3r]::Split([xconvert]::FromBase32String(($_Token_STR + '_' * 4)), $_secretKey, 4)
-        $ht = [DateTime]::FromFileTime([long]::Parse([System.Text.Encoding]::UTF8.GetString($fb)))
-        $rs = ($ht - [Datetime]::Now).TotalSeconds
-        $NotExpired = $rs -ge 0
-        Write-Verbose $("[HKDF2] The token {0} on: {1}" -f $(if ($NotExpired) { "will expire" } else { "expired" }), [datetime]::Now.AddSeconds($rs))
-        return $NotExpired -and [HKDF2]::TestEqualByteArrays($_calcdhash, $mdh)
-    }
-    static [securestring] Resolve([securestring]$Password, [string]$TokenSTR) {
-        return [HKDF2]::Resolve($Password, $TokenSTR, [CryptoBase]::GetDerivedBytes($Password))
-    }
-    static [securestring] Resolve([securestring]$Password, [string]$TokenSTR, [byte[]]$salt) {
-        $derivedKey = [securestring]::new(); [System.IntPtr]$handle = [System.IntPtr]::new(0); $Passw0rd = [string]::Empty;
-        Add-Type -AssemblyName System.Runtime.InteropServices
-        Set-Variable -Name Passw0rd -Scope Local -Visibility Private -Option Private -Value $([xconvert]::ToString($Password));
-        Set-Variable -Name handle -Scope Local -Visibility Private -Option Private -Value $([System.Runtime.InteropServices.Marshal]::StringToHGlobalAnsi($Passw0rd));
-        [ValidateNotNullOrEmpty()][string] $TokenSTR = $TokenSTR
-        [ValidateNotNullOrEmpty()][string] $Passw0rd = $Passw0rd
-        if ([HKDF2]::VerifyToken($TokenSTR, $Password, $salt)) {
-            try {
-                if ([System.Environment]::UserInteractive) { (Get-Variable host).Value.UI.WriteDebugLine("  [i] Using Password, With token: $TokenSTR") }
-                $derivedKey = [xconvert]::ToSecurestring([System.Text.Encoding]::UTF7.GetString([System.Security.Cryptography.Rfc2898DeriveBytes]::new($Passw0rd, $salt, 10000, [System.Security.Cryptography.HashAlgorithmName]::SHA1).GetBytes(256 / 8)));
-            } catch {
-                Write-Error ($error[1].exception.ErrorRecord)
-                throw $_
-            } finally {
-                Remove-Variable -Name Passw0rd -Force -ErrorAction Ignore
-                # Zero out the memory used by the variable(just to be safe).
-                [void][System.Runtime.InteropServices.Marshal]::ZeroFreeGlobalAllocAnsi($handle);
-            }
-            return $derivedKey
-        } else {
-            Throw [System.UnauthorizedAccessException]::new('Wrong Password.', [InvalidPasswordException]::new());
-        }
-    }
-    static [byte[]] HashPassword([string]$Passw0rd) {
-        return [HKDF2]::HashPassword([xconvert]::ToSecurestring($Passw0rd))
-    }
-    static [byte[]] HashPassword([securestring]$Password) {
-        return [HKDF2]::HashPassword($Password, [CryptoBase]::getDerivedBytes($Password))
-    }
-    static [byte[]] HashPassword([securestring]$Password, [byte[]]$Salt) {
-        return [HKDF2]::HashPassword($Password, 1000, $Salt, 20)
-    }
-    static [byte[]] HashPassword([securestring]$Password, [int]$Iterations, [byte[]]$Salt, [int]$HashSize) {
-        $passwordBytes = [System.Text.Encoding]::UTF8.GetBytes([xconvert]::ToString($Password))
-        $pbkdf2 = New-Object System.Security.Cryptography.Rfc2898DeriveBytes -ArgumentList $passwordBytes, $Salt, $Iterations
-        $hash = $pbkdf2.GetBytes($HashSize)
-        return $hash
-    }
-    static [bool] VerifyPassword([securestring]$password, [byte[]]$hash) {
-        return [HKDF2]::VerifyPassword($password, $hash, 1000, [CryptoBase]::GetDerivedBytes($password), 20)
-    }
-    static [bool] VerifyPassword([securestring]$Password, [byte[]]$Hash, [int]$Iterations, [byte[]]$Salt, [int]$HashSize) {
-        $hashToVerify = [HKDF2]::HashPassword($Password, $Iterations, $Salt, $HashSize)
-        return [System.Linq.Enumerable]::SequenceEqual($hashToVerify, $Hash)
-    }
-    static [bool] TestEqualByteArrays([byte[]]$a, [byte[]]$b) {
-        # Compares two byte arrays for equality, specifically written so that the loop is not optimized.
-        if ($a -eq $b) {
-            return $true
-        }
-        if ($null -eq $a -or $null -eq $b -or $a.Length -ne $b.Length) {
-            return $false
-        }
-        $areSame = $true
-        for ($i = 0; $i -lt $a.Length; $i++) {
-            $areSame = $areSame -band ($a[$i] -eq $b[$i])
-        }
-        return $areSame
-    }
-}
-#endregion HKDF2
-
 
 #region    Main
 #     A simple cli tool that uses state-of-the-art encryption to save secrets.
@@ -3278,12 +1480,12 @@ class HKDF2 {
 # .EXAMPLE
 #     $pm = [ArgonCage]::New()
 #     Explanation of the function or its result. You can include multiple examples with additional .EXAMPLE lines
-class ArgonCage : CryptoBase {
+class ArgonCage {
     [ValidateNotNullOrEmpty()][RecordMap] $Config
     [ValidateNotNullOrEmpty()][version] $version
     static hidden [ValidateNotNull()][vault] $vault
     static hidden [ValidateNotNull()][SessionTmp] $Tmp
-    Static hidden [ValidateNotNull()][IO.DirectoryInfo] $DataPath = [ArgonCage]::Get_dataPath('ArgonCage', 'Data')
+    Static hidden [ValidateNotNull()][IO.DirectoryInfo] $DataPath = (CryptoBase)::Get_dataPath('ArgonCage', 'Data')
     static [System.Collections.ObjectModel.Collection[CliArt]] $banners = @()
     static [ValidateNotNull()][EncryptionScope] $EncryptionScope = [EncryptionScope]::User
 
@@ -3384,7 +1586,7 @@ class ArgonCage : CryptoBase {
         [void]$this.Config.Import($this.Config.File)
     }
     [void] ImportConfigs([uri]$raw_uri) {
-        # $e = "GIST_CUD = {0}" -f ([AesGCM]::Decrypt("AfXkvWiCce7hAIvWyGeU4TNQyD6XLV8kFYyk87X4zqqhyzb7DNuWcj2lHb+2mRFdN/1aGUHEv601M56Iwo/SKhkWLus=", $(Read-Host -Prompt "pass" -AsSecureString), 1)); $e >> ./.env
+        # $e = "GIST_CUD = {0}" -f ((AesGCM)::Decrypt("AfXkvWiCce7hAIvWyGeU4TNQyD6XLV8kFYyk87X4zqqhyzb7DNuWcj2lHb+2mRFdN/1aGUHEv601M56Iwo/SKhkWLus=", $(Read-Host -Prompt "pass" -AsSecureString), 1)); $e >> ./.env
         $this.Config.Import($raw_uri)
     }
     [bool] DeleteConfigs() {
@@ -3421,7 +1623,7 @@ class ArgonCage : CryptoBase {
         $IsValid = $false; $minLength = 8; $handle = [System.IntPtr]::new(0); $Passw0rd = [string]::Empty;
         try {
             Add-Type -AssemblyName System.Runtime.InteropServices
-            Set-Variable -Name Passw0rd -Scope Local -Visibility Private -Option Private -Value $([xconvert]::ToString($Password));
+            Set-Variable -Name Passw0rd -Scope Local -Visibility Private -Option Private -Value $((xconvert)::ToString($Password));
             Set-Variable -Name handle -Scope Local -Visibility Private -Option Private -Value $([System.Runtime.InteropServices.Marshal]::StringToHGlobalAnsi($Passw0rd));
             # Set the required character types
             $requiredCharTypes = [System.Text.RegularExpressions.Regex]::Matches("$Passw0rd", "[A-Za-z]|[0-9]|[^A-Za-z0-9]") | Select-Object -ExpandProperty Value
@@ -3442,10 +1644,10 @@ class ArgonCage : CryptoBase {
         $passw0rdHash = [string]::Empty
         # Hash the password using the SHA-3 algorithm
         if ('System.Security.Cryptography.SHA3Managed' -is 'type') {
-            $passw0rdHash = (New-Object System.Security.Cryptography.SHA3Managed).ComputeHash([System.Text.Encoding]::UTF8.GetBytes([xconvert]::Tostring($password)))
+            $passw0rdHash = (New-Object System.Security.Cryptography.SHA3Managed).ComputeHash([System.Text.Encoding]::UTF8.GetBytes((xconvert)::Tostring($password)))
         } else {
             # Hash the password using an online SHA-3 hash generator
-            $passw0rdHash = ((Invoke-WebRequest -Method Post -Uri "https://passwordsgenerator.net/sha3-hash-generator/" -Body "text=$([xconvert]::Tostring($password))").Content | ConvertFrom-Json).sha3
+            $passw0rdHash = ((Invoke-WebRequest -Method Post -Uri "https://passwordsgenerator.net/sha3-hash-generator/" -Body "text=$((xconvert)::Tostring($password))").Content | ConvertFrom-Json).sha3
         }
         # Connect to the database
         $connection = New-Object System.Data.SqlClient.SqlConnection($connectionString)
@@ -3491,7 +1693,7 @@ class ArgonCage : CryptoBase {
             throw "Secret not found in cache. Please make sure creds caching is enabled."
         }
         $TokenSTR = $cache.Token
-        return [HKDF2]::Resolve($secret, $TokenSTR)
+        return (HKDF2)::Resolve($secret, $TokenSTR)
     }
     static [bool] CheckCredCache([string]$TagName) {
         return [ArgonCage]::Tmp.vars.CachedCreds.Tag -contains $TagName
@@ -3520,12 +1722,12 @@ class ArgonCage : CryptoBase {
         if ($null -eq [ArgonCage]::Tmp) { [ArgonCage]::Tmp = [SessionTmp]::new() }
         [ArgonCage]::Tmp.vars.Set(@{
                 Users         = @{}
-                Host_Os       = [ArgonCage]::Get_Host_Os()
+                Host_Os       = (CryptoBase)::Get_Host_Os()
                 ExitCode      = 0
                 UseWhatIf     = [bool]$((Get-Variable WhatIfPreference -ValueOnly) -eq $true)
                 SessionId     = [string]::Empty
                 UseVerbose    = [bool]$((Get-Variable verbosePreference -ValueOnly) -eq "continue")
-                OfflineMode   = $(Wait-Task -m "Testing Connection" -s { return $([NetworkManager]::Testconnection("github.com")) }).Output
+                OfflineMode   = $(Wait-Task -m "Testing Connection" -s { return $((NetworkManager)::Testconnection("github.com")) }).Output
                 CachedCreds   = $null
                 SessionConfig = $Config
                 OgWindowTitle = $(Get-Variable executionContext).Value.Host.UI.RawUI.WindowTitle
@@ -3580,7 +1782,7 @@ class ArgonCage : CryptoBase {
     static hidden [void] Get_CachedCreds([RecordMap]$Config) {
         if ($null -eq [ArgonCage]::vault) { [ArgonCage]::vault = [vault]::new($Config.VaultFileName) }
         if ([IO.File]::Exists($Config.CachedCredsPath)) {
-            [ArgonCage]::vault.Cache.Read([xconvert]::ToSecurestring($Config.CachedCredsPath))
+            [ArgonCage]::vault.Cache.Read((xconvert)::ToSecurestring($Config.CachedCredsPath))
         } else {
             [ArgonCage]::vault.Cache.Read()
         }

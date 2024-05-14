@@ -1603,7 +1603,7 @@ class ArgonCage {
     [void] SetConfigs([bool]$throwOnFailure) { $this.SetConfigs([string]::Empty, $throwOnFailure) }
     [void] SetConfigs([string]$ConfigFile, [bool]$throwOnFailure) {
         if ($null -eq $this.Config) { $this.Config = [RecordMap]::new([ArgonCage]::Get_default_Config()) }
-        if (![string]::IsNullOrWhiteSpace($ConfigFile)) { $this.Config.File = [ArgonCage]::GetUnResolvedPath($ConfigFile) }
+        if (![string]::IsNullOrWhiteSpace($ConfigFile)) { $this.Config.File = (CryptoBase)::GetUnResolvedPath($ConfigFile) }
         if (![IO.File]::Exists($this.Config.File)) {
             if ($throwOnFailure -and ![bool]$((Get-Variable WhatIfPreference).Value.IsPresent)) {
                 throw [System.IO.FileNotFoundException]::new("Unable to find file '$($this.Config.File)'")
@@ -1727,7 +1727,13 @@ class ArgonCage {
                 UseWhatIf     = [bool]$((Get-Variable WhatIfPreference -ValueOnly) -eq $true)
                 SessionId     = [string]::Empty
                 UseVerbose    = [bool]$((Get-Variable verbosePreference -ValueOnly) -eq "continue")
-                OfflineMode   = $(Wait-Task -m "Testing Connection" -s { return $((NetworkManager)::Testconnection("github.com")) }).Output
+                OfflineMode   = $(Wait-Task -m "Testing Connection" -s {
+                        $nm = NetworkManager
+                        if ($null -eq $nm) {
+                            Write-Warning "NetworkManager not found!"
+                        }
+                        return $($nm::Testconnection("github.com"))
+                    }).Output
                 CachedCreds   = $null
                 SessionConfig = $Config
                 OgWindowTitle = $(Get-Variable executionContext).Value.Host.UI.RawUI.WindowTitle
@@ -1744,7 +1750,7 @@ class ArgonCage {
     static hidden [hashtable] Get_default_Config([string]$Config_FileName) {
         Write-Host "[ArgonCage] Get default Config ..." -f Blue
         $default_Config = @{
-            File            = [ArgonCage]::GetUnResolvedPath([IO.Path]::Combine([ArgonCage]::DataPath, $Config_FileName))
+            File            = (CryptoBase)::GetUnResolvedPath([IO.Path]::Combine([ArgonCage]::DataPath, $Config_FileName))
             FileName        = $Config_FileName # Config is stored locally and all it's contents are always encrypted.
             Remote          = [string]::Empty
             GistUri         = 'https://gist.github.com/alainQtec/0710a1d4a833c3b618136e5ea98ca0b2' # replace with yours

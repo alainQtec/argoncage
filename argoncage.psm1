@@ -3614,14 +3614,13 @@ if ($PrivateModules.Count -gt 0) {
 foreach ($Import in ($Public, $Private)) {
     Try {
         if ([string]::IsNullOrWhiteSpace($Import.fullname)) { continue }
-        . $Import.fullname
+        . "$($Import.fullname)"
     } Catch {
         Write-Warning "Failed to import function $($Import.BaseName): $_"
         $host.UI.WriteErrorLine($_)
     }
 }
 if ([IO.path]::GetExtension($MyInvocation.MyCommand.Path) -eq '.psm1') {
-    # Export Public Functions
     $Param = @{
         Function = $Public.BaseName
         Variable = '*'

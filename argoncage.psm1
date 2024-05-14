@@ -140,208 +140,6 @@ class InvalidPasswordException : System.Exception {
     InvalidPasswordException([string]$Message, [securestring]$Password, [System.Exception]$InnerException) { ($this.message, $this.Password, $this.InnerException) = ($Message, $Password, $InnerException) }
 }
 
-class StackTracer {
-    static [System.Collections.Concurrent.ConcurrentStack[string]]$stack = [System.Collections.Concurrent.ConcurrentStack[string]]::new()
-    static [System.Collections.Generic.List[hashtable]]$CallLog = @()
-    static [void] Push([type]$class) {
-        $str = "[{0}]" -f $class
-        if ([StackTracer]::Peek() -ne "$class") {
-            [StackTracer]::stack.Push($str)
-            $LAST_ERROR = $(Get-Variable -Name Error -ValueOnly)[0]
-            [StackTracer]::CallLog.Add(@{ ($str + ' @ ' + [datetime]::Now.ToShortTimeString()) = $(if ($null -ne $LAST_ERROR) { $LAST_ERROR.ScriptStackTrace } else { [System.Environment]::StackTrace }).Split("`n").Replace("at ", "# ").Trim() })
-        }
-    }
-    static [type] Pop() {
-        $result = $null
-        if ([StackTracer]::stack.TryPop([ref]$result)) {
-            return $result
-        } else {
-            throw [System.InvalidOperationException]::new("Stack is empty!")
-        }
-    }
-    static [string] Peek() {
-        $result = $null
-        if ([StackTracer]::stack.TryPeek([ref]$result)) {
-            return $result
-        } else {
-            return [string]::Empty
-        }
-    }
-    static [int] GetSize() {
-        return [StackTracer]::stack.Count
-    }
-    static [bool] IsEmpty() {
-        return [StackTracer]::stack.IsEmpty
-    }
-}
-
-# .SYNOPSIS
-# A simple progress utility class
-# .EXAMPLE
-# $OgForeground = (Get-Variable host).Value.UI.RawUI.ForegroundColor
-# (Get-Variable host).Value.UI.RawUI.ForegroundColor = [ConsoleColor]::Green
-# for ($i = 0; $i -le 100; $i++) {
-#     [ProgressUtil]::WriteProgressBar($i)
-#     [System.Threading.Thread]::Sleep(50)
-# }
-# (Get-Variable host).Value.UI.RawUI.ForegroundColor = $OgForeground
-# [TaskMan]::WaitJob("waiting", { Start-Sleep -Seconds 3 })
-#
-class ProgressUtil {
-    static hidden [string] $_block = '■';
-    static hidden [string] $_back = "`b";
-    static hidden [string[]] $_twirl = @(
-        "+■0", "-\\|/", "|/-\\"
-    );
-    static [int] $_twirlIndex = 0
-    static hidden [string]$frames
-    static [void] WriteProgressBar([int]$percent) {
-        [ProgressUtil]::WriteProgressBar($percent, $true)
-    }
-    static [void] WriteProgressBar([int]$percent, [bool]$update) {
-        [ProgressUtil]::WriteProgressBar($percent, $update, [int]([Console]::WindowWidth * 0.7))
-    }
-    static [void] WriteProgressBar([int]$percent, [bool]$update, [int]$PBLength) {
-        [ValidateNotNull()][int]$PBLength = $PBLength
-        [ValidateNotNull()][int]$percent = $percent
-        [ValidateNotNull()][bool]$update = $update
-        [ProgressUtil]::_back = "`b" * [Console]::WindowWidth
-        if ($update) { [Console]::Write([ProgressUtil]::_back) }
-        [Console]::Write("["); $p = [int](($percent / 100.0) * $PBLength + 0.5)
-        for ($i = 0; $i -lt $PBLength; $i++) {
-            if ($i -ge $p) {
-                [Console]::Write(' ');
-            } else {
-                [Console]::Write([ProgressUtil]::_block);
-            }
-        }
-        [Console]::Write("] {0,3:##0}%", $percent);
-    }
-}
-
-class JobResult {
-    [object]$Output
-    [bool]$IsSuccess
-    [object]$LastError
-    JobResult([object]$Output, [bool]$IsSuccess, [object]$LastError) {
-        $this.Output = $Output;
-        $this.IsSuccess = $IsSuccess;
-        $this.LastError = $LastError
-    }
-}
-
-# A small process managment class
-class TaskMan {
-    static [System.Management.Automation.PowerShell] RunInBackground([ScriptBlock]$ScriptBlock, [Object[]]$ArgumentList) {
-        $powershell = [System.Management.Automation.PowerShell]::Create()
-        $powershell.AddScript($ScriptBlock).AddParameters($ArgumentList)
-        $runspace = [System.Management.Automation.Runspaces.RunspaceFactory]::CreateRunspace()
-        $runspace.Open()
-        $powershell.Runspace = $runspace
-        $powershell.BeginInvoke()
-        return $powershell
-    }
-    static [System.Management.Automation.PSObject[]] RunInParallel([System.Management.Automation.Job[]]$jobs) {
-        $threadjobs = $jobs | ForEach-Object { Start-ThreadJob -ScriptBlock ([ScriptBlock]::Create($_.Command)) }
-        $results = $threadjobs | Receive-Job -Wait -Auto
-        return $results
-    }
-    static [JobResult] RetryCommand([ScriptBlock]$ScriptBlock) {
-        return [TaskMan]::RetryCommand($ScriptBlock, "")
-    }
-    static [JobResult] RetryCommand([ScriptBlock]$ScriptBlock, [string]$Message) {
-        return [TaskMan]::RetryCommand($ScriptBlock, $Message, 3)
-    }
-    static [JobResult] RetryCommand([ScriptBlock]$ScriptBlock, [string]$Message, [Int]$MaxAttempts) {
-        return [TaskMan]::RetryCommand($ScriptBlock, $null, [System.Threading.CancellationToken]::None, $MaxAttempts, "$Message", 1000)
-    }
-    static [JobResult] RetryCommand([ScriptBlock]$ScriptBlock, [Object[]]$ArgumentList, [string]$Message) {
-        return [TaskMan]::RetryCommand($ScriptBlock, $ArgumentList, [System.Threading.CancellationToken]::None, 3, "$Message", 1000)
-    }
-    static [JobResult] RetryCommand([ScriptBlock]$ScriptBlock, [Object[]]$ArgumentList, [System.Threading.CancellationToken]$CancellationToken, [Int]$MaxAttempts, [String]$Message, [Int]$Timeout) {
-        [ValidateNotNullOrEmpty()][scriptblock]$ScriptBlock = $ScriptBlock
-        if ([string]::IsNullOrWhiteSpace([stackTracer]::peek())) { [stackTracer]::Push("TaskMan") }
-        $IsSuccess = $false; $fxn = [stackTracer]::peek(); $AttemptStartTime = $null;
-        $Output = [string]::Empty; $LastError = $null; $Attempts = 1
-        if ([string]::IsNullOrWhiteSpace($Message)) { $Message = "Invoke Command" }
-        $Result = [JobResult]::new($Output, [bool]$IsSuccess, $LastError)
-        $CommandStartTime = Get-Date
-        while (($Attempts -le $MaxAttempts) -and !$Result.IsSuccess) {
-            $Retries = $MaxAttempts - $Attempts
-            if ($cancellationToken.IsCancellationRequested) {
-                [TaskMan]::WriteLog("$fxn CancellationRequested when $Retries retries were left.", $false)
-                throw
-            }
-            try {
-                Write-Host "$fxn $Message" -NoNewline -f DarkGray; Write-Host " Attempt # $Attempts/$MaxAttempts : " -NoNewline
-                $AttemptStartTime = Get-Date
-                if ($null -ne $ArgumentList) {
-                    $Output = Invoke-Command -ScriptBlock $ScriptBlock -ArgumentList $ArgumentList
-                } else {
-                    $Output = Invoke-Command -ScriptBlock $ScriptBlock
-                }
-                $IsSuccess = [bool]$?
-                if ($Output -is [bool]) { $IsSuccess = $Output }
-            } catch {
-                $IsSuccess = $false; $LastError = $_
-                Write-Host "$fxn Errored after $([math]::Round(($(Get-Date) - $AttemptStartTime).TotalSeconds, 2)) seconds" -f Red -NoNewline
-            } finally {
-                $Result.Output = $Output
-                $Result.IsSuccess = $IsSuccess
-                $Result.LastError = $LastError
-                if ($Retries -eq 0 -or $Result.IsSuccess) {
-                    Write-Host " E.T = $([math]::Round(($(Get-Date) - $CommandStartTime).TotalSeconds, 2)) seconds"
-                } elseif (!$cancellationToken.IsCancellationRequested -and $Retries -ne 0) {
-                    Start-Sleep -Milliseconds $Timeout
-                }
-                $Attempts++
-            }
-        }
-        return $Result
-    }
-    static [System.Management.Automation.Job] WaitJob([string]$progressMsg, [scriptblock]$Job) {
-        return [TaskMan]::WaitJob($progressMsg, $(Start-Job -ScriptBlock $Job))
-    }
-    static [System.Management.Automation.Job] WaitJob([string]$progressMsg, [System.Management.Automation.Job]$Job) {
-        [Console]::CursorVisible = $false;
-        [ProgressUtil]::frames = [ProgressUtil]::_twirl[0]
-        [int]$length = [ProgressUtil]::frames.Length;
-        $originalY = [Console]::CursorTop
-        while ($Job.JobStateInfo.State -notin ('Completed', 'failed')) {
-            for ($i = 0; $i -lt $length; $i++) {
-                [ProgressUtil]::frames.Foreach({ [Console]::Write("$progressMsg $($_[$i])") })
-                [System.Threading.Thread]::Sleep(50)
-                [Console]::Write(("`b" * ($length + $progressMsg.Length)))
-                [Console]::CursorTop = $originalY
-            }
-        }
-        Write-Host "`b$progressMsg ... " -NoNewline -f Magenta
-        [System.Management.Automation.Runspaces.RemotingErrorRecord[]]$Errors = $Job.ChildJobs.Where({
-                $null -ne $_.Error
-            }
-        ).Error;
-        if ($Job.JobStateInfo.State -eq "Failed" -or $Errors.Count -gt 0) {
-            $errormessages = [string]::Empty
-            if ($null -ne $Errors) {
-                $errormessages = $Errors.Exception.Message -join "`n"
-            }
-            [taskman]::WriteLog("Completed with errors.`n`t$errormessages", $false)
-        } else {
-            [TaskMan]::WriteLog("Done.", $true)
-        }
-        [Console]::CursorVisible = $true;
-        return $Job
-    }
-    static [void] WriteLog([bool]$IsSuccess) {
-        [TaskMan]::WriteLog($null, $IsSuccess)
-    }
-    static [void] WriteLog([string]$Message, [bool]$IsSuccess) {
-        $re = @{ true = @{ m = "Success "; c = "Green" }; false = @{ m = "Failed "; c = "Red" } }
-        if (![string]::IsNullOrWhiteSpace($Message)) { $re["$IsSuccess"].m = $Message }
-        $re = $re["$IsSuccess"]
-        Write-Host $re.m -f $re.c -NoNewline:$IsSuccess
-    }
-}
 class NetworkManager {
     [string] $HostName
     static [System.Net.IPAddress[]] $IPAddresses
@@ -435,7 +233,7 @@ class NetworkManager {
             $totalBytesToReceive -= $bytesRead
             $fileStream.Write($buffer, 0, $bytesRead)
             if ([NetworkManager]::DownloadOptions.ShowProgress) {
-                [ProgressUtil]::WriteProgressBar([int]($totalBytesReceived / $contentLength * 100), $true, [NetworkManager]::DownloadOptions.progressBarLength);
+                Write-ProgressBar -p ([int]($totalBytesReceived / $contentLength * 100)) -l ([NetworkManager]::DownloadOptions.progressBarLength) -Update
             }
         }
         (Get-Variable host).Value.UI.RawUI.ForegroundColor = $OgForeground
@@ -486,14 +284,13 @@ class NetworkManager {
         return $result
     }
     static [bool] TestConnection ([string]$HostName) {
-        $cs = $null; $cc = [StackTracer]::Peek();
+        $cs = $null; $cc = Show-Stack;
         $re = @{ true = @{ m = "Success"; c = "Green" }; false = @{ m = "Failed"; c = "Red" } }
         if (![NetworkManager]::resolve_ping_dependencies()) {
             Write-Host "$cc Could not resolve ping dependencies" -f Red
         }
         [ValidateNotNullOrEmpty()][string]$HostName = $HostName
         if (![bool]("System.Net.NetworkInformation.Ping" -as 'type')) { Add-Type -AssemblyName System.Net.NetworkInformation };
-        Write-Host "$cc Testing Connection ... " -f Blue -NoNewline
         try {
             [System.Net.NetworkInformation.PingReply]$PingReply = [System.Net.NetworkInformation.Ping]::new().Send($HostName);
             $cs = $PingReply.Status -eq [System.Net.NetworkInformation.IPStatus]::Success
@@ -708,7 +505,7 @@ class CryptoBase {
     }
     static hidden [void] CheckProps([System.Security.Cryptography.Aes]$Aes) {
         $MissingProps = @(); $throw = $false
-        Write-Verbose "$([StackTracer]::Peek()) [+] Checking Encryption Properties ... $(('Mode','Padding', 'keysize', 'BlockSize') | ForEach-Object { if ($null -eq $Aes.Algo.$_) { $MissingProps += $_ } };
+        Write-Verbose "$(Show-Stack) [+] Checking Encryption Properties ... $(('Mode','Padding', 'keysize', 'BlockSize') | ForEach-Object { if ($null -eq $Aes.Algo.$_) { $MissingProps += $_ } };
             if ($MissingProps.Count -eq 0) { "Done. All AES Props are Good." } else { $throw = $true; "System.ArgumentNullException: $([string]::Join(', ', $MissingProps)) cannot be null." }
         )"
         if ($throw) { throw [System.ArgumentNullException]::new([string]::Join(', ', $MissingProps)) }
@@ -855,8 +652,8 @@ class CryptoBase {
         if ([CryptoBase]::EncryptionScope.ToString() -eq "Machine") {
             return [xconvert]::ToSecurestring([CryptoBase]::GetUniqueMachineId())
         } else {
-            $pswd = [SecureString]::new(); [StackTracer]::Push("ArgonCage")
-            Set-Variable -Name pswd -Scope Local -Visibility Private -Option Private -Value $(Read-Host -Prompt "$([StackTracer]::Peek()) $Prompt" -AsSecureString);
+            $pswd = [SecureString]::new(); Push-Stack -class "ArgonCage"
+            Set-Variable -Name pswd -Scope Local -Visibility Private -Option Private -Value $(Read-Host -Prompt "$(Show-Stack) $Prompt" -AsSecureString);
             if ($ThrowOnFailure -and ($null -eq $pswd -or $([string]::IsNullOrWhiteSpace([xconvert]::ToString($pswd))))) {
                 throw [InvalidPasswordException]::new("Please Provide a Password that isn't Null or WhiteSpace.", $pswd, [System.ArgumentNullException]::new("Password"))
             }
@@ -2027,7 +1824,7 @@ class AesGCM : CryptoBase {
             $_bytes = $bytes;
             $aes = $null; Set-Variable -Name aes -Scope Local -Visibility Private -Option Private -Value $([ScriptBlock]::Create("[Security.Cryptography.AesGcm]::new([convert]::FromBase64String('$Key'))").Invoke());
             for ($i = 1; $i -lt $iterations + 1; $i++) {
-                # Write-Host "$([StackTracer]::Peek()) [+] Encryption [$i/$iterations] ... Done" -f Yellow
+                # Write-Host "$(Show-Stack) [+] Encryption [$i/$iterations] ... Done" -f Yellow
                 # if ($Protect) { $_bytes = [xconvert]::ToProtected($_bytes, $Salt, [EncryptionScope]::User) }
                 # Generate a random IV for each iteration:
                 [byte[]]$IV = $null; Set-Variable -Name IV -Scope Local -Visibility Private -Option Private -Value ([System.Security.Cryptography.Rfc2898DeriveBytes]::new([xconvert]::ToString($password), $salt, 1, [System.Security.Cryptography.HashAlgorithmName]::SHA1).GetBytes($IV_SIZE));
@@ -2067,7 +1864,7 @@ class AesGCM : CryptoBase {
         $ba = [byte[]]::New($streamReader.Length);
         [void]$streamReader.Read($ba, 0, [int]$streamReader.Length);
         [void]$streamReader.Close();
-        Write-Verbose "$([StackTracer]::Peek()) Begin file encryption:"
+        Write-Verbose "$(Show-Stack) Begin file encryption:"
         Write-Verbose "[-]  File    : $File"
         Write-Verbose "[-]  OutFile : $OutPath"
         [byte[]]$_salt = [AesGCM]::GetDerivedBytes($Password);
@@ -2117,7 +1914,7 @@ class AesGCM : CryptoBase {
             $_bytes = if (![string]::IsNullOrWhiteSpace($Compression)) { [xconvert]::ToDecompressed($bytes, $Compression) } else { $bytes }
             $aes = [ScriptBlock]::Create("[Security.Cryptography.AesGcm]::new([convert]::FromBase64String('$Key'))").Invoke()
             for ($i = 1; $i -lt $iterations + 1; $i++) {
-                # Write-Host "$([StackTracer]::Peek()) [+] Decryption [$i/$iterations] ... Done" -f Yellow
+                # Write-Host "$(Show-Stack) [+] Decryption [$i/$iterations] ... Done" -f Yellow
                 # if ($UnProtect) { $_bytes = [xconvert]::ToUnProtected($_bytes, $Salt, [EncryptionScope]::User) }
                 # Split the real encrypted bytes from nonce & tags then decrypt them:
                 ($b, $n1) = [Shuffl3r]::Split($_bytes, $Password, $TAG_SIZE);
@@ -2128,7 +1925,7 @@ class AesGCM : CryptoBase {
             }
         } catch {
             if ($_.FullyQualifiedErrorId -eq "AuthenticationTagMismatchException") {
-                Write-Host "$([StackTracer]::Peek()) Wrong password" -f Yellow
+                Write-Host "$(Show-Stack) Wrong password" -f Yellow
             }
             throw $_
         } finally {
@@ -2157,7 +1954,7 @@ class AesGCM : CryptoBase {
         $ba = [byte[]]::New($streamReader.Length);
         [void]$streamReader.Read($ba, 0, [int]$streamReader.Length);
         [void]$streamReader.Close();
-        Write-Verbose "$([StackTracer]::Peek()) Begin file decryption:"
+        Write-Verbose "$(Show-Stack) Begin file decryption:"
         Write-Verbose "[-]  File    : $File"
         Write-Verbose "[-]  OutFile : $OutPath"
         [byte[]]$_salt = [AesGCM]::GetDerivedBytes($Password);
@@ -2232,7 +2029,7 @@ class GitHub {
         return $sectoken
     }
     static [PsObject] GetUserInfo([string]$UserName) {
-        [stackTracer]::Push("GitHub"); if ([string]::IsNullOrWhiteSpace([GitHub]::userName)) { [GitHub]::createSession() }
+        Push-Stack "GitHub"; if ([string]::IsNullOrWhiteSpace([GitHub]::userName)) { [GitHub]::createSession() }
         $response = Invoke-RestMethod -Uri "https://api.github.com/user/$UserName" -WebSession ([GitHub]::webSession) -Method Get -Verbose:$false
         return $response
     }
@@ -2241,7 +2038,7 @@ class GitHub {
         return [GitHub]::GetGist($l.Owner, $l.Id)
     }
     static [PsObject] GetGist([string]$UserName, [string]$GistId) {
-        [stackTracer]::Push("GitHub"); $t = [GitHub]::GetToken()
+        Push-Stack "GitHub"; $t = [GitHub]::GetToken()
         if ($null -eq ([GitHub]::webSession)) {
             [GitHub]::webSession = $(if ($null -eq $t) {
                     [GitHub]::createSession($UserName)
@@ -2250,7 +2047,7 @@ class GitHub {
                 }
             )
         }
-        if (![TaskMan]::RetryCommand({ [GitHub]::IsConnected() }, "GitHub.IsConnected()").Output) {
+        if (!$(Retry-Command -s { [GitHub]::IsConnected() } -m "GitHub.IsConnected()").Output) {
             throw [System.Net.NetworkInformation.PingException]::new("PingException, PLease check your connection!");
         }
         if ([string]::IsNullOrWhiteSpace($GistId) -or $GistId -eq '*') {
@@ -2264,7 +2061,7 @@ class GitHub {
                 return Invoke-RestMethod -Uri "https://api.github.com/gists/$Id" -WebSession ([GitHub]::webSession) -Method Get -Verbose:$false
             }
         )
-        return [TaskMan]::RetryCommand($FetchGistId, @($GistId), "GitHub.FetchGist()  ").Output
+        return $(Retry-Command -s $FetchGistId -args @($GistId) -m "GitHub.FetchGist()  ").Output
     }
     Static [string] GetGistContent([string]$FileName, [uri]$GistUri) {
         return [GitHub]::GetGist($GistUri).files.$FileName.content
@@ -2290,7 +2087,7 @@ class GitHub {
                 return Invoke-RestMethod -Uri $UriObj -WebSession ([GitHub]::webSession) -Method Post -Body $JSONBODY -Verbose:$false
             }
         )
-        return [TaskMan]::RetryCommand($CreateGist, @($url, ($body | ConvertTo-Json)), "CreateGist").Output
+        return $(Retry-Command -s $CreateGist -args @($url, ($body | ConvertTo-Json)) -m "CreateGist").Output
     }
     static [PsObject] UpdateGist([GistFile]$gist, [string]$NewContent) {
         return ''
@@ -2377,7 +2174,7 @@ class GitHub {
             $cs = $false;
             Write-Error $_
         }
-        [TaskMan]::WriteLog($cs)
+        # [TaskMan]::WriteLog($cs)
         return $cs
     }
 }
@@ -2563,9 +2360,9 @@ class RecordMap {
     }
     [void] Import([uri]$raw_uri) {
         try {
-            [StackTracer]::push("Argoncage"); $pass = $null;
+            Push-Stack -class "ArgonCage"; $pass = $null;
             Set-Variable -Name pass -Scope Local -Visibility Private -Option Private -Value $([ArgonCage]::Tmp.GetSessionKey('configrw', [PSCustomObject]@{
-                        caller = [StackTracer]::Peek()
+                        caller = Show-Stack
                         prompt = "Paste/write a Password to decrypt configs"
                     }
                 )
@@ -2579,9 +2376,9 @@ class RecordMap {
         }
     }
     [void] Import([String]$FilePath) {
-        Write-Host "$([StackTracer]::Peek()) Import records: $FilePath ..." -f Green
+        Write-Host "$(Show-Stack) Import records: $FilePath ..." -f Green
         $this.Set([RecordMap]::Read($FilePath))
-        Write-Host "$([StackTracer]::Peek()) Import records Complete" -f Green
+        Write-Host "$(Show-Stack) Import records Complete" -f Green
     }
     [void] Upload() {
         if ([string]::IsNullOrWhiteSpace($this.Remote)) { throw [InvalidArgumentException]::new('remote') }
@@ -2655,10 +2452,10 @@ class RecordMap {
         return $dict
     }
     static [hashtable[]] Read([string]$FilePath) {
-        [StackTracer]::push("Argoncage"); $pass = $null; $cfg = $null; $FilePath = [AesGCM]::GetResolvedPath($FilePath);
+        Push-Stack -class "ArgonCage"; $pass = $null; $cfg = $null; $FilePath = [AesGCM]::GetResolvedPath($FilePath);
         if ([IO.File]::Exists($FilePath)) { if ([string]::IsNullOrWhiteSpace([IO.File]::ReadAllText($FilePath).Trim())) { throw [System.Exception]::new("File is empty: $FilePath") } } else { throw [FileNotFoundException]::new("File not found: $FilePath") }
         Set-Variable -Name pass -Scope Local -Visibility Private -Option Private -Value $([ArgonCage]::Tmp.GetSessionKey('configrw', [PSCustomObject]@{
-                    caller = [StackTracer]::Peek()
+                    caller = Show-Stack
                     prompt = "Paste/write a Password to decrypt configs"
                 }
             )
@@ -2717,7 +2514,7 @@ class RecordMap {
     }
     [void] Save() {
         try {
-            $cllr = [StackTracer]::Peek(); [ValidateNotNullOrEmpty()][string]$cllr = $cllr
+            $cllr = Show-Stack; [ValidateNotNullOrEmpty()][string]$cllr = $cllr
             $pass = $null; Write-Host "$cllr Saving records to file: $($this.File) ..." -f Blue
             Set-Variable -Name pass -Scope Local -Visibility Private -Option Private -Value $([ArgonCage]::Tmp.GetSessionKey('configrw', [PSCustomObject]@{
                         caller = $cllr
@@ -2779,7 +2576,7 @@ class SessionTmp {
     }
     [SecureString] GetSessionKey([string]$Name) {
         return [ArgonCage]::Tmp.GetSessionKey($Name, [PSCustomObject]@{
-                caller = [StackTracer]::Peek()
+                caller = Show-Stack
                 prompt = "Paste/write a Password"
             }
         )
@@ -3116,7 +2913,7 @@ class vault {
     [void] EditSecrets([String]$Path) {
         $private:secrets = $null; $fswatcher = $null; $process = $null; $outFile = [IO.FileInfo][IO.Path]::GetTempFileName()
         try {
-            [StackTracer]::Push("vault"); [NetworkManager]::BlockAllOutbound()
+            Push-Stack "vault"; [NetworkManager]::BlockAllOutbound()
             if ([vault]::UseVerbose) { "[+] Edit secrets started .." | Write-Host -f Magenta }
             $this.GetSecrets($Path) | ConvertTo-Json | Out-File $OutFile.FullName -Encoding utf8BOM
             Set-Variable -Name OutFile -Value $(Rename-Item $outFile.FullName -NewName ($outFile.BaseName + '.json') -PassThru)
@@ -3154,7 +2951,7 @@ class vault {
     static [IO.FileInfo] FetchSecrets([uri]$remote, [string]$OutFile) {
         if ([string]::IsNullOrWhiteSpace($remote.AbsoluteUri)) { throw [System.ArgumentException]::new("Invalid Argument: remote") }
         if ([vault]::UseVerbose) { "[+] Fetching secrets from gist ..." | Write-Host -f Magenta }
-        [StackTracer]::Push("vault"); [NetworkManager]::DownloadOptions.Set('ShowProgress', $true)
+        Push-Stack "vault"; [NetworkManager]::DownloadOptions.Set('ShowProgress', $true)
         $og_PbLength = [NetworkManager]::DownloadOptions.ProgressBarLength
         $og_pbMsg = [NetworkManager]::DownloadOptions.ProgressMessage
         $Progress_Msg = "[+] Downloading secrets to {0}" -f $OutFile
@@ -3200,7 +2997,7 @@ class vault {
         $this.UpdateSecrets($InputObject, [CryptoBase]::GetUnResolvedPath($outFile), $password, '')
     }
     [void] UpdateSecrets([psObject]$InputObject, [string]$outFile, [securestring]$Password, [string]$Compression) {
-        [StackTracer]::Push("vault"); if ([vault]::UseVerbose) { "[+] Updating secrets .." | Write-Host -f Green }
+        Push-Stack "vault"; if ([vault]::UseVerbose) { "[+] Updating secrets .." | Write-Host -f Green }
         if (![string]::IsNullOrWhiteSpace($Compression)) { [CryptoBase]::ValidateCompression($Compression) }
         [Base85]::Encode([AesGCM]::Encrypt([System.Text.Encoding]::UTF8.GetBytes([string]($InputObject | ConvertTo-Csv)), $Password, [AesGCM]::GetDerivedBytes($Password), $null, $Compression, 1)) | Out-File $outFile -Encoding utf8BOM
     }
@@ -3492,7 +3289,7 @@ class ArgonCage : CryptoBase {
 
     ArgonCage() {
         if ($null -eq [ArgonCage]::Tmp) { [ArgonCage]::Tmp = [SessionTmp]::new() }
-        [StackTracer]::push("Argoncage"); $this.SetConfigs(); [ArgonCage]::SetTMPvariables($this.Config)
+        Push-Stack -class "ArgonCage"; $this.SetConfigs(); [ArgonCage]::SetTMPvariables($this.Config)
         # $this.SyncConfigs()
         $this.PsObject.properties.add([psscriptproperty]::new('IsOffline', [scriptblock]::Create({ return ((Test-Connection github.com -Count 1).status -ne "Success") })))
         [ArgonCage].psobject.Properties.Add([psscriptproperty]::new('Version', {
@@ -3561,7 +3358,7 @@ class ArgonCage : CryptoBase {
         $og_EncryptionScope = [ArgonCage]::EncryptionScope;
         try {
             $this::EncryptionScope = [EncryptionScope]::Machine
-            [StackTracer]::push("Argoncage"); [void]$this.Config.Edit()
+            Push-Stack -class "ArgonCage"; [void]$this.Config.Edit()
         } finally {
             $this::EncryptionScope = $og_EncryptionScope;
         }
@@ -3728,7 +3525,7 @@ class ArgonCage : CryptoBase {
                 UseWhatIf     = [bool]$((Get-Variable WhatIfPreference -ValueOnly) -eq $true)
                 SessionId     = [string]::Empty
                 UseVerbose    = [bool]$((Get-Variable verbosePreference -ValueOnly) -eq "continue")
-                OfflineMode   = [NetworkManager]::Testconnection("github.com");
+                OfflineMode   = $(Wait-Task -m "Testing Connection" -s { return $([NetworkManager]::Testconnection("github.com")) }).Output
                 CachedCreds   = $null
                 SessionConfig = $Config
                 OgWindowTitle = $(Get-Variable executionContext).Value.Host.UI.RawUI.WindowTitle
@@ -3760,7 +3557,7 @@ class ArgonCage : CryptoBase {
             LastWriteTime   = [datetime]::Now
         }
         try {
-            Write-Host "     Set Remote uri for config ..." -f Blue; [StackTracer]::Push("ArgonCage")
+            Write-Host "     Set Remote uri for config ..." -f Blue; Push-Stack -class "ArgonCage"
             $l = [GistFile]::Create([uri]::New($default_Config.GistUri)); [GitHub]::UserName = $l.UserName
             if ($?) {
                 $default_Config.Remote = [uri]::new([GitHub]::GetGist($l.Owner, $l.Id).files."$Config_FileName".raw_url)

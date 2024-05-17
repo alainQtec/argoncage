@@ -21,11 +21,13 @@ class TaskMan {
                 [Console]::CursorTop = $originalY
             }
         }
-        Write-Host "`b$progressMsg ... " -f Blue -NoNewline
+        Write-Host "`b$progressMsg ... " -f Blue -NoNewline;
         [System.Management.Automation.Runspaces.RemotingErrorRecord[]]$Errors = $Job.ChildJobs.Where({
                 $null -ne $_.Error
             }
         ).Error;
+        $LogMsg = ''; $_Success = ($null -eq $Errors); $attMSg = Get-AttemptMSg;
+        if (![string]::IsNullOrWhiteSpace($attMSg)) { $LogMsg += $attMSg } else { $LogMsg += "Done." }
         if ($Job.JobStateInfo.State -eq "Failed" -or $Errors.Count -gt 0) {
             $errormessages = ""; $errStackTrace = ""
             if ($null -ne $Errors) {
@@ -36,11 +38,10 @@ class TaskMan {
                     $errStackTrace += $Errors.Exception.InnerException.StackTrace
                 }
             }
-            [taskman]::WriteLog("Completed with errors.`n`t$errormessages`n`t$errStackTrace", $false)
-        } else {
-            [TaskMan]::WriteLog("Done.", $true)
+            $_Success = $false; $LogMsg += " Completed with errors.`n`t$errormessages`n`t$errStackTrace"
         }
-        [Console]::CursorVisible = $true;
+        [TaskMan]::WriteLog($LogMsg, $_Success)
+        [Console]::CursorVisible = $true; Set-AttemptMSg ' '
         return [TaskResult]::new($Job)
     }
     static [TaskResult] RetryCommand([ScriptBlock]$ScriptBlock) {
@@ -70,7 +71,8 @@ class TaskMan {
                 throw
             }
             try {
-                Write-Host "$fxn $Message" -NoNewline -f DarkGray; Write-Host " Attempt # $Attempts/$MaxAttempts : " -NoNewline
+                " Attempt # $Attempts/$MaxAttempts" | Set-AttemptMSg
+                Write-Debug "$fxn $Message$([ProgressUtil]::AttemptMSg) "
                 $AttemptStartTime = Get-Date
                 if ($null -ne $ArgumentList) {
                     $Output = Invoke-Command -ScriptBlock $ScriptBlock -ArgumentList $ArgumentList
@@ -81,7 +83,8 @@ class TaskMan {
                 if ($Output -is [bool]) { $IsSuccess = $Output }
             } catch {
                 $IsSuccess = $false; $ErrorRecord = $_
-                Write-Host "$fxn Errored after $([math]::Round(($(Get-Date) - $AttemptStartTime).TotalSeconds, 2)) seconds" -f Red -NoNewline
+                " Errored after $([math]::Round(($(Get-Date) - $AttemptStartTime).TotalSeconds, 2)) seconds" | Set-AttemptMSg
+                Write-Debug "$fxn $([ProgressUtil]::AttemptMSg)"
             } finally {
                 $Result.Output = $Output
                 $Result.IsSuccess = $IsSuccess
@@ -125,6 +128,7 @@ class ProgressUtil {
     static hidden [string[]] $_twirl = @(
         "-\\|/", "|/-\\", "+■0"
     );
+    static [string] $AttemptMSg
     static [int] $_twirlIndex = 0
     static hidden [string]$frames
     static [void] WriteProgressBar([int]$percent) {
@@ -189,6 +193,66 @@ class CommandOptions {
     }
 }
 
+class StackTracer {
+    static [System.Collections.Concurrent.ConcurrentStack[string]]$stack = [System.Collections.Concurrent.ConcurrentStack[string]]::new()
+    static [System.Collections.Generic.List[hashtable]]$CallLog = @()
+    static [void] Push([type]$class) {
+        $str = "[{0}]" -f $class
+        if ([StackTracer]::Peek() -ne "$class") {
+            [StackTracer]::stack.Push($str)
+            $LAST_ERROR = $(Get-Variable -Name Error -ValueOnly)[0]
+            [StackTracer]::CallLog.Add(@{ ($str + ' @ ' + [datetime]::Now.ToShortTimeString()) = $(if ($null -ne $LAST_ERROR) { $LAST_ERROR.ScriptStackTrace } else { [System.Environment]::StackTrace }).Split("`n").Replace("at ", "# ").Trim() })
+        }
+    }
+    static [type] Pop() {
+        $result = $null
+        if ([StackTracer]::stack.TryPop([ref]$result)) {
+            return $result
+        } else {
+            throw [System.InvalidOperationException]::new("Stack is empty!")
+        }
+    }
+    static [string] Peek() {
+        $result = $null
+        if ([StackTracer]::stack.TryPeek([ref]$result)) {
+            return $result
+        } else {
+            return [string]::Empty
+        }
+    }
+    static [int] GetSize() {
+        return [StackTracer]::stack.Count
+    }
+    static [bool] IsEmpty() {
+        return [StackTracer]::stack.IsEmpty
+    }
+}
+function Pop-Stack {
+    [CmdletBinding()]
+    param ()
+    process {
+        return [StackTracer]::Pop()
+    }
+}
+
+function Push-Stack {
+    [CmdletBinding()]
+    param (
+        [type]$class
+    )
+    process {
+        [StackTracer]::Push($class)
+    }
+}
+
+function Show-Stack {
+    [CmdletBinding()]
+    param ()
+    process {
+        [StackTracer]::Peek()
+    }
+}
+
 function Write-ProgressBar {
     [CmdletBinding()]
     param (
@@ -210,9 +274,18 @@ function Write-ProgressBar {
 }
 
 function Invoke-RetriableCommand {
+    # .SYNOPSIS
+    #     Retries a Command
+    # .DESCRIPTION
+    #     A longer description of the function, its purpose, common use cases, etc.
+    # .LINK
+    #     https://github.com/alainQtec/argoncage/blob/main/Private/TaskMan/TaskMan.psm1
+    # .EXAMPLE
+    #     Retry-Command { (CheckConnection -host "github.com" -msg "Testing Connection").Output }
+    #     Tries to connect to github 3 times
+    [CmdletBinding()]
     [Alias('Retry-Command')]
     [OutputType([TaskResult])]
-    [CmdletBinding()]
     param (
         [Parameter(Mandatory = $true, Position = 0)]
         [Alias('s')]
@@ -248,6 +321,21 @@ function Invoke-RetriableCommand {
     end {
         return $result
     }
+}
+
+function Get-AttemptMSg {
+    return [ProgressUtil]::AttemptMSg
+}
+
+function Set-AttemptMSg {
+    [CmdletBinding()]
+    [OutputType([void])]
+    param (
+        [Parameter(Mandatory = $true , Position = 0, ValueFromPipeline = $true)]
+        [ValidateNotNullOrEmpty()]
+        [string]$Message
+    )
+    [ProgressUtil]::AttemptMSg = $Message
 }
 
 function Wait-Task {
@@ -354,6 +442,5 @@ function New-Task {
         return $_result
     }
 }
-# $t = New-Task { "running ...."; Start-Sleep -Seconds 3;  return "hello world" }
 
 Export-ModuleMember -Function '*' -Variable '*' -Cmdlet '*' -Alias '*' -Verbose:($VerbosePreference -eq "Continue")

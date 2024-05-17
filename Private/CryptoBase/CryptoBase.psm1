@@ -10,6 +10,19 @@ enum CryptoAlgorithm {
     RsaOAEP # RSA-OAEP (Optimal Asymmetric Encryption Padding)
 }
 
+enum RSAPadding {
+    Pkcs1
+    OaepSHA1
+    OaepSHA256
+    OaepSHA384
+    OaepSHA512
+}
+enum CredentialPersistence {
+    Session = 1
+    LocalComputer = 2
+    Enterprise = 3
+}
+
 class InvalidPasswordException : System.Exception {
     [string]$Message; [string]hidden $Passw0rd; [securestring]hidden $Password; [System.Exception]$InnerException
     InvalidPasswordException() { $this.Message = "Invalid password" }

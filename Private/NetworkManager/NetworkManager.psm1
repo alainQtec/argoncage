@@ -144,25 +144,7 @@ class NetworkManager {
         return $result
     }
     static [bool] TestConnection ([string]$HostName) {
-        $cs = $null; $cc = Show-Stack;
-        $re = @{ true = @{ m = "Success"; c = "Green" }; false = @{ m = "Failed"; c = "Red" } }
-        if (![NetworkManager]::resolve_ping_dependencies()) {
-            Write-Host "$cc Could not resolve ping dependencies" -f Red
-        }
-        [ValidateNotNullOrEmpty()][string]$HostName = $HostName
-        if (![bool]("System.Net.NetworkInformation.Ping" -as 'type')) { Add-Type -AssemblyName System.Net.NetworkInformation };
-        try {
-            [System.Net.NetworkInformation.PingReply]$PingReply = [System.Net.NetworkInformation.Ping]::new().Send($HostName);
-            $cs = $PingReply.Status -eq [System.Net.NetworkInformation.IPStatus]::Success
-        } catch [System.Net.Sockets.SocketException], [System.Net.NetworkInformation.PingException] {
-            $cs = $false
-        } catch {
-            $cs = $false;
-            Write-Error $_
-        }
-        $re = $re[$cs.ToString()]
-        Write-Host $re.m -f $re.c
-        return $cs
+        throw 'eerr'
     }
 }
 function NetworkManager {
@@ -173,4 +155,53 @@ function NetworkManager {
     }
 }
 
+function CheckConnection {
+    [CmdletBinding()]
+    param (
+        [Parameter(Mandatory = $true, Position = 0)]
+        [ValidateNotNullOrEmpty()]
+        [Alias('host')]
+        [string]$HostName,
+
+        [Parameter(Mandatory = $false, Position = 1)]
+        [ValidateNotNullOrEmpty()]
+        [Alias('msg')]
+        [string]$Message = "Testing Connection"
+    )
+
+    begin {
+        $results = $null;
+        $tscript = [scriptblock]::Create({
+                $cs = $null; $re = @{ true = @{ m = ' Success'; c = 'Green' }; false = @{ m = ' Failed'; c = 'Red' } }
+                if (![bool]('System.Net.NetworkInformation.Ping' -as 'type')) { Add-Type -AssemblyName System.Net.NetworkInformation };
+                try {
+                    [System.Net.NetworkInformation.PingReply]$PingReply = [System.Net.NetworkInformation.Ping]::new().Send("google.com");
+                    $cs = $PingReply.Status -eq [System.Net.NetworkInformation.IPStatus]::Success
+                } catch [System.Net.Sockets.SocketException], [System.Net.NetworkInformation.PingException] {
+                    $cs = $false
+                } catch {
+                    $cs = $false;
+                    Write-Error $_
+                }
+                $re = $re[$cs.ToString()]
+                Write-Host $re.m -f $re.c
+                return $cs
+            }
+        )
+    }
+
+    process {
+        $cc = Show-Stack;
+        $tscrSRC = $tscript.Ast.Extent.Text.Replace("google.com", $HostName, $true, [CultureInfo]::CurrentCulture)
+        $tscript = [scriptblock]::Create("$tscrSRC")
+        if (![NetworkManager]::resolve_ping_dependencies()) {
+            ('{0} Could not resolve ping dependencies' -f $cc) | Write-Host -f Red
+        }
+        $results = Wait-Task -m $Message -s $tscript
+    }
+
+    end {
+        return $results
+    }
+}
 Export-ModuleMember -Function '*' -Variable '*' -Cmdlet '*' -Alias '*' -Verbose:($VerbosePreference -eq "Continue")

@@ -78,7 +78,7 @@
         [ValidateNotNullOrEmpty()][hashtable]$table = $table
         $Keys = $table.Keys | Where-Object { $_.GetType().FullName -eq 'System.String' -or $_.GetType().BaseType.FullName -eq 'System.ValueType' } | Sort-Object -Unique
         foreach ($key in $Keys) {
-            if (!$this.psObject.Properties.Name.Contains($key)) {
+            if (!$this.PsObject.Properties.Name.Contains($key)) {
                 $this | Add-Member -MemberType NoteProperty -Name $key -Value $table[$key] -Force
             } else {
                 $this.$key = $table[$key]

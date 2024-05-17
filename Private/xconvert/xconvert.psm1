@@ -415,14 +415,14 @@ class xconvert : System.ComponentModel.TypeConverter {
         return $PSObj
     }
     static [System.Object] FromPSObject([PSCustomObject]$PSObject) {
-        return [xconvert]::FromPSObject($PSObject, $PSObject.PSObject.TypeNames[0])
+        return [xconvert]::FromPSObject($PSObject, $PSObject.PsObject.TypeNames[0])
     }
     static [System.Object] FromPSObject([PSCustomObject]$PSObject, [string]$typeName) {
         # /!\ not working as expected /!\
         $Type = [Type]::GetType($typeName, $false)
         if ($Type) {
             $Obj = [Activator]::CreateInstance($Type)
-            $PSObject.PSObject.Properties | ForEach-Object {
+            $PSObject.PsObject.Properties | ForEach-Object {
                 $Name = $_.Name
                 $Value = $_.Value
                 if ($Value -is [PSCustomObject]) {
@@ -641,7 +641,7 @@ class xconvert : System.ComponentModel.TypeConverter {
                 if ($obj -is [System.Management.Automation.PSCustomObject]) {
                     # a custom object: recurse on its properties
                     $oht = [ordered]@{}
-                    foreach ($prop in $obj.psobject.Properties) {
+                    foreach ($prop in $obj.PsObject.Properties) {
                         $oht.Add($prop.Name, $(Invoke-Command -ScriptBlock $convert -ArgumentList $prop.Value))
                     }
                     return $oht

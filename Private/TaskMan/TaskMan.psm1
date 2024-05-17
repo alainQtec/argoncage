@@ -1,6 +1,6 @@
 ﻿# A small process managment class
 class TaskMan {
-    static [System.Management.Automation.PSObject[]] RunInParallel([System.Management.Automation.Job[]]$jobs) {
+    static [System.Management.Automation.PsObject[]] RunInParallel([System.Management.Automation.Job[]]$jobs) {
         $threadjobs = $jobs | ForEach-Object { Start-ThreadJob -ScriptBlock ([ScriptBlock]::Create($_.Command)) }
         $results = $threadjobs | Receive-Job -Wait
         return $results
@@ -100,7 +100,7 @@ class TaskMan {
         [TaskMan]::WriteLog($null, $IsSuccess)
     }
     static [void] WriteLog([string]$Message, [bool]$IsSuccess) {
-        $re = @{ true = @{ m = "Success "; c = "Green" }; false = @{ m = "Failed "; c = "Red" } }
+        $re = @{ true = @{ m = "Success "; c = "Cyan" }; false = @{ m = "Failed "; c = "Red" } }
         if (![string]::IsNullOrWhiteSpace($Message)) { $re["$IsSuccess"].m = $Message }
         $re = $re["$IsSuccess"]
         Write-Host $re.m -f $re.c -NoNewline:$IsSuccess
@@ -163,12 +163,12 @@ class TaskResult {
         $this.ErrorRecord = $ErrorRecord
         $job_state = $(if ($this.IsSuccess) { "Completed" } else { "Failed" })
         $get_state = [scriptblock]::Create("return '$job_state'")
-        $this.psobject.Properties.Add([psscriptproperty]::new('State', $get_state, { throw [System.InvalidOperationException]::new("Cannot set State") }))
+        $this.PsObject.Properties.Add([psscriptproperty]::new('State', $get_state, { throw [System.InvalidOperationException]::new("Cannot set State") }))
     }
     TaskResult([System.Management.Automation.Job]$job) {
         $this.Command = $job.Command
         $get_state = [scriptblock]::Create("return '$($job.JobStateInfo.State.ToString())'")
-        $this.psobject.Properties.Add([psscriptproperty]::new('State', $get_state, { throw [System.InvalidOperationException]::new("Cannot set State") }))
+        $this.PsObject.Properties.Add([psscriptproperty]::new('State', $get_state, { throw [System.InvalidOperationException]::new("Cannot set State") }))
         $this.Output = $job.ChildJobs | Receive-Job -Wait
         # [scriptBlock]::Create("$($job.ChildJobs.Command)").Invoke()
         $this.IsSuccess = $job.JobStateInfo.State -eq "Completed"

@@ -291,7 +291,7 @@ class ArgonCage {
                 UseWhatIf     = [bool]$((Get-Variable WhatIfPreference -ValueOnly) -eq $true)
                 SessionId     = [string]::Empty
                 UseVerbose    = [bool]$((Get-Variable verbosePreference -ValueOnly) -eq "continue")
-                OfflineMode   = !((CheckConnection -host "github.com" -msg "Testing Connection").Output)
+                OfflineMode   = !((Retry-Command { (CheckConnection -host "github.com" -msg "Check if offline").Output }).Output)
                 CachedCreds   = $null
                 SessionConfig = $Config
                 OgWindowTitle = $(Get-Variable executionContext).Value.Host.UI.RawUI.WindowTitle

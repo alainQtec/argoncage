@@ -275,8 +275,9 @@ function Wait-Task {
     process {
         if ($PSCmdlet.ParameterSetName -eq 'scriptBlock') {
             $result = [TaskMan]::WaitTask($progressMsg, $scriptBlock)
+        } else {
+            throw [System.NotSupportedException]::new("Sorry, ParameterSetName '$($PSCmdlet.ParameterSetName)' is not yet supported")
         }
-
         # $Tasks += $Task
         # While (-not [System.Threading.Tasks.Task]::WaitAll($Tasks, 200)) {}
         # $Tasks.ForEach( { $_.GetAwaiter().GetResult() })

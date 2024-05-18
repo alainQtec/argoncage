@@ -6,6 +6,7 @@
     [hashtable]$Headers = @{}
     [System.Object]$Proxy = $null
     [bool]$Force = $false
+    static [DownloadOptions]$currentOptions
     DownloadOptions() {}
 }
 
@@ -33,72 +34,6 @@ class NetworkManager {
         } else {
             throw "The request failed with status code: $($Response.StatusCode)"
         }
-    }
-    static [void] BlockAllOutbound() {
-        $HostOs = (CryptoBase)::Get_Host_Os()
-        if ($HostOs -eq "Linux") {
-            sudo iptables -P OUTPUT DROP
-        } else {
-            netsh advfirewall set allprofiles firewallpolicy blockinbound, blockoutbound
-        }
-    }
-    static [void] UnblockAllOutbound() {
-        $HostOs = (CryptoBase)::Get_Host_Os()
-        if ($HostOs -eq "Linux") {
-            sudo iptables -P OUTPUT ACCEPT
-        } else {
-            netsh advfirewall set allprofiles firewallpolicy blockinbound, allowoutbound
-        }
-    }
-    static [IO.FileInfo] DownloadFile([uri]$url) {
-        # No $outFile so we create ones ourselves, and use suffix to prevent duplicaltes
-        $randomSuffix = [Guid]::NewGuid().Guid.subString(15).replace('-', [string]::Join('', (0..9 | Get-Random -Count 1)))
-        return [NetworkManager]::DownloadFile($url, "$(Split-Path $url.AbsolutePath -Leaf)_$randomSuffix");
-    }
-    static [IO.FileInfo] DownloadFile([uri]$url, [string]$outFile) {
-        return [NetworkManager]::DownloadFile($url, $outFile, $false)
-    }
-    static [IO.FileInfo] DownloadFile([uri]$url, [string]$outFile, [bool]$Force) {
-        [ValidateNotNullOrEmpty()][uri]$url = $url; [ValidateNotNull()][bool]$Force = ($Force -as [bool])
-        [ValidateNotNullOrEmpty()][string]$outFile = $outFile; $stream = $null;
-        $fileStream = $null; $name = Split-Path $url -Leaf;
-        $request = [System.Net.HttpWebRequest]::Create($url)
-        $request.UserAgent = "Mozilla/5.0"
-        $response = $request.GetResponse()
-        $contentLength = $response.ContentLength
-        $stream = $response.GetResponseStream()
-        $buffer = New-Object byte[] 1024
-        $outPath = (CryptoBase)::GetUnResolvedPath($outFile)
-        if ([System.IO.Directory]::Exists($outFile)) {
-            if (!$Force) { throw [System.ArgumentException]::new("Please provide valid file path, not a directory.", "outFile") }
-            $outPath = Join-Path -Path $outFile -ChildPath $name
-        }
-        $Outdir = [IO.Path]::GetDirectoryName($outPath)
-        if (![System.IO.Directory]::Exists($Outdir)) { [void][System.IO.Directory]::CreateDirectory($Outdir) }
-        if ([IO.File]::Exists($outPath)) {
-            if (!$Force) { throw "$outFile already exists" }
-            Remove-Item $outPath -Force -ErrorAction Ignore | Out-Null
-        }
-        $fileStream = [System.IO.FileStream]::new($outPath, [IO.FileMode]::Create, [IO.FileAccess]::ReadWrite, [IO.FileShare]::None)
-        $totalBytesReceived = 0
-        $totalBytesToReceive = $contentLength
-        $OgForeground = (Get-Variable host).Value.UI.RawUI.ForegroundColor
-        $Progress_Msg = [NetworkManager]::DownloadOptions.ProgressMessage
-        if ([string]::IsNullOrWhiteSpace($Progress_Msg)) { $Progress_Msg = "[+] Downloading $name to $Outfile" }
-        Write-Host $Progress_Msg -f Magenta
-        (Get-Variable host).Value.UI.RawUI.ForegroundColor = [ConsoleColor]::Green
-        while ($totalBytesToReceive -gt 0) {
-            $bytesRead = $stream.Read($buffer, 0, 1024)
-            $totalBytesReceived += $bytesRead
-            $totalBytesToReceive -= $bytesRead
-            $fileStream.Write($buffer, 0, $bytesRead)
-            if ([NetworkManager]::DownloadOptions.ShowProgress) {
-                Write-ProgressBar -p ([int]($totalBytesReceived / $contentLength * 100)) -l ([NetworkManager]::DownloadOptions.progressBarLength) -Update
-            }
-        }
-        (Get-Variable host).Value.UI.RawUI.ForegroundColor = $OgForeground
-        try { Invoke-Command -ScriptBlock { $stream.Close(); $fileStream.Close() } -ErrorAction SilentlyContinue } catch { $null }
-        return (Get-Item $outFile)
     }
     static [void] UploadFile ([string]$SourcePath, [string]$DestinationURL) {
         Invoke-RestMethod -Uri $DestinationURL -Method Post -InFile $SourcePath
@@ -147,11 +82,134 @@ class NetworkManager {
         throw 'eerr'
     }
 }
-function NetworkManager {
+
+function Start-FileDownload {
+    [CmdletBinding()]
+    [OutputType([IO.FileInfo])]
+    param (
+        [Parameter(Mandatory = $true, Position = 0, ValueFromPipeline = $true)]
+        [ValidateNotNullOrEmpty()][Alias('l')]
+        [uri]$url,
+
+        [Parameter(Mandatory = $false, Position = 0)]
+        [ValidateScript({
+                if ([string]::IsNullOrWhiteSpace($_)) {
+                    throw [System.ArgumentNullException]::new("outFile", "Please provide a valid file path")
+                }
+            }
+        )][Alias('o')]
+        [string]$outFile
+    )
+    begin {
+        if (!$PSCmdlet.MyInvocation.BoundParameters.ContainsKey('OutFile')) {
+            # No $outFile? we create one ourselves, and use suffix to prevent duplicaltes
+            $randomSuffix = [Guid]::NewGuid().Guid.subString(15).replace('-', [string]::Join('', (0..9 | Get-Random -Count 1)))
+            $outFile = "$(Split-Path $url.AbsolutePath -Leaf)_$randomSuffix"
+        }
+    }
+
+    process {
+        $stream = $null; $fileStream = $null; $name = Split-Path $url -Leaf;
+        $request = [System.Net.HttpWebRequest]::Create($url)
+        $request.UserAgent = "Mozilla/5.0"
+        $response = $request.GetResponse()
+        $contentLength = $response.ContentLength
+        $stream = $response.GetResponseStream()
+        $buffer = New-Object byte[] 1024
+        $outPath = (CryptoBase)::GetUnResolvedPath($outFile)
+        if ([System.IO.Directory]::Exists($outFile)) {
+            if (!$Force) { throw [System.ArgumentException]::new("Please provide valid file path, not a directory.", "outFile") }
+            $outPath = Join-Path -Path $outFile -ChildPath $name
+        }
+        $Outdir = [IO.Path]::GetDirectoryName($outPath)
+        if (![System.IO.Directory]::Exists($Outdir)) { [void][System.IO.Directory]::CreateDirectory($Outdir) }
+        if ([IO.File]::Exists($outPath)) {
+            if (!$Force) { throw "$outFile already exists" }
+            Remove-Item $outPath -Force -ErrorAction Ignore | Out-Null
+        }
+        $fileStream = [System.IO.FileStream]::new($outPath, [IO.FileMode]::Create, [IO.FileAccess]::ReadWrite, [IO.FileShare]::None)
+        $totalBytesReceived = 0
+        $totalBytesToReceive = $contentLength
+        $OgForeground = (Get-Variable host).Value.UI.RawUI.ForegroundColor
+        $Progress_Msg = [NetworkManager]::DownloadOptions.ProgressMessage
+        if ([string]::IsNullOrWhiteSpace($Progress_Msg)) { $Progress_Msg = "[+] Downloading $name to $Outfile" }
+        Write-Host $Progress_Msg -f Magenta
+        (Get-Variable host).Value.UI.RawUI.ForegroundColor = [ConsoleColor]::Green
+        while ($totalBytesToReceive -gt 0) {
+            $bytesRead = $stream.Read($buffer, 0, 1024)
+            $totalBytesReceived += $bytesRead
+            $totalBytesToReceive -= $bytesRead
+            $fileStream.Write($buffer, 0, $bytesRead)
+            if ([NetworkManager]::DownloadOptions.ShowProgress) {
+                Write-ProgressBar -p ([int]($totalBytesReceived / $contentLength * 100)) -l ([NetworkManager]::DownloadOptions.progressBarLength) -Update
+            }
+        }
+        (Get-Variable host).Value.UI.RawUI.ForegroundColor = $OgForeground
+        try { Invoke-Command -ScriptBlock { $stream.Close(); $fileStream.Close() } -ErrorAction SilentlyContinue } catch { $null }
+    }
+
+    end {
+        return (Get-Item $outFile)
+    }
+}
+
+function Set-DownloadOptions {
+    [CmdletBinding()]
+    [OutputType([void])]
+    param (
+        [Parameter(Mandatory = $false, Position = 0, ValueFromPipeline = $true)]
+        [ValidateNotNullOrEmpty()]
+        [hashtable]$Options
+    )
+    process {
+        if (!$PSCmdlet.MyInvocation.BoundParameters.ContainsKey('Options')) {
+            [DownloadOptions]::currentOptions = [DownloadOptions]::new()
+        } else {
+            $Options.Keys.ForEach({
+                    [DownloadOptions]::currentOptions."$_" = $Options."$_"
+                }
+            )
+        }
+    }
+}
+function Get-DownloadOption {
+    [CmdletBinding()]
+    [OutputType([void])]
+    param (
+        [Parameter(Mandatory = $true, Position = 0, ValueFromPipeline = $true)]
+        [ValidateNotNullOrEmpty()]
+        [string]$Name
+    )
+    end {
+        return [DownloadOptions]::currentOptions."$Name"
+    }
+}
+
+function Block-AllOutboundConnections {
+    [CmdletBinding()]
+    [OutputType([void])]
+    param ()
+
+    process {
+        $HostOs = (CryptoBase)::Get_Host_Os()
+        if ($HostOs -eq "Linux") {
+            sudo iptables -P OUTPUT DROP
+        } else {
+            netsh advfirewall set allprofiles firewallpolicy blockinbound, blockoutbound
+        }
+    }
+}
+
+function Unblock-AllOutboundConnections {
     [CmdletBinding()]
     param ()
-    end {
-        return [NetworkManager]::New()
+    process {
+        $HostOs = (CryptoBase)::Get_Host_Os()
+        if ($HostOs -eq "Linux") {
+            sudo iptables -P OUTPUT ACCEPT
+        } else {
+            netsh advfirewall set allprofiles firewallpolicy blockinbound, allowoutbound
+        }
     }
 }
 

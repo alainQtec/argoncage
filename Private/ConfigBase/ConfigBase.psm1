@@ -15,10 +15,10 @@
         } -Force
         $this.PsObject.properties.add([psscriptproperty]::new('Count', [scriptblock]::Create({ $this.Properties.count })))
     }
-    [void] Import([uri]$raw_uri) {
+    [void] Import([uri]$raw_uri, [Object]$session) {
         try {
             Push-Stack -class "ArgonCage"; $pass = $null;
-            Set-Variable -Name pass -Scope Local -Visibility Private -Option Private -Value $([ArgonCage]::Tmp.GetSessionKey('configrw', [PSCustomObject]@{
+            Set-Variable -Name pass -Scope Local -Visibility Private -Option Private -Value $($session.GetSessionKey('configrw', [PSCustomObject]@{
                         caller = Show-Stack
                         prompt = "Paste/write a Password to decrypt configs"
                     }
@@ -32,15 +32,15 @@
             Remove-Variable Pass -Force -ErrorAction SilentlyContinue
         }
     }
-    [void] Import([String]$FilePath) {
+    [void] Import([String]$FilePath, [Object]$session) {
         Write-Host "$(Show-Stack) Import records: $FilePath ..." -f Green
-        $this.Set([RecordMap]::Read($FilePath))
+        $this.Set([RecordMap]::Read($FilePath, $session))
         Write-Host "$(Show-Stack) Import records Complete" -f Green
     }
     [void] Upload() {
         if ([string]::IsNullOrWhiteSpace($this.Remote)) { throw [System.ArgumentException]::new('remote') }
         # $gisturi = 'https://gist.github.com/' + $this.Remote.Segments[2] + $this.Remote.Segments[2].replace('/', '')
-        # (GitHub)::UpdateGist($gisturi, $content)
+        # Update-Gist -uri $gisturi -c $content
     }
     [void] Add([hashtable]$table) {
         [ValidateNotNullOrEmpty()][hashtable]$table = $table
@@ -108,10 +108,10 @@
         }
         return $dict
     }
-    static [hashtable[]] Read([string]$FilePath) {
+    static [hashtable[]] Read([string]$FilePath, $session) {
         Push-Stack -class "ArgonCage"; $pass = $null; $cfg = $null; $FilePath = (AesGCM)::GetResolvedPath($FilePath);
         if ([IO.File]::Exists($FilePath)) { if ([string]::IsNullOrWhiteSpace([IO.File]::ReadAllText($FilePath).Trim())) { throw [System.Exception]::new("File is empty: $FilePath") } } else { throw [System.IO.FileNotFoundException]::new("File not found: $FilePath") }
-        Set-Variable -Name pass -Scope Local -Visibility Private -Option Private -Value $([ArgonCage]::Tmp.GetSessionKey('configrw', [PSCustomObject]@{
+        Set-Variable -Name pass -Scope Local -Visibility Private -Option Private -Value $($session.GetSessionKey('configrw', [PSCustomObject]@{
                     caller = Show-Stack
                     prompt = "Paste/write a Password to decrypt configs"
                 }
@@ -122,12 +122,12 @@
         $cfg = [hashtable[]]$_ob.PsObject.Properties.Name.Where({ $_ -notin ('Count', 'Properties', 'IsSynchronized') }).ForEach({ @{ $_ = $_ob.$_ } })
         return $cfg
     }
-    [hashtable[]] Edit() {
-        $result = $this.Edit($this.File)
-        $this.Set($result); $this.Save()
+    [hashtable[]] Edit($session) {
+        $result = $this.Edit($this.File, $session)
+        $this.Set($result); $this.Save($session)
         return $result
     }
-    [hashtable[]] Edit([string]$FilePath) {
+    [hashtable[]] Edit([string]$FilePath, [Object]$session) {
         $result = @(); $private:config_ob = $null; $fswatcher = $null; $process = $null;
         $FilePath = (AesGCM)::GetResolvedPath($FilePath);
         if ([IO.File]::Exists($FilePath)) { if ([string]::IsNullOrWhiteSpace([IO.File]::ReadAllText($FilePath).Trim())) { throw [System.Exception]::new("File is empty: $FilePath") } } else { throw [System.IO.FileNotFoundException]::new("File not found: $FilePath") }
@@ -136,7 +136,7 @@
         try {
             (NetworkManager)::BlockAllOutbound()
             if ($UseVerbose) { "[+] Edit Config started .." | Write-Host -f Magenta }
-            $parsed_content = [RecordMap]::Read("$FilePath");
+            $parsed_content = [RecordMap]::Read($FilePath, $session);
             [ValidateNotNullOrEmpty()][hashtable[]]$parsed_content = $parsed_content
             $parsed_content | ConvertTo-Json | Out-File $OutFile.FullName -Encoding utf8BOM
             Set-Variable -Name OutFile -Value $(Rename-Item $outFile.FullName -NewName ($outFile.BaseName + '.json') -PassThru)
@@ -169,11 +169,12 @@
         }
         return $result
     }
-    [void] Save() {
+    [void] Save($session) {
         try {
+            [ValidateNotNullOrEmpty()][Object]$session = $session
             $cllr = Show-Stack; [ValidateNotNullOrEmpty()][string]$cllr = $cllr
             $pass = $null; Write-Host "$cllr Saving records to file: $($this.File) ..." -f Blue
-            Set-Variable -Name pass -Scope Local -Visibility Private -Option Private -Value $([ArgonCage]::Tmp.GetSessionKey('configrw', [PSCustomObject]@{
+            Set-Variable -Name pass -Scope Local -Visibility Private -Option Private -Value $($session.GetSessionKey('configrw', [PSCustomObject]@{
                         caller = $cllr
                         prompt = "Paste/write a Password to encrypt configs"
                     }

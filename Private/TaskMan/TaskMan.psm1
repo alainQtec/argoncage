@@ -58,7 +58,7 @@ class TaskMan {
     }
     static [TaskResult] RetryCommand([ScriptBlock]$ScriptBlock, [Object[]]$ArgumentList, [System.Threading.CancellationToken]$CancellationToken, [Int]$MaxAttempts, [String]$Message, [Int]$Timeout) {
         [ValidateNotNullOrEmpty()][scriptblock]$ScriptBlock = $ScriptBlock
-        if ([string]::IsNullOrWhiteSpace((Show-Stack))) { Push-Stack "TaskMan" }
+        if ([string]::IsNullOrWhiteSpace((Show-Stack))) { Push-Stack ([TaskMan]) }
         $IsSuccess = $false; $fxn = Show-Stack; $AttemptStartTime = $null;
         $Output = [string]::Empty; $ErrorRecord = $null; $Attempts = 1
         if ([string]::IsNullOrWhiteSpace($Message)) { $Message = "Invoke Command" }

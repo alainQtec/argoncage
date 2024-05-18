@@ -371,7 +371,7 @@ function Get-GistInfo {
             )
             $r = $(Retry-Command -s $FetchGistId -args @($GistId) -m "GitHub.FetchGist()  ").Output
         } else {
-            $l = $Uri | New-GistFile
+            $l = New-GistFile -Uri $Uri
             $r = Get-GistInfo -UserName $l.Owner -Id $l.Id
         }
     }
@@ -383,16 +383,20 @@ function New-GistFile {
     [CmdletBinding()]
     [OutputType([GistFile])]
     param (
-        [Parameter(Mandatory = $true, Position = 0, ValueFromPipeline = $true)]
-        [ValidateNotNull()]
-        [Alias('Uri')]
+        [Parameter(Mandatory = $true, Position = 0)]
+        [ValidateScript({
+                if ([string]::IsNullOrWhiteSpace($_.OriginalString)) {
+                    throw [System.ArgumentNullException]::new("GistUri", "Uri cannot be null or empty")
+                }
+            }
+        )][Alias('Uri')]
         [uri]$GistUri
     )
     begin {
-        $res = $null; $ogs = $GistUri.OriginalString
-        $IsRawUri = $ogs.Contains('/raw/') -and $ogs.Contains('gist.githubusercontent.com')
+        $res = $null;
     }
     process {
+        $ogs = $GistUri.OriginalString; $IsRawUri = $ogs.Contains('/raw/') -and $ogs.Contains('gist.githubusercontent.com')
         $seg = $GistUri.Segments
         $res = $(if ($IsRawUri) {
                 $_name = $seg[-1]

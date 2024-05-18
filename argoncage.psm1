@@ -595,7 +595,7 @@ class ArgonCage {
     [void] EditSecrets([String]$Path) {
         $private:secrets = $null; $fswatcher = $null; $process = $null; $outFile = [IO.FileInfo][IO.Path]::GetTempFileName()
         try {
-            Push-Stack ([ArgonCage]); (NetworkManager)::BlockAllOutbound()
+            Push-Stack ([ArgonCage]); Block-AllOutboundConnections
             if ([ArgonCage]::UseVerbose) { "[+] Edit secrets started .." | Write-Host -f Magenta }
             $this.GetSecrets($Path) | ConvertTo-Json | Out-File $OutFile.FullName -Encoding utf8BOM
             Set-Variable -Name OutFile -Value $(Rename-Item $outFile.FullName -NewName ($outFile.BaseName + '.json') -PassThru)
@@ -607,7 +607,7 @@ class ArgonCage {
             if ($null -eq $fswatcher) { Write-Warning "Failed to start FileMonitor"; Write-Host "Waiting nvim process to exit..." $process.WaitForExit() }
             $private:secrets = [IO.FILE]::ReadAllText($outFile.FullName) | ConvertFrom-Json
         } finally {
-            (NetworkManager)::UnblockAllOutbound()
+            Unblock-AllOutboundConnections
             if ($fswatcher) { $fswatcher.Dispose() }
             if ($process) {
                 "[+] Neovim process {0} successfully" -f $(if (!$process.HasExited) {
@@ -633,15 +633,19 @@ class ArgonCage {
     static [IO.FileInfo] FetchSecrets([uri]$remote, [string]$OutFile) {
         if ([string]::IsNullOrWhiteSpace($remote.AbsoluteUri)) { throw [System.ArgumentException]::new("Invalid Argument: remote") }
         if ([ArgonCage]::UseVerbose) { "[+] Fetching secrets from gist ..." | Write-Host -f Magenta }
-        Push-Stack ([ArgonCage]); (NetworkManager)::DownloadOptions.ShowProgress = $true
-        $og_PbLength = (NetworkManager)::DownloadOptions.ProgressBarLength
-        $og_pbMsg = (NetworkManager)::DownloadOptions.ProgressMessage
+        Push-Stack ([ArgonCage]); Set-DownloadOptions @{ShowProgress = $true }
+        $og_PbLength = Get-DownloadOption 'ProgressBarLength'
+        $og_pbMsg = Get-DownloadOption 'ProgressMessage'
         $Progress_Msg = "[+] Downloading secrets to {0}" -f $OutFile
-        (NetworkManager)::DownloadOptions.ProgressBarLength = $Progress_Msg.Length - 7
-        (NetworkManager)::DownloadOptions.ProgressMessage = $Progress_Msg
-        $resfile = (NetworkManager)::DownloadFile($remote, $OutFile)
-        (NetworkManager)::DownloadOptions.ProgressBarLength = $og_PbLength
-        (NetworkManager)::DownloadOptions.ProgressMessage = $og_pbMsg
+        Set-DownloadOptions @{
+            ProgressBarLength = $Progress_Msg.Length - 7
+            ProgressMessage   = $Progress_Msg
+        }
+        $resfile = Retry-Command -s { (Start-FileDownload -l $remote -o $OutFile).Output }
+        Set-DownloadOptions @{
+            ProgressBarLength = $og_PbLength
+            ProgressMessage   = $og_pbMsg
+        }
         [Console]::Write([Environment]::NewLine)
         return $resfile
     }

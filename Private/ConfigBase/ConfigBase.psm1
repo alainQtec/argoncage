@@ -144,7 +144,7 @@
             $process.StartInfo.FileName = 'nvim'
             $process.StartInfo.Arguments = $outFile.FullName
             $process.StartInfo.WindowStyle = [System.Diagnostics.ProcessWindowStyle]::Maximized
-            $process.Start(); $fswatcher = (FileMonitor)::MonitorFile($outFile.FullName, [scriptblock]::Create("Stop-Process -Id $($process.Id) -Force"));
+            $process.Start(); $fswatcher = New-FileSystemWatcher -File $outFile.FullName -OnComplete ([scriptblock]::Create("Stop-Process -Id $($process.Id) -Force"));
             if ($null -eq $fswatcher) { Write-Warning "Failed to start FileMonitor"; Write-Host "Waiting nvim process to exit..." $process.WaitForExit() }
             $private:config_ob = [IO.FILE]::ReadAllText($outFile.FullName) | ConvertFrom-Json
         } finally {
@@ -162,8 +162,8 @@
                 $process.Dispose()
             }
             Remove-Item $outFile.FullName -Force
-            Set-Variable -Name ((FileMonitor)::LogvariableName) -Scope Global -Value ((FileMonitor)::GetLogSummary()) | Out-Null
-            if ($UseVerbose) { "[+] FileMonitor Log saved in variable: `$$((FileMonitor)::LogvariableName)" | Write-Host -f Magenta }
+            Set-Variable -Name (Get-FMLogvariableName) -Scope Global -Value (Get-FileMonitorLog) | Out-Null
+            if ($UseVerbose) { "[+] FileMonitor Log saved in variable: `$$(Get-FMLogvariableName)" | Write-Host -f Magenta }
             if ($null -ne $config_ob) { $result = $config_ob.ForEach({ (xconvert)::ToHashTable($_) }) }
             if ($UseVerbose) { "[+] Edit Config completed." | Write-Host -f Magenta }
         }

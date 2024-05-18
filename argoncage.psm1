@@ -325,7 +325,7 @@ class ArgonCage {
         }
         try {
             Write-Host "     Set Remote uri for config ..." -f Blue; Push-Stack -class "ArgonCage"
-            $l = [uri]::New($default_Config.GistUri) | New-GistFile; Set-GitHubUsername $l.UserName
+            $l = New-GistFile -Uri ([uri]::New($default_Config.GistUri)); Set-GitHubUsername $l.UserName
             if ($?) {
                 $default_Config.Remote = [uri]::new((Get-GistInfo -User $l.Owner -Id $l.Id).files."$Config_FileName".raw_url)
             }

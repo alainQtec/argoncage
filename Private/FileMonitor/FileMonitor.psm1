@@ -15,48 +15,6 @@
             $this::LogvariableName = $n
         }
     }
-    static [System.IO.FileSystemWatcher] MonitorFile([string]$File) {
-        return [FileMonitor]::monitorFile($File, { Write-Host "[+] File monitor Completed" -f Green })
-    }
-    static [System.IO.FileSystemWatcher] MonitorFile([string]$File, [scriptblock]$Action) {
-        [ValidateNotNull()][IO.FileInfo]$File = [IO.FileInfo](CryptoBase)::GetUnResolvedPath($File)
-        if (![IO.File]::Exists($File.FullName)) {
-            throw "The file does not exist"
-        }
-        [FileMonitor]::FileTowatch = $File
-        $watcher = [System.IO.FileSystemWatcher]::new();
-        $Watcher = New-Object IO.FileSystemWatcher ([IO.Path]::GetDirectoryName($File.FullName)), $File.Name -Property @{
-            IncludeSubdirectories = $false
-            EnableRaisingEvents   = $true
-        }
-        $watcher.Filter = $File.Name
-        $watcher.NotifyFilter = [System.IO.NotifyFilters]::LastWrite;
-        $onChange = Register-ObjectEvent $Watcher Changed -Action {
-            [FileMonitor]::FileLocked = $true
-        }
-        $OnClosed = Register-ObjectEvent $Watcher Disposed -Action {
-            [FileMonitor]::FileClosed = $true
-        }
-        # [Console]::Write("Monitoring changes to $File"); [Console]::WriteLine("Press 'crl^q' to stop")
-        do {
-            try {
-                [FileMonitor]::FileLocked = [FileMonitor]::IsFileLocked($File.FullName)
-            } catch [System.IO.IOException] {
-                [FileMonitor]::FileLocked = $(if ($_.Exception.Message.Contains('is being used by another process')) {
-                        $true
-                    } else {
-                        throw 'An error occured while checking the file'
-                    }
-                )
-            } finally {
-                [System.Threading.Thread]::Sleep(100)
-            }
-        } until ([FileMonitor]::FileClosed -and ![FileMonitor]::FileLocked -and ![FileMonitor]::IsFileOpenInVim($File.FullName))
-        Invoke-Command -ScriptBlock $Action
-        Unregister-Event -SubscriptionId $onChange.Id; $onChange.Dispose();
-        Unregister-Event -SubscriptionId $OnClosed.Id; $OnClosed.Dispose(); $Watcher.Dispose();
-        return $watcher
-    }
     static [PsObject] MonitorFileAsync([string]$filePath) {
         # .EXAMPLE
         # $flt = [FileMonitor]::MonitorFileAsync($filePath)
@@ -77,7 +35,128 @@
     static [string] GetLogSummary() {
         return [FileMonitor]::GetLogSummary([FileMonitor]::LogvariableName)
     }
-    static [string] GetLogSummary([string]$LogvariableName) {
+    static [bool] IsFileLocked([string]$filePath) {
+        $res = $true; $logvar = Get-Variable -Name ([FileMonitor]::LogvariableName) -Scope Global; $filePath = Resolve-Path -Path $filePath -ErrorAction SilentlyContinue
+        try {
+            # (lsof -t "$filePath" | wc -w) -gt 0
+            [System.IO.FileStream]$stream = [IO.File]::Open($filePath, [IO.FileMode]::Open, [IO.FileAccess]::ReadWrite, [IO.FileShare]::None)
+            if ($stream) { $stream.Close(); $stream.Dispose() }
+            $res = $false
+        } finally {
+            if ($res) { $logvar.Value += "[$([DateTime]::Now.ToString())] File is already locked by another process." }
+            Set-Variable -Name ([FileMonitor]::LogvariableName) -Scope Global -Value $logvar.Value | Out-Null
+        }
+        return $res
+    }
+}
+
+function Test-FileOpenInVim {
+    [CmdletBinding()]
+    [OutputType([bool])]
+    param (
+        [Parameter(Mandatory = $true, Position = 0, ValueFromPipeline = $true)]
+        [ValidateNotNull()]
+        [IO.FileInfo]$file
+    )
+
+    begin {
+        $res = $null; $logvar = Get-Variable -Name ([FileMonitor]::LogvariableName) -Scope Global;
+    }
+    process {
+        $fileName = Split-Path -Path $File.FullName -Leaf;
+        $res = $false; $_log_msg = @(); $processes = Get-Process -Name "nvim*", "vim*" -ErrorAction SilentlyContinue
+        foreach ($process in $processes) {
+            if ($process.CommandLine -like "*$fileName*") {
+                $_log_msg = "[{0}] The file '{1}' is open in {2} (PID: {3})" -f [DateTime]::Now.ToString(), $fileName, $process.ProcessName, $process.Id
+                $res = $true; continue
+            }
+        }
+        $_log_msg = $_log_msg -join [Environment]::NewLine
+        if ([string]::IsNullOrEmpty($_log_msg)) {
+            $res = $false; $_log_msg = "[{0}] The file '{1}' is not open in vim" -f [DateTime]::Now.ToString(), $fileName
+        }
+        $logvar.Value += $_log_msg
+        Set-Variable -Name ([FileMonitor]::LogvariableName) -Scope Global -Value $logvar.Value | Out-Null
+    }
+    end {
+        return $res
+    }
+}
+
+function New-FileSystemWatcher {
+    [CmdletBinding()]
+    [Alias('MonitorFile')]
+    [OutputType([System.IO.FileSystemWatcher])]
+    param (
+        [Parameter(Mandatory = $true, Position = 0)]
+        [string]$File,
+
+        [Parameter(Mandatory = $false, Position = 1)]
+        [Alias('OnComplete')]
+        [scriptblock]$Action = { Write-Host "[+] File monitor Completed" -f Green }
+    )
+    begin {
+        $watcher = $null; [ValidateNotNull()][IO.FileInfo]$File = [IO.FileInfo](CryptoBase)::GetUnResolvedPath($File)
+        if (![IO.File]::Exists($File.FullName)) {
+            throw "The file does not exist"
+        }
+        [FileMonitor]::FileTowatch = $File
+        $watcher = [System.IO.FileSystemWatcher]::new();
+        $Watcher = New-Object IO.FileSystemWatcher ([IO.Path]::GetDirectoryName($File.FullName)), $File.Name -Property @{
+            IncludeSubdirectories = $false
+            EnableRaisingEvents   = $true
+        }
+        $watcher.Filter = $File.Name
+        $watcher.NotifyFilter = [System.IO.NotifyFilters]::LastWrite;
+        $onChange = Register-ObjectEvent $Watcher Changed -Action {
+            [FileMonitor]::FileLocked = $true
+        }
+        $OnClosed = Register-ObjectEvent $Watcher Disposed -Action {
+            [FileMonitor]::FileClosed = $true
+        }
+    }
+    process {
+        # [Console]::Write("Monitoring changes to $File"); [Console]::WriteLine("Press 'crl^q' to stop")
+        do {
+            try {
+                [FileMonitor]::FileLocked = [FileMonitor]::IsFileLocked($File.FullName)
+            } catch [System.IO.IOException] {
+                [FileMonitor]::FileLocked = $(if ($_.Exception.Message.Contains('is being used by another process')) {
+                        $true
+                    } else {
+                        throw 'An error occured while checking the file'
+                    }
+                )
+            } finally {
+                [System.Threading.Thread]::Sleep(100)
+            }
+        } until ([FileMonitor]::FileClosed -and ![FileMonitor]::FileLocked -and !(Test-FileOpenInVim $File.FullName))
+    }
+    end {
+        Invoke-Command -ScriptBlock $Action
+        Unregister-Event -SubscriptionId $onChange.Id; $onChange.Dispose();
+        Unregister-Event -SubscriptionId $OnClosed.Id; $OnClosed.Dispose(); $Watcher.Dispose();
+        return $watcher
+    }
+}
+
+function Get-FMLogvariableName () {
+    return [FileMonitor]::LogvariableName
+}
+function Get-FileMonitorLog {
+    [CmdletBinding()]
+    [OutputType([string])]
+    param (
+        [Parameter(Mandatory = $false, Position = 0)]
+        [Alias('LvrName')]
+        [string]$LogvariableName = [FileMonitor]::LogvariableName
+    )
+
+    begin {
+        $summ = '$null'
+    }
+
+    process {
         if ([string]::IsNullOrWhiteSpace($LogvariableName)) { throw "InvalidArgument : LogvariableName" }
         $l = Get-Variable -Name $LogvariableName -Scope Global -ValueOnly;
         $summ = ''; $rgx = "\[.*\] The file '.*' is open in nvim \(PID: \d+\)"
@@ -95,46 +174,27 @@
             $summ += [string]::Join("`n", $s.Split("`n").ForEach({ if ($_ -like "......*") { '⋮' } else { $_ } })).Trim()
             $summ += "`n"
         }
+    }
+
+    end {
         return $summ.Trim()
     }
-    static [bool] IsFileOpenInVim([IO.FileInfo]$file) {
-        $res = $null; $logvar = Get-Variable -Name ([FileMonitor]::LogvariableName) -Scope Global;
-        $fileName = Split-Path -Path $File.FullName -Leaf;
-        $res = $false; $_log_msg = @(); $processes = Get-Process -Name "nvim*", "vim*" -ErrorAction SilentlyContinue
-        foreach ($process in $processes) {
-            if ($process.CommandLine -like "*$fileName*") {
-                $_log_msg = "[{0}] The file '{1}' is open in {2} (PID: {3})" -f [DateTime]::Now.ToString(), $fileName, $process.ProcessName, $process.Id
-                $res = $true; continue
-            }
-        }
-        $_log_msg = $_log_msg -join [Environment]::NewLine
-        if ([string]::IsNullOrEmpty($_log_msg)) {
-            $res = $false; $_log_msg = "[{0}] The file '{1}' is not open in vim" -f [DateTime]::Now.ToString(), $fileName
-        }
-        $logvar.Value += $_log_msg
-        Set-Variable -Name ([FileMonitor]::LogvariableName) -Scope Global -Value $logvar.Value | Out-Null
-        return $res
-    }
-    static [bool] IsFileLocked([string]$filePath) {
-        $res = $true; $logvar = Get-Variable -Name ([FileMonitor]::LogvariableName) -Scope Global; $filePath = Resolve-Path -Path $filePath -ErrorAction SilentlyContinue
-        try {
-            # (lsof -t "$filePath" | wc -w) -gt 0
-            [System.IO.FileStream]$stream = [IO.File]::Open($filePath, [IO.FileMode]::Open, [IO.FileAccess]::ReadWrite, [IO.FileShare]::None)
-            if ($stream) { $stream.Close(); $stream.Dispose() }
-            $res = $false
-        } finally {
-            if ($res) { $logvar.Value += "[$([DateTime]::Now.ToString())] File is already locked by another process." }
-            Set-Variable -Name ([FileMonitor]::LogvariableName) -Scope Global -Value $logvar.Value | Out-Null
-        }
-        return $res
-    }
 }
-
-function FileMonitor {
+function Save-InputKeys {
+    # .NOTES
+    # Please, this is not a keylogger & Its not to be used for malicious purposes.
     [CmdletBinding()]
-    param ()
+    [OutputType([void])]
+    param (
+        [Parameter(Mandatory = $true, Position = 0, ValueFromPipeline = $true)]
+        [System.ConsoleKeyInfo[]]$Keys
+    )
+
     end {
-        return [FileMonitor]::New()
+        $Keys.ForEach({
+                [FileMonitor]::Keys += $_
+            }
+        )
     }
 }
 

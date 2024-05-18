@@ -270,7 +270,8 @@ class ArgonCage {
         if (![console]::KeyAvailable) { [System.Console]::TreatControlCAsInput = $true }
         $key = [ConsoleKeyInfo]::new(' ', [System.ConsoleKey]::None, $false, $false, $false)
         Write-Host "Press a key :)" -f Green
-        (FileMonitor)::Keys += $key = [System.Console]::ReadKey($true)
+        $key = [System.Console]::ReadKey($true); $key | Save-InputKeys
+        # $IsCTRLQ = ($key.modifiers -band [consolemodifiers]::Control) -and ($key.key -eq 'q')
         Write-Host $("Pressed {0}{1}" -f $(if ($key.Modifiers -ne 'None') { $key.Modifiers.ToString() + '^' }), $key.Key) -f Green
         [System.Console]::TreatControlCAsInput = $originalTreatControlCAsInput
         return $key
@@ -602,7 +603,7 @@ class ArgonCage {
             $process.StartInfo.FileName = 'nvim'
             $process.StartInfo.Arguments = $outFile.FullName
             $process.StartInfo.WindowStyle = [System.Diagnostics.ProcessWindowStyle]::Maximized
-            $process.Start(); $fswatcher = (FileMonitor)::MonitorFile($outFile.FullName, [scriptblock]::Create("Stop-Process -Id $($process.Id) -Force"));
+            $process.Start(); $fswatcher = New-FileSystemWatcher -File $outFile.FullName -OnComplete ([scriptblock]::Create("Stop-Process -Id $($process.Id) -Force"));
             if ($null -eq $fswatcher) { Write-Warning "Failed to start FileMonitor"; Write-Host "Waiting nvim process to exit..." $process.WaitForExit() }
             $private:secrets = [IO.FILE]::ReadAllText($outFile.FullName) | ConvertFrom-Json
         } finally {
@@ -620,7 +621,7 @@ class ArgonCage {
                 $process.Dispose()
             }
             Remove-Item $outFile.FullName -Force
-            if ([ArgonCage]::UseVerbose) { "[+] FileMonitor Log saved in variable: `$$((FileMonitor)::LogvariableName)" | Write-Host -f Green }
+            if ([ArgonCage]::UseVerbose) { "[+] FileMonitor Log saved in variable: `$$(Get-FMLogvariableName)" | Write-Host -f Green }
             if ($null -ne $secrets) { $this.UpdateSecrets($secrets, $Path) }
             if ([ArgonCage]::UseVerbosee) { "[+] Edit secrets completed." | Write-Host -f Magenta }
         }
@@ -686,9 +687,6 @@ class ArgonCage {
     [version] SetVersion() {
         $this.version = [version]::New($script:localizedData.ModuleVersion)
         return $this.version
-    }
-    static [bool] IsCTRLQ([System.ConsoleKeyInfo]$key) {
-        return ($key.modifiers -band [consolemodifiers]::Control) -and ($key.key -eq 'q')
     }
 }
 

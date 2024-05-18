@@ -134,7 +134,7 @@
         $OutFile = [IO.FileInfo][IO.Path]::GetTempFileName()
         $UseVerbose = [bool]$((Get-Variable verbosePreference -ValueOnly) -eq "continue")
         try {
-            (NetworkManager)::BlockAllOutbound()
+            Block-AllOutboundConnections
             if ($UseVerbose) { "[+] Edit Config started .." | Write-Host -f Magenta }
             $parsed_content = [RecordMap]::Read($FilePath, $session);
             [ValidateNotNullOrEmpty()][hashtable[]]$parsed_content = $parsed_content
@@ -148,7 +148,7 @@
             if ($null -eq $fswatcher) { Write-Warning "Failed to start FileMonitor"; Write-Host "Waiting nvim process to exit..." $process.WaitForExit() }
             $private:config_ob = [IO.FILE]::ReadAllText($outFile.FullName) | ConvertFrom-Json
         } finally {
-            (NetworkManager)::UnblockAllOutbound()
+            Unblock-AllOutboundConnections
             if ($fswatcher) { $fswatcher.Dispose() }
             if ($process) {
                 "[+] Neovim process {0} successfully" -f $(if (!$process.HasExited) {

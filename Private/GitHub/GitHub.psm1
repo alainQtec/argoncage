@@ -8,7 +8,7 @@ class GitHub {
     static [string] $UserName
     static hidden [bool] $IsInteractive = $false
     static hidden [EncryptionScope] $EncryptionScope = "Machine"
-    static hidden [string] $TokenFile = [GitHub]::GetTokenFile()
+    static hidden [string] $TokenFile = (Get-GithubTokenFile)
 
     GitHub() {}
     static [PSObject] createSession() {
@@ -16,7 +16,7 @@ class GitHub {
     }
     static [PSObject] createSession([string]$UserName) {
         [GitHub]::SetToken()
-        return [GitHub]::createSession($UserName, [GitHub]::GetToken())
+        return [GitHub]::createSession($UserName, (Get-GithubToken))
     }
     static [Psobject] createSession([string]$GitHubUserName, [securestring]$clientSecret) {
         [ValidateNotNullOrEmpty()][string]$GitHubUserName = $GitHubUserName
@@ -35,71 +35,13 @@ class GitHub {
         if (![IO.File]::Exists([GitHub]::TokenFile)) { New-Item -Type File -Path ([GitHub]::TokenFile) -Force | Out-Null }
         [IO.File]::WriteAllText([GitHub]::TokenFile, [convert]::ToBase64String((AesGCM)::Encrypt([system.Text.Encoding]::UTF8.GetBytes($token), $password)), [System.Text.Encoding]::UTF8);
     }
-    static [securestring] GetToken() {
-        $sectoken = $null; $session_pass = (xconvert)::ToSecurestring('123');
-        try {
-            if ([GitHub]::IsInteractive) {
-                if ([string]::IsNullOrWhiteSpace((Get-Content ([GitHub]::TokenFile) -ErrorAction Ignore))) {
-                    Write-Host "[GitHub] You'll need to set your api token first. This is a One-Time Process :)" -f Green
-                    [GitHub]::SetToken()
-                    Write-Host "[GitHub] Good, now let's use the api token :)" -f DarkGreen
-                } elseif ([GitHub]::ValidateBase64String([IO.File]::ReadAllText([GitHub]::TokenFile))) {
-                    Write-Host "[GitHub] Encrypted token found in file: $([GitHub]::TokenFile)" -f DarkGreen
-                } else {
-                    throw [System.Exception]::New("Unable to read token file!")
-                }
-                $session_pass = Read-Host -Prompt "[GitHub] Input password to use your token" -AsSecureString
-            } else {
-                #Fix: Temporary Workaround: Thisz a pat from one of my GitHub a/cs.It Can only read/write gists. Will expire on 1/1/2025. DoNot Abuse this or I'll take it down!!
-                $et = "+yDHse2ViCRxp7dBqhOa6Lju6Ww67ldUU2OaxG8w8aKqLsCmvsQB92Kv5YmYD7RFklr7Bc1dTeQlji38W3ha6RF9PneH1+7xd/8IFCkknVB6POZZANiSiaflmzq1dWxMIUzI6dzDBwNi6Xi0MSsRr6kjI+dqcQ5wZA=="
-                [GitHub]::SetToken([system.Text.Encoding]::UTF8.GetString((AesGCM)::Decrypt([convert]::FromBase64String($et), $session_pass)), $session_pass)
-            }
-            $sectoken = (xconvert)::ToSecurestring([system.Text.Encoding]::UTF8.GetString(
-                    (AesGCM)::Decrypt([Convert]::FromBase64String([IO.File]::ReadAllText([GitHub]::GetTokenFile())), $session_pass)
-                )
-            )
-        } catch {
-            throw $_
-        }
-        return $sectoken
-    }
     static [PsObject] GetUserInfo([string]$UserName) {
-        Push-Stack "GitHub"; if ([string]::IsNullOrWhiteSpace([GitHub]::userName)) { [GitHub]::createSession() }
+        Push-Stack ([GitHub]); if ([string]::IsNullOrWhiteSpace([GitHub]::userName)) { [GitHub]::createSession() }
         $response = Invoke-RestMethod -Uri "https://api.github.com/user/$UserName" -WebSession ([GitHub]::webSession) -Method Get -Verbose:$false
         return $response
     }
-    static [PsObject] GetGist([uri]$Uri) {
-        $l = [GistFile]::Create($Uri)
-        return [GitHub]::GetGist($l.Owner, $l.Id)
-    }
-    static [PsObject] GetGist([string]$UserName, [string]$GistId) {
-        Push-Stack "GitHub"; $t = [GitHub]::GetToken()
-        if ($null -eq ([GitHub]::webSession)) {
-            [GitHub]::webSession = $(if ($null -eq $t) {
-                    [GitHub]::createSession($UserName)
-                } else {
-                    [GitHub]::createSession($UserName, $t)
-                }
-            )
-        }
-        if (!$(Retry-Command -s { [GitHub]::IsConnected() } -m "GitHub.IsConnected()").Output) {
-            throw [System.Net.NetworkInformation.PingException]::new("PingException, PLease check your connection!");
-        }
-        if ([string]::IsNullOrWhiteSpace($GistId) -or $GistId -eq '*') {
-            return Get-Gists -UserName $UserName -SecureToken $t
-        }
-        $FetchGistId = [scriptblock]::Create({
-                param (
-                    [Parameter(Mandatory = $true)]
-                    [ValidateNotNullOrEmpty()][string]$Id
-                )
-                return Invoke-RestMethod -Uri "https://api.github.com/gists/$Id" -WebSession ([GitHub]::webSession) -Method Get -Verbose:$false
-            }
-        )
-        return $(Retry-Command -s $FetchGistId -args @($GistId) -m "GitHub.FetchGist()  ").Output
-    }
     Static [string] GetGistContent([string]$FileName, [uri]$GistUri) {
-        return [GitHub]::GetGist($GistUri).files.$FileName.content
+        return (Get-GistInfo $GistUri).files.$FileName.content
     }
     static [PsObject] CreateGist([string]$description, [array]$files) {
         $url = 'https://api.github.com/gists'
@@ -126,12 +68,6 @@ class GitHub {
     }
     static [PsObject] UpdateGist([GistFile]$gist, [string]$NewContent) {
         return ''
-    }
-    static [string] GetTokenFile() {
-        if (![IO.File]::Exists([GitHub]::TokenFile)) {
-            [GitHub]::TokenFile = [IO.Path]::Combine([GitHub]::Get_dataPath('Github', 'clicache'), "token");
-        }
-        return [GitHub]::TokenFile
     }
     static [PsObject] GetUserRepositories() {
         if ($null -eq [GitHub]::webSession) { [Github]::createSession() }
@@ -198,19 +134,9 @@ class GitHub {
         return $(try { [void][Convert]::FromBase64String($base64); $true } catch { $false })
     }
     static [bool] IsConnected() {
-        if (![bool]("System.Net.NetworkInformation.Ping" -as 'type')) { Add-Type -AssemblyName System.Net.NetworkInformation };
-        $cs = $null; Write-Host "[Github] Testing Connection ... " -f Blue -NoNewline
-        try {
-            [System.Net.NetworkInformation.PingReply]$PingReply = [System.Net.NetworkInformation.Ping]::new().Send("github.com");
-            $cs = $PingReply.Status -eq [System.Net.NetworkInformation.IPStatus]::Success
-        } catch [System.Net.Sockets.SocketException], [System.Net.NetworkInformation.PingException] {
-            $cs = $false
-        } catch {
-            $cs = $false;
-            Write-Error $_
-        }
-        # [TaskMan]::WriteLog($cs)
-        return $cs
+        $cs = $null;
+        $cs = Retry-Command -s { (CheckConnection -host "github.com" -msg "[Github] Testing Connection").Output }
+        return $cs.Output
     }
 }
 class GistFile {
@@ -247,7 +173,7 @@ class GistFile {
             }
         }
         if ($null -eq ([GistFile]::ChildItems) -and ![string]::IsNullOrWhiteSpace($this.Id)) {
-            [GistFile]::ChildItems = [GitHub]::GetGist($this.Owner, $this.Id).files
+            [GistFile]::ChildItems = (Get-GistInfo -UserName $this.Owner -Id $this.Id).files
         }
         if ($null -ne [GistFile]::ChildItems) {
             $_files = $null; [string[]]$filenames = [GistFile]::ChildItems | Get-Member -MemberType NoteProperty | Select-Object -ExpandProperty Name
@@ -273,45 +199,6 @@ class GistFile {
                 }
             }
         }
-    }
-    static [GistFile] Create([uri]$GistUri) {
-        $res = $null; $ogs = $GistUri.OriginalString
-        $IsRawUri = $ogs.Contains('/raw/') -and $ogs.Contains('gist.githubusercontent.com')
-        $seg = $GistUri.Segments
-        $res = $(if ($IsRawUri) {
-                $_name = $seg[-1]
-                $rtri = 'https://gist.github.com/{0}{1}' -f $seg[1], $seg[2]
-                $rtri = $rtri.Remove($rtri.Length - 1)
-                $info = [GitHub]::GetGist([uri]::new($rtri))
-                $file = $info.files."$_name"
-                [PsCustomObject]@{
-                    language = $file.language
-                    IsPublic = $info.IsPublic
-                    raw_url  = $file.raw_url
-                    Owner    = $info.owner.login
-                    type     = $file.type
-                    filename = $_name
-                    size     = $file.size
-                    Id       = $seg[2].Replace('/', '')
-                }
-            } else {
-                # $info = [GitHub]::GetGist($GistUri)
-                [PsCustomObject]@{
-                    language = ''
-                    IsPublic = $null
-                    raw_url  = ''
-                    Owner    = $seg[1].Split('/')[0]
-                    type     = ''
-                    filename = ''
-                    size     = ''
-                    Id       = $seg[-1]
-                }
-            }
-        )
-        if (![string]::IsNullOrWhiteSpace($res.Owner)) {
-            [GistFile]::UserName = $res.Owner
-        }
-        return [GistFile]::New($res)
     }
     [string] ShowFileInfo() {
         return "File: $($this.Name)"
@@ -382,6 +269,116 @@ function GitHub {
     }
 }
 
+function Set-GitHubUsername ($Name) {
+    [ValidateNotNullOrWhiteSpace()][string]$Name = $Name
+    [GitHub]::UserName = $Name
+}
+
+function Get-GithubToken {
+    [CmdletBinding()]
+    [OutputType([SecureString])]
+    param ()
+
+    begin {
+        $sectoken = $null; $session_pass = (xconvert)::ToSecurestring('123');
+        # todo: session pass should not be visible in code.
+        # Fix: should be unique on each box. ex: (xconvert)::ToSecurestring((CryptoBase)::GetUniqueMachineId())
+    }
+    process {
+        try {
+            if ([GitHub]::IsInteractive) {
+                if ([string]::IsNullOrWhiteSpace((Get-Content ([GitHub]::TokenFile) -ErrorAction Ignore))) {
+                    Write-Host "[GitHub] You'll need to set your api token first. This is a One-Time Process :)" -f Green
+                    [GitHub]::SetToken()
+                    Write-Host "[GitHub] Good, now let's use the api token :)" -f DarkGreen
+                } elseif ([GitHub]::ValidateBase64String([IO.File]::ReadAllText([GitHub]::TokenFile))) {
+                    Write-Host "[GitHub] Encrypted token found in file: $([GitHub]::TokenFile)" -f DarkGreen
+                } else {
+                    throw [System.Exception]::New("Unable to read token file!")
+                }
+                $session_pass = (CryptoBase)::GetPassword("[GitHub] Input password to use your token")
+            } else {
+                #Fix: Temporary Workaround: Thisz a pat from one of my GitHub a/cs.It Can only read/write gists. Will expire on 1/1/2025. DoNot Abuse this or I'll take it down!!
+                $et = "+yDHse2ViCRxp7dBqhOa6Lju6Ww67ldUU2OaxG8w8aKqLsCmvsQB92Kv5YmYD7RFklr7Bc1dTeQlji38W3ha6RF9PneH1+7xd/8IFCkknVB6POZZANiSiaflmzq1dWxMIUzI6dzDBwNi6Xi0MSsRr6kjI+dqcQ5wZA=="
+                [GitHub]::SetToken([system.Text.Encoding]::UTF8.GetString((AesGCM)::Decrypt([convert]::FromBase64String($et), $session_pass)), $session_pass)
+            }
+            $sectoken = (xconvert)::ToSecurestring([system.Text.Encoding]::UTF8.GetString(
+                    (AesGCM)::Decrypt([Convert]::FromBase64String([IO.File]::ReadAllText([GitHub]::GetTokenFile())), $session_pass)
+                )
+            )
+        } catch {
+            throw $_
+        }
+    }
+
+    end {
+        return $sectoken
+    }
+}
+
+function Get-GithubTokenFile() {
+    if (![IO.File]::Exists([GitHub]::TokenFile)) {
+        [GitHub]::TokenFile = [IO.Path]::Combine([GitHub]::Get_dataPath('Github', 'clicache'), "token");
+    }
+    return [GitHub]::TokenFile
+}
+function Get-GistInfo {
+    # .SYNOPSIS
+    #     Fetch all info about a gist
+    [CmdletBinding(DefaultParameterSetName = 'ByUri')]
+    [OutputType([PsObject])]
+    param (
+        [Parameter(Mandatory = $true, Position = 0, ParameterSetName = 'ByUri', ValueFromPipeline = $true)]
+        [uri]$uri,
+
+        [Parameter(Mandatory = $true, Position = 0, ParameterSetName = 'ById')]
+        [Alias('User')]
+        [string]$UserName,
+
+        [Parameter(Mandatory = $true, Position = 1, ParameterSetName = 'ById')]
+        [Alias('Id')]
+        [string]$GistId
+    )
+
+    begin {
+        $r = $null
+    }
+
+    process {
+        if ($PSCmdlet.ParameterSetName -eq 'ById') {
+            Push-Stack ([GitHub]); $t = Get-GithubToken
+            if ($null -eq ([GitHub]::webSession)) {
+                [GitHub]::webSession = $(if ($null -eq $t) {
+                        [GitHub]::createSession($UserName)
+                    } else {
+                        [GitHub]::createSession($UserName, $t)
+                    }
+                )
+            }
+            if (!$(Retry-Command -s { [GitHub]::IsConnected() } -m "GitHub.IsConnected()").Output) {
+                throw [System.Net.NetworkInformation.PingException]::new("PingException, PLease check your connection!");
+            }
+            if ([string]::IsNullOrWhiteSpace($GistId) -or $GistId -eq '*') {
+                return Get-Gists -UserName $UserName -SecureToken $t
+            }
+            $FetchGistId = [scriptblock]::Create({
+                    param (
+                        [Parameter(Mandatory = $true)]
+                        [ValidateNotNullOrEmpty()][string]$Id
+                    )
+                    return Invoke-RestMethod -Uri "https://api.github.com/gists/$Id" -WebSession ([GitHub]::webSession) -Method Get -Verbose:$false
+                }
+            )
+            $r = $(Retry-Command -s $FetchGistId -args @($GistId) -m "GitHub.FetchGist()  ").Output
+        } else {
+            $l = $Uri | New-GistFile
+            $r = Get-GistInfo -UserName $l.Owner -Id $l.Id
+        }
+    }
+    end {
+        return $r
+    }
+}
 function New-GistFile {
     [CmdletBinding()]
     [OutputType([GistFile])]
@@ -391,8 +388,48 @@ function New-GistFile {
         [Alias('Uri')]
         [uri]$GistUri
     )
+    begin {
+        $res = $null; $ogs = $GistUri.OriginalString
+        $IsRawUri = $ogs.Contains('/raw/') -and $ogs.Contains('gist.githubusercontent.com')
+    }
+    process {
+        $seg = $GistUri.Segments
+        $res = $(if ($IsRawUri) {
+                $_name = $seg[-1]
+                $rtri = 'https://gist.github.com/{0}{1}' -f $seg[1], $seg[2]
+                $rtri = $rtri.Remove($rtri.Length - 1)
+                $info = [uri]::new($rtri) | Get-GistInfo
+                $file = $info.files."$_name"
+                [PsCustomObject]@{
+                    language = $file.language
+                    IsPublic = $info.IsPublic
+                    raw_url  = $file.raw_url
+                    Owner    = $info.owner.login
+                    type     = $file.type
+                    filename = $_name
+                    size     = $file.size
+                    Id       = $seg[2].Replace('/', '')
+                }
+            } else {
+                # $info = $GistUri | Get-GistInfo
+                [PsCustomObject]@{
+                    language = ''
+                    IsPublic = $null
+                    raw_url  = ''
+                    Owner    = $seg[1].Split('/')[0]
+                    type     = ''
+                    filename = ''
+                    size     = ''
+                    Id       = $seg[-1]
+                }
+            }
+        )
+        if (![string]::IsNullOrWhiteSpace($res.Owner)) {
+            [GistFile]::UserName = $res.Owner
+        }
+    }
     end {
-        return [GistFile]::Create($GistUri)
+        return [GistFile]::New($res)
     }
 }
 

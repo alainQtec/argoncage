@@ -114,7 +114,7 @@ class ArgonCage {
         $og_EncryptionScope = [ArgonCage]::EncryptionScope;
         try {
             $this::EncryptionScope = [EncryptionScope]::Machine
-            Push-Stack -class "ArgonCage"; [void]$this.Config.Edit()
+            Push-Stack -class "ArgonCage"; [void]$this.Config.Edit([ArgonCage]::Tmp)
         } finally {
             $this::EncryptionScope = $og_EncryptionScope;
         }
@@ -129,24 +129,24 @@ class ArgonCage {
             # }
             # Imports remote configs into current ones, then uploads the updated version to github gist
             # Compare REMOTE's lastWritetime with [IO.File]::GetLastWriteTime($this.File)
-            $this.Config.Import($this.Config.Remote)
-            $this.Config.Save();
+            $this.Config.Import($this.Config.Remote, [ArgonCage]::Tmp)
+            $this.Config.Save([ArgonCage]::Tmp);
         } finally {
             $this::EncryptionScope = $og_EncryptionScope;
         }
         if ($?) { Write-Host "[ArgonCage] Config Syncing" -NoNewline -f Blue; Write-Host " Completed." -f Green }
     }
     [void] ImportConfigs() {
-        [void]$this.Config.Import($this.Config.File)
+        [void]$this.Config.Import($this.Config.File, [ArgonCage]::Tmp)
     }
     [void] ImportConfigs([uri]$raw_uri) {
         # $e = "GIST_CUD = {0}" -f ((AesGCM)::Decrypt("AfXkvWiCce7hAIvWyGeU4TNQyD6XLV8kFYyk87X4zqqhyzb7DNuWcj2lHb+2mRFdN/1aGUHEv601M56Iwo/SKhkWLus=", $(Read-Host -Prompt "pass" -AsSecureString), 1)); $e >> ./.env
-        $this.Config.Import($raw_uri)
+        $this.Config.Import($raw_uri, [ArgonCage]::Tmp)
     }
     [bool] DeleteConfigs() {
         return [bool]$(
             try {
-                $configFiles = ((GitHub)::GetTokenFile() | Split-Path | Get-ChildItem -File -Recurse).FullName, $this.Config.File, ([ArgonCage]::DataPath | Get-ChildItem -File -Recurse).FullName
+                $configFiles = (Get-GithubTokenFile | Split-Path | Get-ChildItem -File -Recurse).FullName, $this.Config.File, ([ArgonCage]::DataPath | Get-ChildItem -File -Recurse).FullName
                 $configFiles.Foreach({ Remove-Item -Path $_ -Force -Verbose });
                 $true
             } catch { $false }
@@ -166,7 +166,7 @@ class ArgonCage {
         if ([string]::IsNullOrWhiteSpace([IO.File]::ReadAllText($this.Config.File).Trim())) {
             $og_EncryptionScope = [ArgonCage]::EncryptionScope; try {
                 $this::EncryptionScope = [EncryptionScope]::Machine
-                $this.Config.Save();
+                $this.Config.Save([ArgonCage]::Tmp);
             } finally {
                 $this::EncryptionScope = $og_EncryptionScope;
             }
@@ -324,9 +324,9 @@ class ArgonCage {
         }
         try {
             Write-Host "     Set Remote uri for config ..." -f Blue; Push-Stack -class "ArgonCage"
-            $l = [uri]::New($default_Config.GistUri) | New-GistFile; (GitHub)::UserName = $l.UserName
+            $l = [uri]::New($default_Config.GistUri) | New-GistFile; Set-GitHubUsername $l.UserName
             if ($?) {
-                $default_Config.Remote = [uri]::new((GitHub)::GetGist($l.Owner, $l.Id).files."$Config_FileName".raw_url)
+                $default_Config.Remote = [uri]::new((Get-GistInfo -User $l.Owner -Id $l.Id).files."$Config_FileName".raw_url)
             }
             Write-Host "     Set Remote uri " -f Blue -NoNewline; Write-Host "Completed." -f Green
         } catch {
@@ -594,7 +594,7 @@ class ArgonCage {
     [void] EditSecrets([String]$Path) {
         $private:secrets = $null; $fswatcher = $null; $process = $null; $outFile = [IO.FileInfo][IO.Path]::GetTempFileName()
         try {
-            Push-Stack "vault"; (NetworkManager)::BlockAllOutbound()
+            Push-Stack ([ArgonCage]); (NetworkManager)::BlockAllOutbound()
             if ([ArgonCage]::UseVerbose) { "[+] Edit secrets started .." | Write-Host -f Magenta }
             $this.GetSecrets($Path) | ConvertTo-Json | Out-File $OutFile.FullName -Encoding utf8BOM
             Set-Variable -Name OutFile -Value $(Rename-Item $outFile.FullName -NewName ($outFile.BaseName + '.json') -PassThru)
@@ -632,7 +632,7 @@ class ArgonCage {
     static [IO.FileInfo] FetchSecrets([uri]$remote, [string]$OutFile) {
         if ([string]::IsNullOrWhiteSpace($remote.AbsoluteUri)) { throw [System.ArgumentException]::new("Invalid Argument: remote") }
         if ([ArgonCage]::UseVerbose) { "[+] Fetching secrets from gist ..." | Write-Host -f Magenta }
-        Push-Stack "vault"; (NetworkManager)::DownloadOptions.ShowProgress = $true
+        Push-Stack ([ArgonCage]); (NetworkManager)::DownloadOptions.ShowProgress = $true
         $og_PbLength = (NetworkManager)::DownloadOptions.ProgressBarLength
         $og_pbMsg = (NetworkManager)::DownloadOptions.ProgressMessage
         $Progress_Msg = "[+] Downloading secrets to {0}" -f $OutFile
@@ -664,7 +664,7 @@ class ArgonCage {
             throw [System.ArgumentNullException]::new("remote", "Failed to get remote uri. Argument IsNullorEmpty.")
         }
         try {
-            $rem_gist = (GitHub)::GetGist($remote)
+            $rem_gist = $remote | Get-GistInfo
         } catch {
             Write-Host "[-] Error: $_" -f Red
         } finally {
@@ -679,7 +679,7 @@ class ArgonCage {
         $this.UpdateSecrets($InputObject, (CryptoBase)::GetUnResolvedPath($outFile), $password, '')
     }
     [void] UpdateSecrets([psObject]$InputObject, [string]$outFile, [securestring]$Password, [string]$Compression) {
-        Push-Stack "vault"; if ([ArgonCage]::UseVerbose) { "[+] Updating secrets .." | Write-Host -f Green }
+        Push-Stack ([ArgonCage]); if ([ArgonCage]::UseVerbose) { "[+] Updating secrets .." | Write-Host -f Green }
         if (![string]::IsNullOrWhiteSpace($Compression)) { (CryptoBase)::ValidateCompression($Compression) }
         (Base85)::Encode((AesGCM)::Encrypt([System.Text.Encoding]::UTF8.GetBytes([string]($InputObject | ConvertTo-Csv)), $Password, (AesGCM)::GetDerivedBytes($Password), $null, $Compression, 1)) | Out-File $outFile -Encoding utf8BOM
     }

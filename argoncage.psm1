@@ -588,7 +588,7 @@ class ArgonCage {
     [void] EditSecrets([String]$Path) {
         $private:secrets = $null; $fswatcher = $null; $process = $null; $outFile = [IO.FileInfo][IO.Path]::GetTempFileName()
         try {
-            Push-Stack ([ArgonCage]); Block-AllOutboundConnections
+            Push-Stack 'ArgonCage'; Block-AllOutboundConnections
             if ([ArgonCage]::UseVerbose) { "[+] Edit secrets started .." | Write-Host -f Magenta }
             $this.GetSecrets($Path) | ConvertTo-Json | Out-File $OutFile.FullName -Encoding utf8BOM
             Set-Variable -Name OutFile -Value $(Rename-Item $outFile.FullName -NewName ($outFile.BaseName + '.json') -PassThru)
@@ -626,7 +626,7 @@ class ArgonCage {
     static [IO.FileInfo] FetchSecrets([uri]$remote, [string]$OutFile) {
         if ([string]::IsNullOrWhiteSpace($remote.AbsoluteUri)) { throw [System.ArgumentException]::new("Invalid Argument: remote") }
         if ([ArgonCage]::UseVerbose) { "[+] Fetching secrets from gist ..." | Write-Host -f Magenta }
-        Push-Stack ([ArgonCage]); Set-DownloadOptions @{ShowProgress = $true }
+        Push-Stack 'ArgonCage'; Set-DownloadOptions @{ShowProgress = $true }
         $og_PbLength = Get-DownloadOption 'ProgressBarLength'
         $og_pbMsg = Get-DownloadOption 'ProgressMessage'
         $Progress_Msg = "[+] Downloading secrets to {0}" -f $OutFile
@@ -677,7 +677,7 @@ class ArgonCage {
         $this.UpdateSecrets($InputObject, (CryptoBase)::GetUnResolvedPath($outFile), $password, '')
     }
     [void] UpdateSecrets([psObject]$InputObject, [string]$outFile, [securestring]$Password, [string]$Compression) {
-        Push-Stack ([ArgonCage]); if ([ArgonCage]::UseVerbose) { "[+] Updating secrets .." | Write-Host -f Green }
+        Push-Stack 'ArgonCage'; if ([ArgonCage]::UseVerbose) { "[+] Updating secrets .." | Write-Host -f Green }
         if (![string]::IsNullOrWhiteSpace($Compression)) { (CryptoBase)::ValidateCompression($Compression) }
         (Base85)::Encode((AesGCM)::Encrypt([System.Text.Encoding]::UTF8.GetBytes([string]($InputObject | ConvertTo-Csv)), $Password, (AesGCM)::GetDerivedBytes($Password), $null, $Compression, 1)) | Out-File $outFile -Encoding utf8BOM
     }

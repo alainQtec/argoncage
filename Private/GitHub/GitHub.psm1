@@ -36,7 +36,7 @@ class GitHub {
         [IO.File]::WriteAllText([GitHub]::TokenFile, [convert]::ToBase64String((AesGCM)::Encrypt([system.Text.Encoding]::UTF8.GetBytes($token), $password)), [System.Text.Encoding]::UTF8);
     }
     static [PsObject] GetUserInfo([string]$UserName) {
-        Push-Stack ([GitHub]); if ([string]::IsNullOrWhiteSpace([GitHub]::userName)) { [GitHub]::createSession() }
+        Push-Stack 'GitHub'; if ([string]::IsNullOrWhiteSpace([GitHub]::userName)) { [GitHub]::createSession() }
         $response = Invoke-RestMethod -Uri "https://api.github.com/user/$UserName" -WebSession ([GitHub]::webSession) -Method Get -Verbose:$false
         return $response
     }
@@ -378,7 +378,8 @@ function Get-GistInfo {
 
     process {
         if ($PSCmdlet.ParameterSetName -eq 'ById') {
-            Push-Stack ([GitHub]); $t = Get-GithubAPIToken
+            Push-Stack 'GitHub';
+            $t = Get-GithubAPIToken;
             if ($null -eq ([GitHub]::webSession)) {
                 [GitHub]::webSession = $(if ($null -eq $t) {
                         [GitHub]::createSession($UserName)

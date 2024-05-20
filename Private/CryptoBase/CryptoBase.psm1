@@ -82,7 +82,7 @@ class CryptoBase {
         [ValidateNotNullOrEmpty()][securestring]$password = $password
         $pswd = (xconvert)::ToSecurestring($(switch ([CryptoBase]::EncryptionScope.ToString()) {
                     "Machine" {
-                        [System.Text.Encoding]::UTF8.GetBytes([CryptoBase]::GetUniqueMachineId())
+                        [System.Text.Encoding]::UTF8.GetBytes((Get-UniqueMachineId))
                     }
                     Default {
                         [convert]::FromBase64String("hsKgmva9wZoDxLeREB1udw==")
@@ -90,7 +90,12 @@ class CryptoBase {
                 }
             )
         )
-        $s6lt = [System.Security.Cryptography.Rfc2898DeriveBytes]::new($password, [System.Text.Encoding]::UTF8.GetBytes((xconvert)::ToString($password))).GetBytes(16)
+        $s6lt = [System.Security.Cryptography.Rfc2898DeriveBytes]::new(
+            $password, $([System.Text.Encoding]::UTF8.GetBytes(
+                    ((xconvert)::ToString($password) + (Get-UniqueMachineId))
+                )
+            )
+        ).GetBytes(16)
         return [CryptoBase]::GetDerivedBytes($pswd, $s6lt, $Length)
     }
     static [byte[]] GetDerivedBytes([securestring]$password, [byte[]]$salt, [int]$Length) {
@@ -363,7 +368,7 @@ class CryptoBase {
     }
     static [securestring] GetPassword([string]$Prompt, [bool]$ThrowOnFailure) {
         if ([CryptoBase]::EncryptionScope.ToString() -eq "Machine") {
-            return (xconvert)::ToSecurestring([CryptoBase]::GetUniqueMachineId())
+            return (xconvert)::ToSecurestring((Get-UniqueMachineId))
         } else {
             $pswd = [SecureString]::new(); Push-Stack -class "ArgonCage"
             Set-Variable -Name pswd -Scope Local -Visibility Private -Option Private -Value $(Read-Host -Prompt "$(Show-Stack) $Prompt" -AsSecureString);
@@ -973,4 +978,11 @@ function HKDF2 {
     }
 }
 
+function Get-UniqueMachineId {
+    [CmdletBinding()]
+    param ()
+    process {
+        return [CryptoBase]::GetUniqueMachineId()
+    }
+}
 Export-ModuleMember -Function '*' -Variable '*' -Cmdlet '*' -Alias '*' -Verbose:($VerbosePreference -eq "Continue")

@@ -16,7 +16,7 @@ class GitHub {
     }
     static [PSObject] createSession([string]$UserName) {
         [GitHub]::SetToken()
-        return [GitHub]::createSession($UserName, (Get-GithubToken))
+        return [GitHub]::createSession($UserName, (Get-GithubAPIToken))
     }
     static [Psobject] createSession([string]$GitHubUserName, [securestring]$clientSecret) {
         [ValidateNotNullOrEmpty()][string]$GitHubUserName = $GitHubUserName
@@ -196,12 +196,117 @@ class Gist {
     }
 }
 
+class GistFile {
+    [string]$Name # with extention
+    [string]$language
+    [string]$type
+    [string]$Owner
+    [string]$raw_url
+    [bool]$IsPublic
+    [bool]$truncated
+    [string]$Id
+    [int]$size
+    [GistFile[]]$files
+    hidden [string]$content
+    static [string]$UserName
+    static [PsObject]$ChildItems
+    GistFile([string]$filename) {
+        $this.Name = $filename
+    }
+    GistFile([PsObject]$GistInfo) {
+        $this.language = $GistInfo.language
+        $this.IsPublic = $GistInfo.IsPublic
+        $this.raw_url = $GistInfo.raw_url
+        $this.type = $GistInfo.type
+        $this.Name = $GistInfo.filename
+        $this.size = $GistInfo.size
+        $this.Id = $GistInfo.Id
+        $this.Owner = $GistInfo.Owner
+        if ([string]::IsNullOrWhiteSpace($this.Owner)) {
+            if (![string]::IsNullOrWhiteSpace([GistFile]::UserName)) {
+                $this.Owner = [GistFile]::UserName
+            } else {
+                Write-Warning "Gist Owner was not set!"
+            }
+        }
+        if ($null -eq ([GistFile]::ChildItems) -and ![string]::IsNullOrWhiteSpace($this.Id)) {
+            [GistFile]::ChildItems = (Get-GistInfo -UserName $this.Owner -GistId $this.Id).files
+        }
+        if ($null -ne [GistFile]::ChildItems) {
+            $_files = $null; [string[]]$filenames = [GistFile]::ChildItems | Get-Member -MemberType NoteProperty | Select-Object -ExpandProperty Name
+            try {
+                $_files = [GistFile[]]$filenames.Foreach({
+                        $_Item = [GistFile]::ChildItems."$_"
+                        $_Gist = [GistFile]::new($_Item.filename)
+                        $_Gist.language = $_Item.language
+                        $_Gist.Ispublic = $this.IsPublic
+                        $_Gist.raw_url = $_Item.raw_url
+                        $_Gist.type = $_Item.type
+                        $_Gist.size = $_Item.size
+                        $_Gist.content = $_Item.content
+                        $_Gist.Owner = $this.Owner; $_Gist.Id = $this.Id
+                        $_Gist
+                    }
+                )
+            } finally {
+                [GistFile]::ChildItems = $null
+                $this.files = $_files
+                if ([string]::IsNullOrWhiteSpace($this.Name)) {
+                    $this.Name = $filenames[0]
+                }
+            }
+        }
+    }
+    static [GistFile] Create([uri]$GistUri) {
+        $res = $null; $ogs = $GistUri.OriginalString
+        $IsRawUri = $ogs.Contains('/raw/') -and $ogs.Contains('gist.githubusercontent.com')
+        $seg = $GistUri.Segments
+        $res = $(if ($IsRawUri) {
+                $_name = $seg[-1]
+                $rtri = 'https://gist.github.com/{0}{1}' -f $seg[1], $seg[2]
+                $rtri = $rtri.Remove($rtri.Length - 1)
+                $info = Get-GistInfo -uri ([uri]::new($rtri))
+                $file = $info.files."$_name"
+                [PsCustomObject]@{
+                    language = $file.language
+                    IsPublic = $info.IsPublic
+                    raw_url  = $file.raw_url
+                    Owner    = $info.owner.login
+                    type     = $file.type
+                    filename = $_name
+                    size     = $file.size
+                    Id       = $seg[2].Replace('/', '')
+                }
+            } else {
+                # $info = [GitHub]::GetGist($GistUri)
+                [PsCustomObject]@{
+                    language = ''
+                    IsPublic = $null
+                    raw_url  = ''
+                    Owner    = $seg[1].Split('/')[0]
+                    type     = ''
+                    filename = ''
+                    size     = ''
+                    Id       = $seg[-1]
+                }
+            }
+        )
+        if (![string]::IsNullOrWhiteSpace($res.Owner)) {
+            [GistFile]::UserName = $res.Owner
+        }
+        return [GistFile]::New($res)
+    }
+    [string] ShowFileInfo() {
+        return "File: $($this.Name)"
+    }
+}
+
 function Set-GitHubUsername ($Name) {
     [ValidateNotNullOrWhiteSpace()][string]$Name = $Name
     [GitHub]::UserName = $Name
 }
 
-function Get-GithubToken {
+function Get-GithubAPIToken {
     [CmdletBinding()]
     [OutputType([SecureString])]
     param ()
@@ -273,7 +378,7 @@ function Get-GistInfo {
 
     process {
         if ($PSCmdlet.ParameterSetName -eq 'ById') {
-            Push-Stack ([GitHub]); $t = Get-GithubToken
+            Push-Stack ([GitHub]); $t = Get-GithubAPIToken
             if ($null -eq ([GitHub]::webSession)) {
                 [GitHub]::webSession = $(if ($null -eq $t) {
                         [GitHub]::createSession($UserName)
@@ -282,7 +387,7 @@ function Get-GistInfo {
                     }
                 )
             }
-            if (!$(Retry-Command -s { [GitHub]::IsConnected() } -m "GitHub.IsConnected()").Output) {
+            if (!([GitHub]::IsConnected())) {
                 throw [System.Net.NetworkInformation.PingException]::new("PingException, PLease check your connection!");
             }
             if ([string]::IsNullOrWhiteSpace($GistId) -or $GistId -eq '*') {
@@ -301,86 +406,10 @@ function Get-GistInfo {
             $l = New-GistFile $Uri.AbsolutePath
             $r = Get-GistInfo -UserName $l.Owner -Id $l.Id
         }
-        $r = $r | Add-GistItems
+        $r = [GistFile]::New($r)
     }
     end {
         return $r
-    }
-}
-function Add-GistItems {
-    [CmdletBinding()]
-    [OutputType([PSCustomObject])]
-    param (
-        [Parameter(Mandatory = $true, ValueFromPipeline = $true)]
-        [ValidateNotNullOrEmpty()]
-        [pscustomobject]$GistInfo
-    )
-
-    process {
-        $GistInfo.PsObject.Properties.Add([psscriptproperty]::new('ChildItems', {
-                    class GistFile {
-                        [string]$Name # with extention
-                        [string]$language
-                        [string]$type
-                        [string]$Owner
-                        [string]$raw_url
-                        [bool]$IsPublic
-                        [bool]$truncated
-                        [string]$Id
-                        [int]$size
-                        [GistFile[]]$files
-                        hidden [string]$content
-                        static [string]$UserName
-                        static [PsObject]$ChildItems
-                        GistFile([string]$filename) {
-                            $this.Name = $filename
-                        }
-                        [string] ShowFileInfo() {
-                            return "File: $($this.Name)"
-                        }
-                    }
-                    $this | Add-Member -Name 'Name' -MemberType NoteProperty -Value $this.filename
-                    if ([string]::IsNullOrWhiteSpace($this.Owner)) {
-                        if (![string]::IsNullOrWhiteSpace([GistFile]::UserName)) {
-                            $this | Add-Member -Name 'Owner' -MemberType NoteProperty -Value ([GistFile]::UserName) -Force
-                        } else {
-                            Write-Warning "Gist Owner was not set!"
-                        }
-                    } else {
-                        [GistFile]::UserName = $this.Owner
-                    }
-                    if ($null -eq ([GistFile]::ChildItems) -and ![string]::IsNullOrWhiteSpace($this.Id)) {
-                        [GistFile]::ChildItems = (Get-GistInfo -UserName $this.Owner -Id $this.Id).files
-                    }
-                    $_files = $null; [string[]]$filenames = [GistFile]::ChildItems | Get-Member -MemberType NoteProperty | Select-Object -ExpandProperty Name
-                    try {
-                        $_files = [GistFile[]]$filenames.Foreach({
-                                $_Item = [GistFile]::ChildItems."$_"
-                                $_Gist = [GistFile]::new($_Item.filename)
-                                $_Gist.language = $_Item.language
-                                $_Gist.Ispublic = $this.IsPublic
-                                $_Gist.raw_url = $_Item.raw_url
-                                $_Gist.type = $_Item.type
-                                $_Gist.size = $_Item.size
-                                $_Gist.content = $_Item.content
-                                $_Gist.Owner = $this.Owner; $_Gist.Id = $this.Id
-                                $_Gist
-                            }
-                        )
-                    } finally {
-                        [GistFile]::ChildItems = $null
-                        $this | Add-Member -Name 'files' -MemberType NoteProperty -Value $_files -Force
-                        if ([string]::IsNullOrWhiteSpace($this.Name)) {
-                            $this.Name = $filenames[0]
-                        }
-                    }
-                    return $this.files
-                }
-            )
-        )
-    }
-    end {
-        return $GistInfo
     }
 }
 function New-GistFile {
@@ -426,8 +455,11 @@ function New-GistFile {
                     Id       = $seg[-1]
                 }
             }
-        ) | Add-GistItems
-        $out = $res
+        )
+        if (![string]::IsNullOrWhiteSpace($res.Owner)) {
+            [GistFile]::UserName = $res.Owner
+        }
+        $out = [GistFile]::New($res)
         # $JobId = $(Start-Job -ScriptBlock {
         #         param ($GistInfo)
         #         return $GistInfo.ChildItems

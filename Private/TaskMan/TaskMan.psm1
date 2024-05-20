@@ -75,7 +75,7 @@ class TaskMan {
     }
     static [PSCustomObject] RetryCommand([ScriptBlock]$ScriptBlock, [Object[]]$ArgumentList, [System.Threading.CancellationToken]$CancellationToken, [Int]$MaxAttempts, [String]$Message, [Int]$Timeout) {
         [ValidateNotNullOrEmpty()][scriptblock]$ScriptBlock = $ScriptBlock
-        if ([string]::IsNullOrWhiteSpace((Show-Stack))) { Push-Stack ([TaskMan]) }
+        if ([string]::IsNullOrWhiteSpace((Show-Stack))) { Push-Stack 'TaskMan' }
         $IsSuccess = $false; $fxn = Show-Stack; $AttemptStartTime = $null;
         $Output = [string]::Empty; $ErrorRecord = $null; $Attempts = 1
         if ([string]::IsNullOrWhiteSpace($Message)) { $Message = "Invoke Command" }
@@ -186,7 +186,7 @@ class CommandOptions {
 class StackTracer {
     static [System.Collections.Concurrent.ConcurrentStack[string]]$stack = [System.Collections.Concurrent.ConcurrentStack[string]]::new()
     static [System.Collections.Generic.List[hashtable]]$CallLog = @()
-    static [void] Push([type]$class) {
+    static [void] Push([string]$class) {
         $str = "[{0}]" -f $class
         if ([StackTracer]::Peek() -ne "$class") {
             [StackTracer]::stack.Push($str)
@@ -228,7 +228,7 @@ function Pop-Stack {
 function Push-Stack {
     [CmdletBinding()]
     param (
-        [type]$class
+        [string]$class
     )
     process {
         [StackTracer]::Push($class)
@@ -420,6 +420,10 @@ function New-TaskResult {
 
     process {
         if ($PSCmdlet.ParameterSetName -eq 'object') {
+            if ($null -eq $Output) {
+                Write-Warning "New-TaskResult::Output is null."
+                $Output = New-Object psobject
+            }
             [void]$result.Output.Add($Output)
             $job_state = $(if ($result.IsSuccess) { "Completed" } else { "Failed" })
             $get_state = [scriptblock]::Create("return '$job_state'")

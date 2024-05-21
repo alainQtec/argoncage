@@ -378,56 +378,125 @@ function New-GistFile {
     [CmdletBinding()]
     [OutputType([PSCustomObject])]
     param (
-        [Parameter(Mandatory = $true, Position = 0)]
+        [Parameter(Mandatory = $true, Position = 0, ParameterSetName = 'ByUri')]
         [ValidateNotNullOrEmpty()]
-        [string]$Uri
+        [string]$Uri,
+
+        [Parameter(Mandatory = $true, Position = 0, ParameterSetName = 'ByInfo')]
+        [ValidateNotNullOrEmpty()]
+        [PsObject]$GistInfo
     )
     begin {
         $res = $null; $GistUri = [uri]::new($Uri); $out = $null
+        $Create_OutObj = {
+            return [PSCustomObject]@{
+                Name       = ''
+                language   = ''
+                type       = ''
+                Owner      = ''
+                raw_url    = ''
+                IsPublic   = ''
+                truncated  = ''
+                Id         = ''
+                size       = ''
+                files      = ''
+                content    = ''
+                UserName   = ''
+                ChildItems = ''
+            }
+        }
     }
     process {
-        $ogs = $GistUri.AbsolutePath; $IsRawUri = $ogs.Contains('/raw/') -and $ogs.Contains('gist.githubusercontent.com')
-        $seg = $GistUri.Segments
-        $res = $(if ($IsRawUri) {
-                $_name = $seg[-1]
-                $rtri = 'https://gist.github.com/{0}{1}' -f $seg[1], $seg[2]
-                $rtri = $rtri.Remove($rtri.Length - 1)
-                $info = [uri]::new($rtri) | Get-GistInfo
-                $file = $info.files."$_name"
-                [PsCustomObject]@{
-                    language = $file.language
-                    IsPublic = $info.IsPublic
-                    raw_url  = $file.raw_url
-                    Owner    = $info.owner.login
-                    type     = $file.type
-                    filename = $_name
-                    size     = $file.size
-                    Id       = $seg[2].Replace('/', '')
+        if ($PSCmdlet.ParameterSetName -eq 'ByUri') {
+            $ogs = $GistUri.AbsolutePath; $IsRawUri = $ogs.Contains('/raw/') -and $ogs.Contains('gist.githubusercontent.com')
+            $seg = $GistUri.Segments
+            $res = $(if ($IsRawUri) {
+                    $_name = $seg[-1]
+                    $rtri = 'https://gist.github.com/{0}{1}' -f $seg[1], $seg[2]
+                    $rtri = $rtri.Remove($rtri.Length - 1)
+                    $info = [uri]::new($rtri) | Get-GistInfo
+                    $file = $info.files."$_name"
+                    [PsCustomObject]@{
+                        language = $file.language
+                        IsPublic = $info.IsPublic
+                        raw_url  = $file.raw_url
+                        Owner    = $info.owner.login
+                        type     = $file.type
+                        filename = $_name
+                        size     = $file.size
+                        Id       = $seg[2].Replace('/', '')
+                    }
+                } else {
+                    # $info = $GistUri | Get-GistInfo
+                    [PsCustomObject]@{
+                        language = ''
+                        IsPublic = $null
+                        raw_url  = ''
+                        Owner    = $seg[1].Split('/')[0]
+                        type     = ''
+                        filename = ''
+                        size     = ''
+                        Id       = $seg[-1]
+                    }
                 }
-            } else {
-                # $info = $GistUri | Get-GistInfo
-                [PsCustomObject]@{
-                    language = ''
-                    IsPublic = $null
-                    raw_url  = ''
-                    Owner    = $seg[1].Split('/')[0]
-                    type     = ''
-                    filename = ''
-                    size     = ''
-                    Id       = $seg[-1]
+            )
+            if (![string]::IsNullOrWhiteSpace($res.Owner)) {
+                [GistFile]::UserName = $res.Owner
+            }
+            $out = [GistFile]::New($res)
+            # $JobId = $(Start-Job -ScriptBlock {
+            #         param ($GistInfo)
+            #         return $GistInfo.ChildItems
+            #     } -ArgumentList $res
+            # ).Id
+            # $out = Invoke-Command $(Get-WaitScript) -ArgumentList @('Get Gist items', $JobId)
+        } else {
+            $out = $Create_OutObj.Invoke()
+            $out.language = $GistInfo.language
+            $out.IsPublic = $GistInfo.IsPublic
+            $out.raw_url = $GistInfo.raw_url
+            $out.type = $GistInfo.type
+            $out.Name = $GistInfo.filename
+            $out.size = $GistInfo.size
+            $out.Id = $GistInfo.Id
+            $out.Owner = $GistInfo.Owner
+            # if ([string]::IsNullOrWhiteSpace($out.Owner)) {
+            #     if (![string]::IsNullOrWhiteSpace([GistFile]::UserName)) {
+            #         $out.Owner = [GistFile]::UserName
+            #     } else {
+            #         Write-Warning "Gist Owner was not set!"
+            #     }
+            # }
+            if ($null -eq ([GistFile]::ChildItems) -and ![string]::IsNullOrWhiteSpace($out.Id)) {
+                # [GistFile]::ChildItems = (Get-GistInfo -UserName $out.Owner -GistId $out.Id).files
+                # [PsObject].ChildItems
+                $out.ChildItems = (Get-GistInfo -UserName $out.Owner -GistId $out.Id).files
+            }
+            if ($null -ne [GistFile]::ChildItems) {
+                $_files = $null; [string[]]$filenames = [GistFile]::ChildItems | Get-Member -MemberType NoteProperty | Select-Object -ExpandProperty Name
+                try {
+                    $_files = [PsObject[]]$filenames.Foreach({
+                            $_Item = [GistFile]::ChildItems."$_"
+                            $_Gist = [GistFile]::new($_Item.filename)
+                            $_Gist.language = $_Item.language
+                            $_Gist.Ispublic = $this.IsPublic
+                            $_Gist.raw_url = $_Item.raw_url
+                            $_Gist.type = $_Item.type
+                            $_Gist.size = $_Item.size
+                            $_Gist.content = $_Item.content
+                            $_Gist.Owner = $this.Owner; $_Gist.Id = $this.Id
+                            $_Gist
+                        }
+                    )
+                } finally {
+                    [GistFile]::ChildItems = $null
+                    $this.files = $_files
+                    if ([string]::IsNullOrWhiteSpace($this.Name)) {
+                        $this.Name = $filenames[0]
+                    }
                 }
             }
-        )
-        if (![string]::IsNullOrWhiteSpace($res.Owner)) {
-            [GistFile]::UserName = $res.Owner
         }
-        $out = [GistFile]::New($res)
-        # $JobId = $(Start-Job -ScriptBlock {
-        #         param ($GistInfo)
-        #         return $GistInfo.ChildItems
-        #     } -ArgumentList $res
-        # ).Id
-        # $out = Invoke-Command $(Get-WaitScript) -ArgumentList @('Get Gist items', $JobId)
     }
     end {
         return $out

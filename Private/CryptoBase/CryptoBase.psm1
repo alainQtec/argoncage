@@ -92,7 +92,7 @@ class CryptoBase {
         )
         $s6lt = [System.Security.Cryptography.Rfc2898DeriveBytes]::new(
             $password, $([System.Text.Encoding]::UTF8.GetBytes(
-                    ((xconvert)::ToString($password) + (Get-UniqueMachineId))
+                    ("$((xconvert)::ToString($password)) " * 10)
                 )
             )
         ).GetBytes(16)
@@ -389,10 +389,11 @@ class CryptoBase {
 #     Can be used to Combine the encrypted data with the initialization vector (IV) and other data.
 # .DESCRIPTION
 #     Everyone is appending the IV to encrypted bytes, such that when decrypting, $CryptoProvider.IV = $encyptedBytes[0..15];
-#     They say its safe since IV is basically random and changes every encryption. but this small loophole can allow an advanced attacker to use some tools to find that IV at the end.
-#     This class aim to prevent that; or at least make it nearly impossible. ie: As long as your source code isn't leaked :)
-#     By using an int[] of indices as a lookup table to rearrange the $nonce and $bytes.
-#     The int[] array is derrivated from the password that the user provides.
+#     They say its safe since IV is basically random and changes every encryption. Hummm... I don't know about that!
+#     If you're paranoid like me you can see this loophole: An advanced attacker can use tools to grab the IV at the end!
+#     This class aim to prevent that; or at least make it hard to do. ie: As long as your source code isn't leaked and you used a good password :)
+#     This class scrambles the output using an int[] of indices as a lookup table to rearrange the $nonce and $bytes.
+#     The int[] array is derrivated from the password that the user provides, so make sure its a good password.
 # .EXAMPLE
 #     $_bytes = [System.text.Encoding]::UTF8.GetBytes('** _H4ck_z3_W0rld_ **');
 #     $Nonce1 = [CryptoBase]::GetRandomEntropy();
@@ -858,8 +859,8 @@ class HKDF2 {
     static [string] GetToken([securestring]$secretKey, [byte[]]$salt, [int]$seconds) {
         $_mdhsbytes = [HKDF2]::new($secretKey, $salt).GetBytes(4)
         $_secretKey = (CryptoBase)::GetKey((xconvert)::ToSecurestring((xconvert)::ToHexString($_mdhsbytes)))
-        $_token_str = (xconvert)::ToBase32String((Shuffl3r)::Combine([System.Text.Encoding]::UTF8.GetBytes([Datetime]::Now.AddSeconds($seconds).ToFileTime()), $_mdhsbytes, $_secretKey)).Replace("_", '')
-        return (Shuffl3r)::Scramble($_token_str, $secretKey)
+        $_token_str = (xconvert)::ToBase32String((Join-Bytes -b ([System.Text.Encoding]::UTF8.GetBytes([Datetime]::Now.AddSeconds($seconds).ToFileTime())) -n $_mdhsbytes -p $_secretKey)).Replace("_", '')
+        return (ConvertTo-Scrambled -string $_token_str -Password $secretKey)
     }
     static [string] GetToken([securestring]$secretKey, [byte[]]$salt, [timespan]$expires) {
         if ($expires.TotalSeconds -gt [int]::MaxValue) {
@@ -873,8 +874,8 @@ class HKDF2 {
     static [bool] VerifyToken([string]$TokenSTR, [securestring]$secretKey, [byte[]]$salt) {
         $_calcdhash = [HKDF2]::new($secretKey, $salt).GetBytes(4)
         $_secretKey = (CryptoBase)::GetKey((xconvert)::ToSecurestring((xconvert)::ToHexString($_calcdhash)))
-        $_Token_STR = (Shuffl3r)::UnScramble($TokenSTR.Trim(), $secretKey)
-        ($fb, $mdh) = (Shuffl3r)::Split((xconvert)::FromBase32String(($_Token_STR + '_' * 4)), $_secretKey, 4)
+        $_Token_STR = ConvertFrom-Scrambled -string $TokenSTR -Password $secretKey
+        ($fb, $mdh) = Split-Bytes -b (xconvert)::FromBase32String(($_Token_STR + '_' * 4)) -p $_secretKey -nl 4
         $ht = [DateTime]::FromFileTime([long]::Parse([System.Text.Encoding]::UTF8.GetString($fb)))
         $rs = ($ht - [Datetime]::Now).TotalSeconds
         $NotExpired = $rs -ge 0
@@ -954,13 +955,85 @@ function CryptoBase {
         return [CryptoBase]::New()
     }
 }
-function Shuffl3r {
+
+function Join-Bytes {
     [CmdletBinding()]
-    param ()
-    end {
-        return [Shuffl3r]::New()
+    param (
+        [Parameter(Mandatory = $true, Position = 0)]
+        [ValidateNotNullOrEmpty()][Alias('b')]
+        [Byte[]]$Bytes,
+
+        [Parameter(Mandatory = $true, Position = 1)]
+        [ValidateNotNullOrEmpty()][Alias('n')]
+        [Byte[]]$Nonce,
+
+        [Parameter(Mandatory = $true, Position = 2)]
+        [ValidateNotNullOrEmpty()][Alias('p')]
+        [securestring]$Passwod
+    )
+    process {
+        return [Shuffl3r]::Combine($Bytes, $Nonce, $Passwod)
     }
 }
+
+function Split-Bytes {
+    [CmdletBinding()]
+    param (
+        [Parameter(Mandatory = $true, Position = 0)]
+        [ValidateNotNullOrEmpty()][Alias('b')]
+        [Byte[]]$Bytes,
+
+        [Parameter(Mandatory = $true, Position = 1)]
+        [ValidateNotNullOrEmpty()][Alias('p')]
+        [securestring]$Passwod,
+
+        [Parameter(Mandatory = $true, Position = 2)]
+        [ValidateNotNull()][Alias('nl')]
+        [int]$NonceLength
+    )
+    process {
+        return [Shuffl3r]::Split($Bytes, $Passwod, $NonceLength)
+    }
+}
+
+function ConvertTo-Scrambled {
+    [CmdletBinding()]
+    [OutputType([string])]
+    [Alias('Scramble')]
+    param (
+        [Parameter(Mandatory = $true, Position = 0, ValueFromPipeline = $true, ValueFromPipelineByPropertyName = $true)]
+        [Alias("s")][ValidateNotNullOrEmpty()]
+        [string]$String,
+
+        [Parameter(Mandatory = $true, Position = 1)]
+        [Alias('p')][ValidateNotNullOrEmpty()]
+        [SecureString]$Password
+    )
+
+    process {
+        return [Shuffl3r]::Scramble($String.Trim(), $Password)
+    }
+}
+
+function ConvertFrom-Scrambled {
+    [CmdletBinding()]
+    [OutputType([string])]
+    [Alias('Unscramble')]
+    param (
+        [Parameter(Mandatory = $true, Position = 0, ValueFromPipeline = $true, ValueFromPipelineByPropertyName = $true)]
+        [Alias("s")][ValidateNotNullOrEmpty()]
+        [string]$string,
+
+        [Parameter(Mandatory = $true, Position = 1)]
+        [Alias('p')][ValidateNotNullOrEmpty()]
+        [SecureString]$Password
+    )
+
+    process {
+        return [Shuffl3r]::UnScramble($string.Trim(), $Password)
+    }
+}
+
 
 function AesGCM {
     [CmdletBinding()]

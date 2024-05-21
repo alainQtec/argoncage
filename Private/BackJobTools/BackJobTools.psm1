@@ -1,4 +1,109 @@
-﻿# A small process managment class
+﻿
+# .SYNOPSIS
+# BackJobTools.psm1 Contains classes & functions to help with Background jobs
+
+
+class cli {
+    static hidden [ValidateNotNull()][string]$Preffix # .EXAMPLE Try this: # [cli]::Preffix = '@:'; [void][cli]::Write('animations and stuff', [ConsoleColor]::Magenta)
+    static hidden [ValidateNotNull()][scriptblock]$textValidator # ex: if $text does not match a regex throw 'erro~ ..'
+    static [string] write([string]$text) {
+        return [cli]::Write($text, 20, 1200)
+    }
+    static [string] Write([string]$text, [bool]$AddPreffix) {
+        return [cli]::Write($text, 20, 1200, $AddPreffix)
+    }
+    static [string] Write([string]$text, [int]$Speed, [int]$Duration) {
+        return [cli]::Write($text, 20, 1200, $true)
+    }
+    static [string] write([string]$text, [ConsoleColor]$color) {
+        return [cli]::Write($text, $color, $true)
+    }
+    static [string] write([string]$text, [ConsoleColor]$color, [bool]$Animate) {
+        return [cli]::Write($text, [cli]::Preffix, 20, 1200, $color, $Animate, $true)
+    }
+    static [string] write([string]$text, [int]$Speed, [int]$Duration, [bool]$AddPreffix) {
+        return [cli]::Write($text, [cli]::Preffix, $Speed, $Duration, [ConsoleColor]::White, $true, $AddPreffix)
+    }
+    static [string] write([string]$text, [ConsoleColor]$color, [bool]$Animate, [bool]$AddPreffix) {
+        return [cli]::Write($text, [cli]::Preffix, 20, 1200, $color, $Animate, $AddPreffix)
+    }
+    static [string] write([string]$text, [string]$Preffix, [System.ConsoleColor]$color) {
+        return [cli]::Write($text, $Preffix, $color, $true)
+    }
+    static [string] write([string]$text, [string]$Preffix, [System.ConsoleColor]$color, [bool]$Animate) {
+        return [cli]::Write($text, $Preffix, 20, 1200, $color, $Animate, $true)
+    }
+    static [string] write([string]$text, [string]$Preffix, [int]$Speed, [int]$Duration, [bool]$AddPreffix) {
+        return [cli]::Write($text, $Preffix, $Speed, $Duration, [ConsoleColor]::White, $true, $AddPreffix)
+    }
+    static [string] write([string]$text, [string]$Preffix, [int]$Speed, [int]$Duration, [ConsoleColor]$color, [bool]$Animate, [bool]$AddPreffix) {
+        return [cli]::Write($text, $Preffix, $Speed, $Duration, $color, $Animate, $AddPreffix, [cli]::textValidator)
+    }
+    static [string] write([string]$text, [string]$Preffix, [int]$Speed, [int]$Duration, [ConsoleColor]$color, [bool]$Animate, [bool]$AddPreffix, [scriptblock]$textValidator) {
+        if ($null -ne $textValidator) {
+            $textValidator.Invoke($text)
+        }
+        if ([string]::IsNullOrWhiteSpace($text)) {
+            return $text
+        }
+        [int]$length = $text.Length; $delay = 0
+        # Check if delay time is required:
+        $delayIsRequired = if ($length -lt 50) { $false } else { $delay = $Duration - $length * $Speed; $delay -gt 0 }
+        if ($AddPreffix -and ![string]::IsNullOrEmpty($Preffix)) {
+            [void][cli]::Write($Preffix, [string]::Empty, 1, 100, [ConsoleColor]::Green, $false, $false);
+        }
+        $FgColr = [Console]::ForegroundColor
+        [Console]::ForegroundColor = $color
+        if ($Animate) {
+            for ($i = 0; $i -lt $length; $i++) {
+                [void][Console]::Write($text[$i]);
+                Start-Sleep -Milliseconds $Speed;
+            }
+        } else {
+            [void][Console]::Write($text);
+        }
+        if ($delayIsRequired) {
+            Start-Sleep -Milliseconds $delay
+        }
+        [Console]::ForegroundColor = $FgColr
+        return $text
+    }
+}
+
+# .SYNOPSIS
+#     A class to convert dot ascii arts to b64string & vice versa
+# .DESCRIPTION
+#     Cli art created from sites like https://lachlanarthur.github.io/Braille-ASCII-Art/ can only be embeded as b64 string
+#     So this class helps speed up the conversion process
+# .EXAMPLE
+#     $b64str = [cliart]::ToBase64String((Get-Item ./ascii))
+#     [CliArt]::FromBase64String($b64str) | Write-Host -f Green
+class CliArt {
+    hidden [string]$Base64String
+    CliArt([byte[]]$ArtBytes) {
+        $this.Base64String = [CliArt]::ToBase64String($ArtBytes)
+    }
+    CliArt([IO.FileInfo]$Artfile) {
+        $this.Base64String = [CliArt]::ToBase64String($Artfile)
+    }
+    CliArt([string]$Base64String) {
+        $this.Base64String = $Base64String
+    }
+    static [string] ToBase64String([byte[]]$ArtBytes) {
+        return [convert]::ToBase64String((xconvert)::ToCompressed([System.Text.Encoding]::UTF8.GetBytes((Base85)::Encode($ArtBytes))))
+    }
+    static [string] ToBase64String([IO.FileInfo]$Artfile) {
+        return [CliArt]::ToBase64String([IO.File]::ReadAllBytes($Artfile.FullName))
+    }
+    static [string] FromBase64String([string]$B64String) {
+        return [System.Text.Encoding]::UTF8.GetString((Base85)::Decode([System.Text.Encoding]::UTF8.GetString((xconvert)::ToDeCompressed([convert]::FromBase64String($B64String)))))
+    }
+    [string] ToString() {
+        return [CliArt]::FromBase64String($this.Base64String)
+    }
+}
+
+# A small process managment class
 class TaskMan {
     static [scriptblock] $WaitScript = [scriptBlock]::Create({
             param (
@@ -23,7 +128,8 @@ class TaskMan {
                     [Console]::CursorTop = $originalY
                 }
             }
-            Write-Host "`b$progressMsg ... " -f Blue -NoNewline;
+            # i.e: Gives an illusion of loading animation.
+            [void][cli]::Write("`b$progressMsg ... ", [ConsoleColor]::Blue)
             [System.Management.Automation.Runspaces.RemotingErrorRecord[]]$Errors = $Job.ChildJobs.Where({
                     $null -ne $_.Error
                 }
@@ -40,7 +146,7 @@ class TaskMan {
                         $errStackTrace += $Errors.Exception.InnerException.StackTrace
                     }
                 }
-                $TaskResult = New-TaskResult -Job $Job -e $Errors
+                $TaskResult = New-TaskResult -Job $Job -ErrorRecord $Errors
                 $_Success = $false; $LogMsg += " Completed with errors.`n`t$errormessages`n`t$errStackTrace"
             } else {
                 $TaskResult = New-TaskResult -Job $Job
@@ -243,6 +349,35 @@ function Show-Stack {
     }
 }
 
+function New-CliArt {
+    [CmdletBinding()]
+    [OutputType([CliArt])]
+    param (
+        [Parameter(Mandatory = $true, Position = 0)]
+        [string]$Base64String
+    )
+    process {
+        return [CliArt]::new($Base64String)
+    }
+}
+
+function Write-AnimatedHost {
+    [CmdletBinding()]
+    [OutputType([void])]
+    param (
+        [Parameter(Mandatory = $true, Position = 0)]
+        [Alias('t')][AllowEmptyString()]
+        [string]$text,
+
+        [Parameter(Mandatory = $true, Position = 1)]
+        [Alias('f')]
+        [System.ConsoleColor]$foregroundColor
+    )
+    process {
+        [void][cli]::Write($text, $foregroundColor)
+    }
+}
+
 function Write-ProgressBar {
     [CmdletBinding()]
     param (
@@ -376,7 +511,7 @@ function Wait-Task {
         if ($PSCmdlet.ParameterSetName -eq 'scriptBlock') {
             $result = [TaskMan]::WaitTask($progressMsg, $scriptBlock)
         } else {
-            throw [System.NotSupportedException]::new("Sorry, ParameterSetName '$($PSCmdlet.ParameterSetName)' is not yet supported")
+            throw [System.NotSupportedException]::new("Sorry, ParameterSetName is not yet supported")
         }
         # $Tasks += $Task
         # While (-not [System.Threading.Tasks.Task]::WaitAll($Tasks, 200)) {}
@@ -388,23 +523,22 @@ function Wait-Task {
 }
 
 function New-TaskResult {
-    [CmdletBinding(DefaultParameterSetName = 'Job')]
     [OutputType([PSCustomObject])]
     param (
-        [Parameter(Mandatory = $true, Position = 0, ParameterSetName = 'Job')]
-        [System.Management.Automation.Job]$Job,
-
         [Parameter(Mandatory = $true, Position = 0, ParameterSetName = 'output')]
-        [Alias('o')]
+        [AllowNull()][Alias('o')]
         [object]$Output,
+
+        [Parameter(Mandatory = $true, Position = 0, ParameterSetName = 'Job')]
+        [ValidateNotNullOrEmpty()][Alias('J')]
+        [System.Management.Automation.Job]$Job,
 
         [Parameter(Mandatory = $false, Position = 1, ParameterSetName = 'output')]
         [Alias('s')]
-        [bool]$IsSuccess = [bool]$null,
+        [bool]$IsSuccess = 0,
 
         [Parameter(Mandatory = $false, Position = 2, ParameterSetName = '__AllparameterSets')]
-        [ValidateNotNullOrEmpty()]
-        [Alias('e')]
+        [ValidateNotNullOrEmpty()][Alias('e')]
         [object]$ErrorRecord
     )
 
@@ -419,11 +553,9 @@ function New-TaskResult {
     }
 
     process {
-        if ($PSCmdlet.ParameterSetName -eq 'object') {
-            if ($null -eq $Output) {
-                Write-Warning "New-TaskResult::Output is null."
-                $Output = New-Object psobject
-            }
+        $HasErrorRecord = $PSCmdlet.MyInvocation.BoundParameters.ContainsKey('ErrorRecord')
+        if ($PSCmdlet.ParameterSetName -eq 'output') {
+            if ($null -eq $Output) { $Output = New-Object psobject }
             [void]$result.Output.Add($Output)
             $job_state = $(if ($result.IsSuccess) { "Completed" } else { "Failed" })
             $get_state = [scriptblock]::Create("return '$job_state'")
@@ -435,14 +567,9 @@ function New-TaskResult {
             $JobRes = $job.ChildJobs | Receive-Job -Wait
             if ($JobRes -is [bool]) { $result.IsSuccess = $JobRes }
             [void]$result.Output.Add($JobRes)
-            $result.IsSuccess = $job.JobStateInfo.State -eq "Completed"
         }
-        if ($PSCmdlet.MyInvocation.BoundParameters.ContainsKey('ErrorRecord')) {
-            $result.ErrorRecord = $ErrorRecord
-        }
-        if (!$result.Output[0]) {
-            $result.IsSuccess = $false
-        }
+        $result.IsSuccess = !$HasErrorRecord -and $($result.State -eq "Completed")
+        if ($HasErrorRecord) { $result.ErrorRecord = $ErrorRecord }
     }
 
     end {

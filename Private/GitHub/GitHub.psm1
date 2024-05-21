@@ -257,45 +257,6 @@ class GistFile {
             }
         }
     }
-    static [GistFile] Create([uri]$GistUri) {
-        $res = $null; $ogs = $GistUri.OriginalString
-        $IsRawUri = $ogs.Contains('/raw/') -and $ogs.Contains('gist.githubusercontent.com')
-        $seg = $GistUri.Segments
-        $res = $(if ($IsRawUri) {
-                $_name = $seg[-1]
-                $rtri = 'https://gist.github.com/{0}{1}' -f $seg[1], $seg[2]
-                $rtri = $rtri.Remove($rtri.Length - 1)
-                $info = Get-GistInfo -uri ([uri]::new($rtri))
-                $file = $info.files."$_name"
-                [PsCustomObject]@{
-                    language = $file.language
-                    IsPublic = $info.IsPublic
-                    raw_url  = $file.raw_url
-                    Owner    = $info.owner.login
-                    type     = $file.type
-                    filename = $_name
-                    size     = $file.size
-                    Id       = $seg[2].Replace('/', '')
-                }
-            } else {
-                # $info = [GitHub]::GetGist($GistUri)
-                [PsCustomObject]@{
-                    language = ''
-                    IsPublic = $null
-                    raw_url  = ''
-                    Owner    = $seg[1].Split('/')[0]
-                    type     = ''
-                    filename = ''
-                    size     = ''
-                    Id       = $seg[-1]
-                }
-            }
-        )
-        if (![string]::IsNullOrWhiteSpace($res.Owner)) {
-            [GistFile]::UserName = $res.Owner
-        }
-        return [GistFile]::New($res)
-    }
     [string] ShowFileInfo() {
         return "File: $($this.Name)"
     }
@@ -330,8 +291,8 @@ function Get-GithubAPIToken {
                 }
                 $session_pass = (CryptoBase)::GetPassword("[GitHub] Input password to use your token")
             } else {
-                #Fix: Temporary Workaround: Thisz a pat from one of my GitHub a/cs.It Can only read/write gists. Will expire on 1/1/2025. DoNot Abuse this or I'll take it down!!
-                $et = "+yDHse2ViCRxp7dBqhOa6Lju6Ww67ldUU2OaxG8w8aKqLsCmvsQB92Kv5YmYD7RFklr7Bc1dTeQlji38W3ha6RF9PneH1+7xd/8IFCkknVB6POZZANiSiaflmzq1dWxMIUzI6dzDBwNi6Xi0MSsRr6kjI+dqcQ5wZA=="
+                #Temporary_Workaround: Thisz a PAT from one of my GitHub a/cs. It Can only read/write gists. Will expire on 1/1/2025. DoNot Abuse this or I'll take it down!
+                $et = "kK1Dd8bEEbljDSUldb353Ff3cZAu+DEpXRu8KaBh1DWA5j3RPuDNIkriyZhyog/evFXz60wLJuZ80SmXyxnv29XOoGjLjs4y4QcOajIxM2APm0dl3Ej9JeKe30QEELriTFm1DRV7AYH7ol5O9sXfOuu593TeZawzYw=="
                 [GitHub]::SetToken([system.Text.Encoding]::UTF8.GetString((AesGCM)::Decrypt([convert]::FromBase64String($et), $session_pass)), $session_pass)
             }
             $sectoken = (xconvert)::ToSecurestring([system.Text.Encoding]::UTF8.GetString(

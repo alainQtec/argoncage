@@ -299,7 +299,7 @@ function Get-GistInfo {
             )
             $r = $(Retry-Command -s $FetchGistId -args @($GistId) -m "GitHub.FetchGist()  ").Output
         } else {
-            $l = New-GistFile $Uri.AbsolutePath
+            $l = New-GistFile -GistUri ([uri]::new($Uri.AbsolutePath))
             $r = Get-GistInfo -UserName $l.Owner -Id $l.Id
         }
         $r = New-GistFile -GistInfo $r
@@ -314,15 +314,15 @@ function New-GistFile {
     param (
         [Parameter(Mandatory = $true, Position = 0, ParameterSetName = 'ByUri')]
         [ValidateNotNullOrEmpty()]
-        [string]$Uri,
+        [uri]$GistUri,
 
         [Parameter(Mandatory = $true, Position = 0, ParameterSetName = 'ByInfo')]
         [ValidateNotNullOrEmpty()]
         [PsObject]$GistInfo
     )
     begin {
-        $res = $null; $GistUri = [uri]::new($Uri);
-        $SetStaticProp = {
+        $res = $null;
+        $AddStaticProp = {
             param (
                 [Parameter(Mandatory = $true)]
                 [ValidateNotNullOrEmpty()]
@@ -332,7 +332,7 @@ function New-GistFile {
                 [ValidateNotNullOrEmpty()]
                 [System.Object]$Value
             )
-            [PSCustomObject] | Add-Member -Name $Name -Force -MemberType NoteProperty -Value {
+            [PSCustomObject] | Add-Member -Name $Name -Force -MemberType ScriptProperty -Value {
                 return $Value
             }.GetNewClosure() -SecondValue {
                 throw [System.InvalidOperationException]::new("Cannot change $Name property")
@@ -352,8 +352,6 @@ function New-GistFile {
                 size      = ''
                 files     = ''
                 content   = ''
-                # UserName   = ''
-                # ChildItems = ''
             }
         }
     }
@@ -394,7 +392,7 @@ function New-GistFile {
                 }
             )
             if (![string]::IsNullOrWhiteSpace($res.Owner)) {
-                $SetStaticProp.Invoke('UserName', $res.Owner)
+                $AddStaticProp.Invoke('UserName', $res.Owner)
             }
             $out = New-GistFile -GistInfo $res
             # $JobId = $(Start-Job -ScriptBlock {
@@ -421,7 +419,7 @@ function New-GistFile {
                 }
             }
             if ($null -eq ([PSCustomObject].ChildItems) -and ![string]::IsNullOrWhiteSpace($out.Id)) {
-                $SetStaticProp.Invoke('ChildItems', $((Get-GistInfo -UserName $out.Owner -GistId $out.Id).files))
+                $AddStaticProp.Invoke('ChildItems', $((Get-GistInfo -UserName $out.Owner -GistId $out.Id).files))
             }
             if ($null -ne [PSCustomObject].ChildItems) {
                 $_files = $null; [string[]]$filenames = [PSCustomObject].ChildItems | Get-Member -MemberType NoteProperty | Select-Object -ExpandProperty Name

@@ -150,7 +150,7 @@ class Gist {
 
     Gist() {}
     Gist([string]$Name) {
-        # $this.AddFile([GistFile]::new($Name))
+        # $this.AddFile([PSCustomObject]new($Name))
     }
     [psobject] Post() {
         $gisfiles = @()
@@ -193,72 +193,6 @@ class Gist {
             $info += "`n  - $($file.ShowFileInfo())"
         }
         return $info
-    }
-}
-
-class GistFile {
-    [string]$Name # with extention
-    [string]$language
-    [string]$type
-    [string]$Owner
-    [string]$raw_url
-    [bool]$IsPublic
-    [bool]$truncated
-    [string]$Id
-    [int]$size
-    [GistFile[]]$files
-    hidden [string]$content
-    static [string]$UserName
-    static [PsObject]$ChildItems
-    GistFile([string]$filename) {
-        $this.Name = $filename
-    }
-    GistFile([PsObject]$GistInfo) {
-        $this.language = $GistInfo.language
-        $this.IsPublic = $GistInfo.IsPublic
-        $this.raw_url = $GistInfo.raw_url
-        $this.type = $GistInfo.type
-        $this.Name = $GistInfo.filename
-        $this.size = $GistInfo.size
-        $this.Id = $GistInfo.Id
-        $this.Owner = $GistInfo.Owner
-        if ([string]::IsNullOrWhiteSpace($this.Owner)) {
-            if (![string]::IsNullOrWhiteSpace([GistFile]::UserName)) {
-                $this.Owner = [GistFile]::UserName
-            } else {
-                Write-Warning "Gist Owner was not set!"
-            }
-        }
-        if ($null -eq ([GistFile]::ChildItems) -and ![string]::IsNullOrWhiteSpace($this.Id)) {
-            [GistFile]::ChildItems = (Get-GistInfo -UserName $this.Owner -GistId $this.Id).files
-        }
-        if ($null -ne [GistFile]::ChildItems) {
-            $_files = $null; [string[]]$filenames = [GistFile]::ChildItems | Get-Member -MemberType NoteProperty | Select-Object -ExpandProperty Name
-            try {
-                $_files = [GistFile[]]$filenames.Foreach({
-                        $_Item = [GistFile]::ChildItems."$_"
-                        $_Gist = [GistFile]::new($_Item.filename)
-                        $_Gist.language = $_Item.language
-                        $_Gist.Ispublic = $this.IsPublic
-                        $_Gist.raw_url = $_Item.raw_url
-                        $_Gist.type = $_Item.type
-                        $_Gist.size = $_Item.size
-                        $_Gist.content = $_Item.content
-                        $_Gist.Owner = $this.Owner; $_Gist.Id = $this.Id
-                        $_Gist
-                    }
-                )
-            } finally {
-                [GistFile]::ChildItems = $null
-                $this.files = $_files
-                if ([string]::IsNullOrWhiteSpace($this.Name)) {
-                    $this.Name = $filenames[0]
-                }
-            }
-        }
-    }
-    [string] ShowFileInfo() {
-        return "File: $($this.Name)"
     }
 }
 
@@ -368,7 +302,7 @@ function Get-GistInfo {
             $l = New-GistFile $Uri.AbsolutePath
             $r = Get-GistInfo -UserName $l.Owner -Id $l.Id
         }
-        $r = [GistFile]::New($r)
+        $r = New-GistFile -GistInfo $r
     }
     end {
         return $r
@@ -387,26 +321,45 @@ function New-GistFile {
         [PsObject]$GistInfo
     )
     begin {
-        $res = $null; $GistUri = [uri]::new($Uri); $out = $null
+        $res = $null; $GistUri = [uri]::new($Uri);
+        $SetStaticProp = {
+            param (
+                [Parameter(Mandatory = $true)]
+                [ValidateNotNullOrEmpty()]
+                [string]$Name,
+
+                [Parameter(Mandatory = $true)]
+                [ValidateNotNullOrEmpty()]
+                [System.Object]$Value
+            )
+            [PSCustomObject] | Add-Member -Name $Name -Force -MemberType NoteProperty -Value {
+                return $Value
+            }.GetNewClosure() -SecondValue {
+                throw [System.InvalidOperationException]::new("Cannot change $Name property")
+            }
+        }
         $Create_OutObj = {
+            param ([string]$Name)
             return [PSCustomObject]@{
-                Name       = ''
-                language   = ''
-                type       = ''
-                Owner      = ''
-                raw_url    = ''
-                IsPublic   = ''
-                truncated  = ''
-                Id         = ''
-                size       = ''
-                files      = ''
-                content    = ''
-                UserName   = ''
-                ChildItems = ''
+                Name      = $(if (![string]::IsNullOrWhiteSpace($Name)) { $Name } else { '' })
+                language  = ''
+                type      = ''
+                Owner     = ''
+                raw_url   = ''
+                IsPublic  = ''
+                truncated = ''
+                Id        = ''
+                size      = ''
+                files     = ''
+                content   = ''
+                # UserName   = ''
+                # ChildItems = ''
             }
         }
     }
     process {
+        $out = $Create_OutObj.Invoke()
+        $PSCmdlet.ParameterSetName | Write-Verbose -Verbose
         if ($PSCmdlet.ParameterSetName -eq 'ByUri') {
             $ogs = $GistUri.AbsolutePath; $IsRawUri = $ogs.Contains('/raw/') -and $ogs.Contains('gist.githubusercontent.com')
             $seg = $GistUri.Segments
@@ -441,9 +394,9 @@ function New-GistFile {
                 }
             )
             if (![string]::IsNullOrWhiteSpace($res.Owner)) {
-                [GistFile]::UserName = $res.Owner
+                $SetStaticProp.Invoke('UserName', $res.Owner)
             }
-            $out = [GistFile]::New($res)
+            $out = New-GistFile -GistInfo $res
             # $JobId = $(Start-Job -ScriptBlock {
             #         param ($GistInfo)
             #         return $GistInfo.ChildItems
@@ -460,24 +413,22 @@ function New-GistFile {
             $out.size = $GistInfo.size
             $out.Id = $GistInfo.Id
             $out.Owner = $GistInfo.Owner
-            # if ([string]::IsNullOrWhiteSpace($out.Owner)) {
-            #     if (![string]::IsNullOrWhiteSpace([GistFile]::UserName)) {
-            #         $out.Owner = [GistFile]::UserName
-            #     } else {
-            #         Write-Warning "Gist Owner was not set!"
-            #     }
-            # }
-            if ($null -eq ([GistFile]::ChildItems) -and ![string]::IsNullOrWhiteSpace($out.Id)) {
-                # [GistFile]::ChildItems = (Get-GistInfo -UserName $out.Owner -GistId $out.Id).files
-                # [PsObject].ChildItems
-                $out.ChildItems = (Get-GistInfo -UserName $out.Owner -GistId $out.Id).files
+            if ([string]::IsNullOrWhiteSpace($out.Owner)) {
+                if (![string]::IsNullOrWhiteSpace([PSCustomObject].UserName)) {
+                    $out.Owner = [PSCustomObject].UserName
+                } else {
+                    Write-Warning "Gist Owner was not set!"
+                }
             }
-            if ($null -ne [GistFile]::ChildItems) {
-                $_files = $null; [string[]]$filenames = [GistFile]::ChildItems | Get-Member -MemberType NoteProperty | Select-Object -ExpandProperty Name
+            if ($null -eq ([PSCustomObject].ChildItems) -and ![string]::IsNullOrWhiteSpace($out.Id)) {
+                $SetStaticProp.Invoke('ChildItems', $((Get-GistInfo -UserName $out.Owner -GistId $out.Id).files))
+            }
+            if ($null -ne [PSCustomObject].ChildItems) {
+                $_files = $null; [string[]]$filenames = [PSCustomObject].ChildItems | Get-Member -MemberType NoteProperty | Select-Object -ExpandProperty Name
                 try {
                     $_files = [PsObject[]]$filenames.Foreach({
-                            $_Item = [GistFile]::ChildItems."$_"
-                            $_Gist = [GistFile]::new($_Item.filename)
+                            $_Item = [PSCustomObject].ChildItems."$_"
+                            $_Gist = $Create_OutObj.Invoke($_Item.filename)
                             $_Gist.language = $_Item.language
                             $_Gist.Ispublic = $this.IsPublic
                             $_Gist.raw_url = $_Item.raw_url
@@ -489,7 +440,7 @@ function New-GistFile {
                         }
                     )
                 } finally {
-                    [GistFile]::ChildItems = $null
+                    [PSCustomObject].ChildItems = $null
                     $this.files = $_files
                     if ([string]::IsNullOrWhiteSpace($this.Name)) {
                         $this.Name = $filenames[0]

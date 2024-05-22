@@ -284,14 +284,6 @@ class CryptoBase {
         $aes.IV = [CryptoBase]::GetRandomEntropy();
         return $aes
     }
-    static [void] Create_Dir([string]$Path) {
-        [CryptoBase]::Create_Dir([System.IO.DirectoryInfo]::new($Path))
-    }
-    static [void] Create_Dir([System.IO.DirectoryInfo]$Path) {
-        [ValidateNotNullOrEmpty()][System.IO.DirectoryInfo]$Path = $Path
-        $nF = @(); $p = $Path; while (!$p.Exists) { $nF += $p; $p = $p.Parent }
-        [Array]::Reverse($nF); $nF | ForEach-Object { $_.Create(); Write-Debug "Created $_" }
-    }
     [securestring] static GetPassword() {
         $ThrowOnFailure = $true
         return [CryptoBase]::GetPassword($ThrowOnFailure);

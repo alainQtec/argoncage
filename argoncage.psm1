@@ -400,7 +400,7 @@ class ArgonCage {
             if ([string]::IsNullOrWhiteSpace($FilePath)) { throw "InvalidArgument: `$FilePath" }
             Set-Variable -Name "credspath" -Visibility Private -Option Private -Value ([IO.Path]::GetDirectoryName($FilePath))
             if ([string]::IsNullOrWhiteSpace($credspath)) { throw "InvalidArgument: `$credspath" }
-            if (!(Test-Path -Path $credspath -PathType Container -ErrorAction Ignore)) { (cryptobase)::Create_Dir($credspath) }
+            if (!(Test-Path -Path $credspath -PathType Container -ErrorAction Ignore)) { New-Directory -Path $credspath }
             $_p = (xconvert)::ToSecurestring((Get-UniqueMachineId))
             $ca = @(); if (![IO.File]::Exists($FilePath)) {
                 if ($sc.SaveVaultCache) {
@@ -525,7 +525,7 @@ class ArgonCage {
             $process.StartInfo.FileName = 'nvim'
             $process.StartInfo.Arguments = $outFile.FullName
             $process.StartInfo.WindowStyle = [System.Diagnostics.ProcessWindowStyle]::Maximized
-            $process.Start(); $fswatcher = New-FileSystemWatcher -File $outFile.FullName -OnComplete ([scriptblock]::Create("Stop-Process -Id $($process.Id) -Force"));
+            $process.Start(); $fswatcher = Start-FsWatcher -File $outFile.FullName -OnComplete ([scriptblock]::Create("Stop-Process -Id $($process.Id) -Force"));
             if ($null -eq $fswatcher) { Write-Warning "Failed to start FileMonitor"; Write-Host "Waiting nvim process to exit..." $process.WaitForExit() }
             $private:secrets = [IO.FILE]::ReadAllText($outFile.FullName) | ConvertFrom-Json
         } finally {
@@ -592,7 +592,7 @@ class ArgonCage {
             throw [System.ArgumentNullException]::new("remote", "Failed to get remote uri. Argument IsNullorEmpty.")
         }
         try {
-            $rem_gist = Get-GistInfo -Uri $remote
+            $rem_gist = New-GistFile -GistUri $remote
         } catch {
             Write-Host "[-] Error: $_" -f Red
         } finally {

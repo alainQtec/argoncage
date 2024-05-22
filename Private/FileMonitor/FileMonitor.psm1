@@ -83,9 +83,10 @@ function Test-FileOpenInVim {
     }
 }
 
-function New-FileSystemWatcher {
+function Start-FsWatcher {
+    # .SYNOPSIS
+    #     Start-FileSystemWatcher is used to monitor and log file changes
     [CmdletBinding()]
-    [Alias('MonitorFile')]
     [OutputType([System.IO.FileSystemWatcher])]
     param (
         [Parameter(Mandatory = $true, Position = 0)]

@@ -321,8 +321,8 @@ function New-GistFile {
         [PsObject]$GistInfo
     )
     begin {
-        $res = $null;
-        $AddStaticProp = {
+        $out = $null;
+        function Add-StaticProp {
             param (
                 [Parameter(Mandatory = $true)]
                 [ValidateNotNullOrEmpty()]
@@ -338,13 +338,18 @@ function New-GistFile {
                 throw [System.InvalidOperationException]::new("Cannot change $Name property")
             }
         }
-        $Create_OutObj = {
-            param ([string]$Name)
+
+        function New-OutPutObject {
+            param (
+                [Parameter(Mandatory = $false)]
+                [validateNotNullOrEmpty()]
+                [string]$Name
+            )
             return [PSCustomObject]@{
                 Name      = $(if (![string]::IsNullOrWhiteSpace($Name)) { $Name } else { '' })
                 language  = ''
                 type      = ''
-                Owner     = ''
+                owner     = ''
                 raw_url   = ''
                 IsPublic  = ''
                 truncated = ''
@@ -356,43 +361,41 @@ function New-GistFile {
         }
     }
     process {
-        $out = $Create_OutObj.Invoke()
         $PSCmdlet.ParameterSetName | Write-Verbose -Verbose
         if ($PSCmdlet.ParameterSetName -eq 'ByUri') {
             $ogs = $GistUri.AbsolutePath; $IsRawUri = $ogs.Contains('/raw/') -and $ogs.Contains('gist.githubusercontent.com')
             $seg = $GistUri.Segments
             $res = $(if ($IsRawUri) {
+                    Write-Verbose '$IsRawUri' -Verbose
                     $_name = $seg[-1]
+                    $out = New-OutPutObject -Name $_name
                     $rtri = 'https://gist.github.com/{0}{1}' -f $seg[1], $seg[2]
                     $rtri = $rtri.Remove($rtri.Length - 1)
                     $info = [uri]::new($rtri) | Get-GistInfo
                     $file = $info.files."$_name"
-                    [PsCustomObject]@{
-                        language = $file.language
-                        IsPublic = $info.IsPublic
-                        raw_url  = $file.raw_url
-                        Owner    = $info.owner.login
-                        type     = $file.type
-                        filename = $_name
-                        size     = $file.size
-                        Id       = $seg[2].Replace('/', '')
-                    }
+                    Add-Member -InputObject $out -Name 'language' -MemberType NoteProperty -Value $file.language -Force
+                    Add-Member -InputObject $out -Name 'IsPublic' -MemberType NoteProperty -Value $info.IsPublic -Force
+                    Add-Member -InputObject $out -Name 'raw_url' -MemberType NoteProperty -Value $file.raw_url -Force
+                    Add-Member -InputObject $out -Name 'owner' -MemberType NoteProperty -Value $info.owner.login -Force
+                    Add-Member -InputObject $out -Name 'type' -MemberType NoteProperty -Value $file.type -Force
+                    Add-Member -InputObject $out -Name 'size' -MemberType NoteProperty -Value $file.size -Force
+                    Add-Member -InputObject $out -Name 'filename' -MemberType NoteProperty -Value $_name -Force
+                    Add-Member -InputObject $out -Name 'filename' -MemberType NoteProperty -Value $file.language -Force
+                    Add-Member -InputObject $out -Name 'Id' -MemberType NoteProperty -Value $seg[2].Replace('/', '') -Force
+                    $out
                 } else {
-                    # $info = $GistUri | Get-GistInfo
-                    [PsCustomObject]@{
-                        language = ''
-                        IsPublic = $null
-                        raw_url  = ''
-                        Owner    = $seg[1].Split('/')[0]
-                        type     = ''
-                        filename = ''
-                        size     = ''
-                        Id       = $seg[-1]
-                    }
+                    Write-Verbose '-not RawUri' -Verbose
+                    Write-Verbose "($seg)" -Verbose
+                    $out = New-OutPutObject
+                    Add-Member -InputObject $out -Name 'owner' -MemberType NoteProperty -Value $seg[1].Split('/')[0] -Force
+                    Add-Member -InputObject $out -Name 'IsPublic' -MemberType NoteProperty -Value ($null) -Force
+                    Add-Member -InputObject $out -Name 'Id' -MemberType NoteProperty -Value $seg[-1] -Force
+                    $out
                 }
             )
             if (![string]::IsNullOrWhiteSpace($res.Owner)) {
-                $AddStaticProp.Invoke('UserName', $res.Owner)
+                Write-Verbose 'Add-StaticProp UserName' -Verbose
+                Add-StaticProp -Name 'UserName' -Value $res.Owner
             }
             $out = New-GistFile -GistInfo $res
             # $JobId = $(Start-Job -ScriptBlock {
@@ -402,8 +405,10 @@ function New-GistFile {
             # ).Id
             # $out = Invoke-Command $(Get-WaitScript) -ArgumentList @('Get Gist items', $JobId)
         } else {
-            $out = $Create_OutObj.Invoke()
-            $out.PsObject.Properties.Name.ForEach({ $out.$_ = $Gistinfo.$_ })
+            return $GistInfo
+            # pause for now
+            $out = $(if ($null -eq $GistInfo) { Write-Warning "Empty InputObject ⚠"; New-OutPutObject }else { $GistInfo })
+            # $out | Get-Member -MemberType NoteProperty | Select-Object -ExpandProperty Name | ForEach-Object { $out.$_ = $Gistinfo.$_ }
             if ([string]::IsNullOrWhiteSpace($out.Owner)) {
                 if (![string]::IsNullOrWhiteSpace([PSCustomObject].UserName)) {
                     $out.Owner = [PSCustomObject].UserName
@@ -412,14 +417,14 @@ function New-GistFile {
                 }
             }
             if ($null -eq ([PSCustomObject].ChildItems) -and ![string]::IsNullOrWhiteSpace($out.Id)) {
-                $AddStaticProp.Invoke('ChildItems', $((Get-GistInfo -UserName $out.Owner -GistId $out.Id).files))
+                Add-StaticProp -Name 'ChildItems' -Value (Get-GistInfo -UserName $out.Owner -GistId $out.Id).files
             }
             if ($null -ne [PSCustomObject].ChildItems) {
-                $_files = $null; [string[]]$filenames = [PSCustomObject].ChildItems | Get-Member -MemberType NoteProperty | Select-Object -ExpandProperty Name
+                $_files = $null; [string[]]$filenames = ([PSCustomObject].ChildItems | Get-Member -MemberType NoteProperty).Name
                 try {
                     $_files = [PsObject[]]$filenames.Foreach({
                             $_Item = [PSCustomObject].ChildItems."$_"
-                            $_Gist = $Create_OutObj.Invoke($_Item.filename)
+                            $_Gist = New-OutPutObject -Name $_Item.filename
                             $_Gist.language = $_Item.language
                             $_Gist.Ispublic = $out.IsPublic
                             $_Gist.raw_url = $_Item.raw_url

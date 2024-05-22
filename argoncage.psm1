@@ -183,76 +183,47 @@ class ArgonCage {
                 Paths = [System.Collections.Generic.List[string]]::new()
             }
         }
+        [ArgonCage]::Tmp | Add-Member ScriptMethod -Force:$Force -Name 'SaveSessionKey' -Value {
+            [OutputType([void])]
+            param(
+                [Parameter(Mandatory = $true, Position = 0)]
+                [ValidateNotNullOrEmpty()][string]$Name,
+
+                [Parameter(Mandatory = $true, Position = 1)]
+                [ValidateNotNullOrEmpty()][SecureString]$Value
+            )
+            if ($null -eq $this.vars.SessionKeys) {
+                $this.vars.Set('SessionKeys', (New-RecordMap))
+                $this.vars.SessionKeys.Add(@{ $Name = $Value })
+            } else {
+                $this.vars.SessionKeys.Set(@{ $Name = $Value })
+            }
+        }
+        [ArgonCage]::Tmp | Add-Member ScriptMethod -Force:$Force -Name 'GetSessionKey' -Value {
+            [OutputType([securestring])]
+            param(
+                [Parameter(Mandatory = $true, Position = 0)]
+                [ValidateNotNullOrEmpty()][string]$Name,
+
+                [Parameter(Mandatory = $true, Position = 1)]
+                [ValidateNotNullOrEmpty()][psobject]$Options
+            )
+            if ($null -eq $this.vars.SessionKeys) {
+                $_scope = [scriptblock]::Create("return $($Options.caller)::EncryptionScope").Invoke();
+                $scope = $(if ([string]::IsNullOrWhiteSpace("$_scope")) { 'Machine' -as 'EncryptionScope' } else { $_scope })
+                [ValidateNotNullOrEmpty()][EncryptionScope]$scope = $scope
+                $this.SaveSessionKey($Name, $(if ($scope -eq "User") {
+                            Write-Verbose "Save Sessionkey $Name ..."
+                            $(CryptoBase)::GetPassword(("{0} {1}" -f $Options.caller, $Options.Prompt))
+                        } else {
+                            $(xconvert)::ToSecurestring((CryptoBase)::GetUniqueMachineId())
+                        }
+                    )
+                )
+            }
+            return $this.vars.SessionKeys.$Name
+        }
         return [ArgonCage]::Tmp
-    }
-    # Method to validate the password: This Just checks if its a good enough password
-    static [bool] ValidatePassword([SecureString]$password) {
-        $IsValid = $false; $minLength = 8; $handle = [System.IntPtr]::new(0); $Passw0rd = [string]::Empty;
-        try {
-            Add-Type -AssemblyName System.Runtime.InteropServices
-            Set-Variable -Name Passw0rd -Scope Local -Visibility Private -Option Private -Value $((xconvert)::ToString($Password));
-            Set-Variable -Name handle -Scope Local -Visibility Private -Option Private -Value $([System.Runtime.InteropServices.Marshal]::StringToHGlobalAnsi($Passw0rd));
-            # Set the required character types
-            $requiredCharTypes = [System.Text.RegularExpressions.Regex]::Matches("$Passw0rd", "[A-Za-z]|[0-9]|[^A-Za-z0-9]") | Select-Object -ExpandProperty Value
-            # Check if the password meets the minimum length requirement and includes at least one of each required character type
-            $IsValid = ($Passw0rd.Length -ge $minLength -and $requiredCharTypes.Count -ge 3)
-        } catch {
-            throw $_
-        } finally {
-            Remove-Variable Passw0rd -Force -ErrorAction SilentlyContinue
-            # Zero out the memory used by the variable.
-            [void][System.Runtime.InteropServices.Marshal]::ZeroFreeGlobalAllocAnsi($handle);
-            Remove-Variable handle -Force -ErrorAction SilentlyContinue
-        }
-        return $IsValid
-    }
-    # Method to save the password token (like a custom hash thing) to sql database
-    static [void] SavePasswordToken([string]$username, [SecureString]$password, [string]$connectionString) {
-        $passw0rdHash = [string]::Empty
-        # Hash the password using the SHA-3 algorithm
-        if ('System.Security.Cryptography.SHA3Managed' -is 'type') {
-            $passw0rdHash = (New-Object System.Security.Cryptography.SHA3Managed).ComputeHash([System.Text.Encoding]::UTF8.GetBytes((xconvert)::Tostring($password)))
-        } else {
-            # Hash the password using an online SHA-3 hash generator
-            $passw0rdHash = ((Invoke-WebRequest -Method Post -Uri "https://passwordsgenerator.net/sha3-hash-generator/" -Body "text=$((xconvert)::Tostring($password))").Content | ConvertFrom-Json).sha3
-        }
-        # Connect to the database
-        $connection = New-Object System.Data.SqlClient.SqlConnection($connectionString)
-        $connection.Open()
-
-        # Create a SQL command to update the password hash in the database
-        $command = New-Object System.Data.SqlClient.SqlCommand("UPDATE Users SET PasswordHash = @PasswordHash WHERE Username = @Username", $connection)
-        $command.Parameters.AddWithValue("@Username", $username)
-        $command.Parameters.AddWithValue("@PasswordHash", $passw0rdHash)
-
-        # Execute the command
-        $command.ExecuteNonQuery()
-
-        # Close the connection
-        $connection.Close()
-    }
-    # Method to retieve the passwordHash from sql database
-    # Create an instance of the PasswordManager class
-    # $manager = [ArgonCage]::new("username", "")
-    # Load the password hash from the database
-    # $manager.LoadPasswordHash("username", "Server=localhost;Database=MyDatabase;Trusted_Connection=True;")
-    static [string] LoadPasswordToken([string]$username, [string]$connectionString) {
-        # Connect to the database
-        $connection = New-Object System.Data.SqlClient.SqlConnection($connectionString)
-        $connection.Open()
-
-        # Create a SQL command to retrieve the password hash from the database
-        $command = New-Object System.Data.SqlClient.SqlCommand("SELECT PasswordHash FROM Users WHERE Username = @Username", $connection)
-        $command.Parameters.AddWithValue("@Username", $username)
-
-        # Execute the command and retrieve the password hash
-        $reader = $command.ExecuteReader()
-        $reader.Read()
-        $Passw0rdHash = $reader["PasswordHash"]
-
-        # Close the connection
-        $connection.Close()
-        return $Passw0rdHash
     }
     static [securestring] ResolveSecret([securestring]$secret, [string]$cacheTag) {
         $cache = [ArgonCage]::Read_Cache().Where({ $_.Tag -eq $cacheTag })
@@ -446,7 +417,6 @@ class ArgonCage {
             $([System.Text.Encoding]::UTF8.GetString($da) | ConvertFrom-Json).ForEach({ $ca += New-RecordMap $((xconvert)::ToHashTable($_)) })
             return $ca
         }
-
         $cache | Add-Member ScriptMethod -Name 'Update' -Value {
             [OutputType([array])]
             param(
@@ -461,8 +431,7 @@ class ArgonCage {
             )
             $sessionConfig = [ArgonCage]::Tmp.vars.SessionConfig
             [ValidateNotNullOrEmpty()][Object]$sessionConfig = $sessionConfig
-            $c_array = @()
-            $c_array += @{ $TagName = $Credential }
+            $c_array = @(); $c_array += @{ $TagName = $Credential }
             $results = @(); $c_array.keys | ForEach-Object {
                 $_TagName = $_; $_Credential = $c_array.$_
                 if ([string]::IsNullOrWhiteSpace($_TagName)) { throw "InvalidArgument : TagName" }
@@ -513,46 +482,6 @@ class ArgonCage {
     }
     static [array] Update_Cache([string]$userName, [securestring]$password, [string]$TagName, [bool]$Force) {
         return [ArgonCage]::vault.Cache.Update($userName, $password, $TagName, $Force)
-    }
-    [void] SaveSessionKey([string]$Name, [SecureString]$Value) {
-        [ValidateNotNullOrEmpty()][string]$Name = $Name
-        if ($null -eq $this::Tmp.vars.SessionKeys) {
-            $this::Tmp.vars.Set('SessionKeys', (New-RecordMap))
-            $this::Tmp.vars.SessionKeys.Add(@{ $Name = $Value })
-        } else {
-            $this::Tmp.vars.SessionKeys.Set(@{ $Name = $Value })
-        }
-    }
-    [SecureString] GetSessionKey([string]$Name) {
-        return $this.GetSessionKey($Name, [PSCustomObject]@{
-                caller = Show-Stack
-                prompt = "Paste/write a Password"
-            }
-        )
-    }
-    [SecureString] GetSessionKey([string]$Name, [psobject]$Options) {
-        [ValidateNotNullOrEmpty()][string]$Name = $Name
-        [ValidateNotNullOrEmpty()][psobject]$Options = $Options
-        if ($null -eq $this::Tmp.vars.SessionKeys) {
-            $scope = $this::Get_Enc_Scope($Options.caller)
-            [ValidateNotNullOrEmpty()][EncryptionScope]$scope = $scope
-            $this.SaveSessionKey($Name, $(if ($scope -eq "User") {
-                        Write-Verbose "Save Sessionkey $Name ..."
-                        (CryptoBase)::GetPassword(("{0} {1}" -f $Options.caller, $Options.Prompt))
-                    } else {
-                        (xconvert)::ToSecurestring((CryptoBase)::GetUniqueMachineId())
-                    }
-                )
-            )
-        }
-        return $this::Tmp.vars.SessionKeys.$Name
-    }
-    static hidden [EncryptionScope] Get_Enc_Scope([string]$caller) {
-        $_scope = [scriptblock]::Create("return $($caller)::EncryptionScope").Invoke();
-        if ([string]::IsNullOrWhiteSpace("$_scope")) {
-            return [ArgonCage]::Tmp::EncryptionScope
-        }
-        return $_scope
     }
     [void] ClearSession() {
         $this::Tmp.vars = New-RecordMap
@@ -680,6 +609,75 @@ class ArgonCage {
         Push-Stack 'ArgonCage'; if ([ArgonCage]::UseVerbose) { "[+] Updating secrets .." | Write-Host -f Green }
         if (![string]::IsNullOrWhiteSpace($Compression)) { (CryptoBase)::ValidateCompression($Compression) }
         (Base85)::Encode((AesGCM)::Encrypt([System.Text.Encoding]::UTF8.GetBytes([string]($InputObject | ConvertTo-Csv)), $Password, (AesGCM)::GetDerivedBytes($Password), $null, $Compression, 1)) | Out-File $outFile -Encoding utf8BOM
+    }
+    # Method to validate the password: This Just checks if its a good enough password
+    static [bool] ValidatePassword([SecureString]$password) {
+        $IsValid = $false; $minLength = 8; $handle = [System.IntPtr]::new(0); $Passw0rd = [string]::Empty;
+        try {
+            Add-Type -AssemblyName System.Runtime.InteropServices
+            Set-Variable -Name Passw0rd -Scope Local -Visibility Private -Option Private -Value $((xconvert)::ToString($Password));
+            Set-Variable -Name handle -Scope Local -Visibility Private -Option Private -Value $([System.Runtime.InteropServices.Marshal]::StringToHGlobalAnsi($Passw0rd));
+            # Set the required character types
+            $requiredCharTypes = [System.Text.RegularExpressions.Regex]::Matches("$Passw0rd", "[A-Za-z]|[0-9]|[^A-Za-z0-9]") | Select-Object -ExpandProperty Value
+            # Check if the password meets the minimum length requirement and includes at least one of each required character type
+            $IsValid = ($Passw0rd.Length -ge $minLength -and $requiredCharTypes.Count -ge 3)
+        } catch {
+            throw $_
+        } finally {
+            Remove-Variable Passw0rd -Force -ErrorAction SilentlyContinue
+            # Zero out the memory used by the variable.
+            [void][System.Runtime.InteropServices.Marshal]::ZeroFreeGlobalAllocAnsi($handle);
+            Remove-Variable handle -Force -ErrorAction SilentlyContinue
+        }
+        return $IsValid
+    }
+    # Method to save the password token (like a custom hash thing) to sql database
+    static [void] SavePasswordToken([string]$username, [SecureString]$password, [string]$connectionString) {
+        $passw0rdHash = [string]::Empty
+        # Hash the password using the SHA-3 algorithm
+        if ('System.Security.Cryptography.SHA3Managed' -is 'type') {
+            $passw0rdHash = (New-Object System.Security.Cryptography.SHA3Managed).ComputeHash([System.Text.Encoding]::UTF8.GetBytes((xconvert)::Tostring($password)))
+        } else {
+            # Hash the password using an online SHA-3 hash generator
+            $passw0rdHash = ((Invoke-WebRequest -Method Post -Uri "https://passwordsgenerator.net/sha3-hash-generator/" -Body "text=$((xconvert)::Tostring($password))").Content | ConvertFrom-Json).sha3
+        }
+        # Connect to the database
+        $connection = New-Object System.Data.SqlClient.SqlConnection($connectionString)
+        $connection.Open()
+
+        # Create a SQL command to update the password hash in the database
+        $command = New-Object System.Data.SqlClient.SqlCommand("UPDATE Users SET PasswordHash = @PasswordHash WHERE Username = @Username", $connection)
+        $command.Parameters.AddWithValue("@Username", $username)
+        $command.Parameters.AddWithValue("@PasswordHash", $passw0rdHash)
+
+        # Execute the command
+        $command.ExecuteNonQuery()
+
+        # Close the connection
+        $connection.Close()
+    }
+    # Method to retieve the passwordHash from sql database
+    # Create an instance of the PasswordManager class
+    # $manager = [ArgonCage]::new("username", "")
+    # Load the password hash from the database
+    # $manager.LoadPasswordHash("username", "Server=localhost;Database=MyDatabase;Trusted_Connection=True;")
+    static [string] LoadPasswordToken([string]$username, [string]$connectionString) {
+        # Connect to the database
+        $connection = New-Object System.Data.SqlClient.SqlConnection($connectionString)
+        $connection.Open()
+
+        # Create a SQL command to retrieve the password hash from the database
+        $command = New-Object System.Data.SqlClient.SqlCommand("SELECT PasswordHash FROM Users WHERE Username = @Username", $connection)
+        $command.Parameters.AddWithValue("@Username", $username)
+
+        # Execute the command and retrieve the password hash
+        $reader = $command.ExecuteReader()
+        $reader.Read()
+        $Passw0rdHash = $reader["PasswordHash"]
+
+        # Close the connection
+        $connection.Close()
+        return $Passw0rdHash
     }
     [version] SetVersion() {
         $this.version = [version]::New($script:localizedData.ModuleVersion)

@@ -433,7 +433,7 @@ function New-GistFile {
                         }
                     )
                 } finally {
-                    # Set-StaticProp -Name 'ChildItems' -Value $null
+                    Set-StaticProp -Name 'ChildItems' -Value $null
                     $out.files = $_files
                     if ([string]::IsNullOrWhiteSpace($out.Name)) {
                         $out.Name = $filenames[0]

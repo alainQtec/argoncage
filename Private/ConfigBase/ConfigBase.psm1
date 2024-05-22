@@ -18,12 +18,7 @@
     [void] Import([uri]$raw_uri, [Object]$session) {
         try {
             Push-Stack -class "ArgonCage"; $pass = $null;
-            Set-Variable -Name pass -Scope Local -Visibility Private -Option Private -Value $($session.GetSessionKey('configrw', [PSCustomObject]@{
-                        caller = Show-Stack
-                        prompt = "Paste/write a Password to decrypt configs"
-                    }
-                )
-            )
+            Set-Variable -Name pass -Scope Local -Visibility Private -Option Private -Value $($this.GetSessionKey("Paste/write a Password to decrypt configs", $session, 'configrw'))
             $_ob = (xconvert)::Deserialize((xconvert)::ToDeCompressed((AesGCM)::Decrypt((Base85)::Decode($(Invoke-WebRequest $raw_uri -Verbose:$false).Content), $pass)))
             $this.Set([hashtable[]]$_ob.Properties.Name.ForEach({ @{ $_ = $_ob.$_ } }))
         } catch {
@@ -32,7 +27,7 @@
             Remove-Variable Pass -Force -ErrorAction SilentlyContinue
         }
     }
-    [void] Import([String]$FilePath, [Object]$session) {
+    [void] Import([String]$FilePath, [PsObject]$session) {
         Write-Host "$(Show-Stack) Import records: $FilePath ..." -f Green
         $this.Set([RecordMap]::Read($FilePath, $session))
         Write-Host "$(Show-Stack) Import records Complete" -f Green
@@ -91,6 +86,13 @@
     [bool] HasNoteProperty([object]$Name) {
         [ValidateNotNullOrEmpty()][string]$Name = $($Name -as 'string')
         return (($this | Get-Member -Type NoteProperty | Select-Object -ExpandProperty name) -contains "$Name")
+    }
+    hidden [SecureString] GetSessionKey([string]$message, [PsObject]$session, [string]$Name) {
+        return $session.GetSessionKey($Name, [PSCustomObject]@{
+                caller = Show-Stack
+                prompt = $message
+            }
+        )
     }
     [array] ToArray() {
         $array = @(); $props = $this | Get-Member -MemberType NoteProperty

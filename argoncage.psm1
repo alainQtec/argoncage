@@ -38,7 +38,7 @@ class ArgonCage {
     [ValidateNotNullOrEmpty()][version] $version
     static hidden [ValidateNotNull()][Object] $vault
     static hidden [ValidateNotNull()][PsObject] $Tmp
-    Static hidden [ValidateNotNull()][IO.DirectoryInfo] $DataPath = (CryptoBase)::Get_dataPath('ArgonCage', 'Data')
+    Static hidden [ValidateNotNull()][IO.DirectoryInfo] $DataPath = (Get-DataPath 'ArgonCage' 'Data')
     static [System.Collections.ObjectModel.Collection[PsObject]] $banners = @()
     static [ValidateNotNull()][EncryptionScope] $EncryptionScope = [EncryptionScope]::User
     static hidden [bool]$UseVerbose = [bool]$((Get-Variable verbosePreference -ValueOnly) -eq "continue")
@@ -146,7 +146,7 @@ class ArgonCage {
     [bool] DeleteConfigs() {
         return [bool]$(
             try {
-                $configFiles = (Get-GithubTokenFile | Split-Path | Get-ChildItem -File -Recurse).FullName, $this.Config.File, ([ArgonCage]::DataPath | Get-ChildItem -File -Recurse).FullName
+                $configFiles = (Get-GitHubTokenPath | Split-Path | Get-ChildItem -File -Recurse).FullName, $this.Config.File, ([ArgonCage]::DataPath | Get-ChildItem -File -Recurse).FullName
                 $configFiles.Foreach({ Remove-Item -Path $_ -Force -Verbose });
                 $true
             } catch { $false }
@@ -209,14 +209,14 @@ class ArgonCage {
                 [ValidateNotNullOrEmpty()][psobject]$Options
             )
             if ($null -eq $this.vars.SessionKeys) {
-                $_scope = [scriptblock]::Create("return $($Options.caller)::EncryptionScope").Invoke();
+                $_scope = [scriptblock]::Create("return [ArgonCage]::EncryptionScope").Invoke();
                 $scope = $(if ([string]::IsNullOrWhiteSpace("$_scope")) { 'Machine' -as 'EncryptionScope' } else { $_scope })
                 [ValidateNotNullOrEmpty()][EncryptionScope]$scope = $scope
                 $this.SaveSessionKey($Name, $(if ($scope -eq "User") {
                             Write-Verbose "Save Sessionkey $Name ..."
                             $(CryptoBase)::GetPassword(("{0} {1}" -f $Options.caller, $Options.Prompt))
                         } else {
-                            $(xconvert)::ToSecurestring((CryptoBase)::GetUniqueMachineId())
+                            $(xconvert)::ToSecurestring((Get-UniqueMachineId))
                         }
                     )
                 )
@@ -252,18 +252,18 @@ class ArgonCage {
         [ArgonCage]::Set_variables($curr_Config)
     }
     static [void] Set_variables([Object]$Config) {
-        # Sets default variables and stores them in $this::Tmp.vars
+        # Creates NewSession & sets default variables in $this::Tmp.vars
         # Makes it way easier to clean & manage variables without worying about scopes and not dealing with global variables.
         [ValidateNotNullOrEmpty()][Object]$Config = $Config
         [ArgonCage]::NewSession()
         [ArgonCage]::Tmp.vars.Set(@{
                 Users         = @{}
-                Host_Os       = (CryptoBase)::Get_Host_Os()
+                Host_Os       = Get-HostOs
                 ExitCode      = 0
                 UseWhatIf     = [bool]$((Get-Variable WhatIfPreference -ValueOnly) -eq $true)
                 SessionId     = [string]::Empty
                 UseVerbose    = [bool]$((Get-Variable verbosePreference -ValueOnly) -eq "continue")
-                OfflineMode   = !((Retry-Command { (CheckConnection -host "github.com" -msg "Check if offline").Output }).Output)
+                OfflineMode   = !((Retry-Command { (CheckConnection -host "github.com" -msg "[ArgonCage] Check if offline").Output }).Output)
                 CachedCreds   = $null
                 SessionConfig = $Config
                 OgWindowTitle = $(Get-Variable executionContext).Value.Host.UI.RawUI.WindowTitle
@@ -332,7 +332,7 @@ class ArgonCage {
         # hidden [VaultCache]$Cache
         $result.Name = $Name
         if ([string]::IsNullOrWhiteSpace([ArgonCage]::DataPath)) {
-            [ArgonCage]::DataPath = [IO.Path]::Combine((CryptoBase)::Get_dataPath('ArgonCage', 'Data'), 'secrets')
+            [ArgonCage]::DataPath = [IO.Path]::Combine((Get-DataPath 'ArgonCage' 'Data'), 'secrets')
         }
         $result.PsObject.Properties.Add([psscriptproperty]::new('File', {
                     return [IO.FileInfo]::new([IO.Path]::Combine([ArgonCage]::DataPath, $result.Name))
@@ -401,7 +401,7 @@ class ArgonCage {
             Set-Variable -Name "credspath" -Visibility Private -Option Private -Value ([IO.Path]::GetDirectoryName($FilePath))
             if ([string]::IsNullOrWhiteSpace($credspath)) { throw "InvalidArgument: `$credspath" }
             if (!(Test-Path -Path $credspath -PathType Container -ErrorAction Ignore)) { (cryptobase)::Create_Dir($credspath) }
-            $_p = (xconvert)::ToSecurestring((CryptoBase)::GetUniqueMachineId())
+            $_p = (xconvert)::ToSecurestring((Get-UniqueMachineId))
             $ca = @(); if (![IO.File]::Exists($FilePath)) {
                 if ($sc.SaveVaultCache) {
                     New-Item -Path $FilePath -ItemType File -Force -ErrorAction Ignore | Out-Null
@@ -454,7 +454,7 @@ class ArgonCage {
                     $results.Where({ $_.Tag -eq $_TagName }).Set('Token', (HKDF2)::GetToken($_Credential.Password))
                 }
                 if ($sessionConfig.SaveVaultCache) {
-                    $_p = (xconvert)::ToSecurestring((CryptoBase)::GetUniqueMachineId())
+                    $_p = (xconvert)::ToSecurestring((Get-UniqueMachineId))
                     Set-Content -Value $((Base85)::Encode((AesGCM)::Encrypt(
                                 [System.Text.Encoding]::UTF8.GetBytes([string]($results | ConvertTo-Json)),
                                 $_p, (AesGCM)::GetDerivedBytes($_p), $null, 'Gzip', 1
@@ -581,6 +581,7 @@ class ArgonCage {
     static [uri] GetVaultRawUri() {
         [ArgonCage]::NewSession(); if ([ArgonCage]::Tmp.vars.count -eq 0) { [ArgonCage]::Set_variables() }
         $curr_Config = [ArgonCage]::Tmp.vars.SessionConfig; [ValidateNotNull()][Object]$curr_Config = $curr_Config
+        if ($null -eq [ArgonCage]::vault) { [ArgonCage]::vault = [ArgonCage]::Create_Vault($curr_Config.VaultFileName) }
         return [ArgonCage]::GetVaultRawUri([ArgonCage]::vault.Name, $curr_Config.Remote)
     }
     static [uri] GetVaultRawUri([string]$vaultName, [uri]$remote) {
@@ -591,7 +592,7 @@ class ArgonCage {
             throw [System.ArgumentNullException]::new("remote", "Failed to get remote uri. Argument IsNullorEmpty.")
         }
         try {
-            $rem_gist = $remote | Get-GistInfo
+            $rem_gist = Get-GistInfo -Uri $remote
         } catch {
             Write-Host "[-] Error: $_" -f Red
         } finally {

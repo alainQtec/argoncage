@@ -284,70 +284,6 @@ class CryptoBase {
         $aes.IV = [CryptoBase]::GetRandomEntropy();
         return $aes
     }
-    # Use a cryptographic hash function (SHA-256) to generate a unique machine ID
-    static [string] GetUniqueMachineId() {
-        $Id = [string]($Env:MACHINE_ID)
-        $vp = Get-Variable VerbosePreference -ValueOnly
-        try {
-            Set-Variable VerbosePreference -Value $([System.Management.Automation.ActionPreference]::SilentlyContinue)
-            if ([string]::IsNullOrWhiteSpace($Id)) {
-                $sha256 = [System.Security.Cryptography.SHA256]::Create()
-                $HostOS = $(if ($(Get-Variable PSVersionTable -Value).PSVersion.Major -le 5 -or $(Get-Variable IsWindows -Value)) { "Windows" }elseif ($(Get-Variable IsLinux -Value)) { "Linux" }elseif ($(Get-Variable IsMacOS -Value)) { "macOS" }else { "UNKNOWN" });
-                switch ($HostOS) {
-                    "Windows" {
-                        $_Id = Get-CimInstance -ClassName Win32_ComputerSystemProduct | Select-Object -ExpandProperty UUID
-                        $_Id = $([convert]::ToBase64String($sha256.ComputeHash([System.Text.Encoding]::UTF8.GetBytes($_Id))));
-                    }
-                    "Linux" {
-                        # $_Id = (sudo cat /sys/class/dmi/id/product_uuid).Trim() # sudo prompt is a nono
-                        # Lets use mac addresses
-                        $_Id = ([string[]]$(ip link show | grep "link/ether" | awk '{print $2}') -join '-').Trim()
-                        $_Id = [convert]::ToBase64String($sha256.ComputeHash([System.Text.Encoding]::UTF8.GetBytes($_Id)))
-                    }
-                    "macOS" {
-                        $_Id = (system_profiler SPHardwareDataType | Select-String "UUID").Line.Split(":")[1].Trim()
-                        $_Id = [convert]::ToBase64String($sha256.ComputeHash([System.Text.Encoding]::UTF8.GetBytes($_Id)))
-                    }
-                    Default {
-                        Write-Host "unknown"
-                        throw "Error: HostOS = '$HostOS'. Could not determine the operating system."
-                    }
-                }
-                [System.Environment]::SetEnvironmentVariable("MACHINE_ID", $_Id, [System.EnvironmentVariableTarget]::Process)
-            }
-            $Id = [string]($Env:MACHINE_ID)
-        } catch {
-            throw $_
-        } finally {
-            if ($sha256) { $sha256.Clear(); $sha256.Dispose() }
-            Set-Variable VerbosePreference -Value $vp
-        }
-        return $Id
-    }
-    static [string] Get_Host_Os() {
-        # Todo: Should return one of these: [Enum]::GetNames([System.PlatformID])
-        return $(if ($(Get-Variable IsWindows -Value)) { "Windows" }elseif ($(Get-Variable IsLinux -Value)) { "Linux" }elseif ($(Get-Variable IsMacOS -Value)) { "macOS" }else { "UNKNOWN" })
-    }
-    static [IO.DirectoryInfo] Get_dataPath([string]$appName, [string]$SubdirName) {
-        $_Host_OS = [CryptoBase]::Get_Host_Os()
-        $dataPath = if ($_Host_OS -eq 'Windows') {
-            [System.IO.DirectoryInfo]::new([IO.Path]::Combine($Env:HOME, "AppData", "Roaming", $appName, $SubdirName))
-        } elseif ($_Host_OS -in ('Linux', 'MacOs')) {
-            [System.IO.DirectoryInfo]::new([IO.Path]::Combine((($env:PSModulePath -split [IO.Path]::PathSeparator)[0] | Split-Path | Split-Path), $appName, $SubdirName))
-        } elseif ($_Host_OS -eq 'Unknown') {
-            try {
-                [System.IO.DirectoryInfo]::new([IO.Path]::Combine((($env:PSModulePath -split [IO.Path]::PathSeparator)[0] | Split-Path | Split-Path), $appName, $SubdirName))
-            } catch {
-                Write-Warning "Could not resolve chat data path"
-                Write-Warning "HostOS = '$_Host_OS'. Could not resolve data path."
-                [System.IO.Directory]::CreateTempSubdirectory(($SubdirName + 'Data-'))
-            }
-        } else {
-            throw [InvalidOperationException]::new('Could not resolve data path. Get_Host_OS FAILED!')
-        }
-        if (!$dataPath.Exists) { [CryptoBase]::Create_Dir($dataPath) }
-        return $dataPath
-    }
     static [void] Create_Dir([string]$Path) {
         [CryptoBase]::Create_Dir([System.IO.DirectoryInfo]::new($Path))
     }
@@ -508,7 +444,6 @@ class Shuffl3r {
 #  Todo: Find a working/cross-platform way to protect bytes (Like DPAPI for windows but better) then
 #  add static [byte[]] Encrypt([byte[]]$Bytes, [SecureString]$Password, [byte[]]$Salt, [byte[]]$associatedData, [bool]$Protect, [string]$Compression, [int]$iterations)
 class AesGCM : CryptoBase {
-    # static hidden [byte[]]$_salt = [convert]::FromBase64String("hsKgmva9wZoDxLeREB1udw==");
     AesGCM() { }
     static hidden [EncryptionScope] $Scope = [EncryptionScope]::User
     static [byte[]] Encrypt([byte[]]$bytes) {
@@ -1051,11 +986,54 @@ function HKDF2 {
     }
 }
 
+# .DESCRIPTION
+#    Uses a cryptographic hash function (SHA-256) to generate a unique machine ID
 function Get-UniqueMachineId {
     [CmdletBinding()]
     param ()
+    Begin {
+        # For performance reasons:
+        $Id = [string]($Env:MACHINE_ID)
+    }
     process {
-        return [CryptoBase]::GetUniqueMachineId()
+        $vp = Get-Variable VerbosePreference -ValueOnly
+        try {
+            Set-Variable VerbosePreference -Value $([System.Management.Automation.ActionPreference]::SilentlyContinue)
+            if ([string]::IsNullOrWhiteSpace($Id)) {
+                $sha256 = [System.Security.Cryptography.SHA256]::Create()
+                $HostOS = $(if ($(Get-Variable PSVersionTable -Value).PSVersion.Major -le 5 -or $(Get-Variable IsWindows -Value)) { "Windows" }elseif ($(Get-Variable IsLinux -Value)) { "Linux" }elseif ($(Get-Variable IsMacOS -Value)) { "macOS" }else { "UNKNOWN" });
+                switch ($HostOS) {
+                    "Windows" {
+                        $_Id = Get-CimInstance -ClassName Win32_ComputerSystemProduct | Select-Object -ExpandProperty UUID
+                        $_Id = $([convert]::ToBase64String($sha256.ComputeHash([System.Text.Encoding]::UTF8.GetBytes($_Id))));
+                    }
+                    "Linux" {
+                        # $_Id = (sudo cat /sys/class/dmi/id/product_uuid).Trim() # sudo prompt is a nono
+                        # Lets use mac addresses
+                        $_Id = ([string[]]$(ip link show | grep "link/ether" | awk '{print $2}') -join '-').Trim()
+                        $_Id = [convert]::ToBase64String($sha256.ComputeHash([System.Text.Encoding]::UTF8.GetBytes($_Id)))
+                    }
+                    "macOS" {
+                        $_Id = (system_profiler SPHardwareDataType | Select-String "UUID").Line.Split(":")[1].Trim()
+                        $_Id = [convert]::ToBase64String($sha256.ComputeHash([System.Text.Encoding]::UTF8.GetBytes($_Id)))
+                    }
+                    Default {
+                        Write-Host "unknown"
+                        throw "Error: HostOS = '$HostOS'. Could not determine the operating system."
+                    }
+                }
+                [System.Environment]::SetEnvironmentVariable("MACHINE_ID", $_Id, [System.EnvironmentVariableTarget]::Process)
+            }
+            $Id = [string]($Env:MACHINE_ID)
+        } catch {
+            throw $_
+        } finally {
+            if ($sha256) { $sha256.Clear(); $sha256.Dispose() }
+            Set-Variable VerbosePreference -Value $vp
+        }
+    }
+    end {
+        return $Id
     }
 }
 Export-ModuleMember -Function '*' -Variable '*' -Cmdlet '*' -Alias '*' -Verbose:($VerbosePreference -eq "Continue")

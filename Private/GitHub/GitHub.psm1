@@ -403,14 +403,7 @@ function New-GistFile {
             # $out = Invoke-Command $(Get-WaitScript) -ArgumentList @('Get Gist items', $JobId)
         } else {
             $out = $Create_OutObj.Invoke()
-            $out.language = $GistInfo.language
-            $out.IsPublic = $GistInfo.IsPublic
-            $out.raw_url = $GistInfo.raw_url
-            $out.type = $GistInfo.type
-            $out.Name = $GistInfo.filename
-            $out.size = $GistInfo.size
-            $out.Id = $GistInfo.Id
-            $out.Owner = $GistInfo.Owner
+            $out.PsObject.Properties.Name.ForEach({ $out.$_ = $Gistinfo.$_ })
             if ([string]::IsNullOrWhiteSpace($out.Owner)) {
                 if (![string]::IsNullOrWhiteSpace([PSCustomObject].UserName)) {
                     $out.Owner = [PSCustomObject].UserName
@@ -428,20 +421,20 @@ function New-GistFile {
                             $_Item = [PSCustomObject].ChildItems."$_"
                             $_Gist = $Create_OutObj.Invoke($_Item.filename)
                             $_Gist.language = $_Item.language
-                            $_Gist.Ispublic = $this.IsPublic
+                            $_Gist.Ispublic = $out.IsPublic
                             $_Gist.raw_url = $_Item.raw_url
                             $_Gist.type = $_Item.type
                             $_Gist.size = $_Item.size
                             $_Gist.content = $_Item.content
-                            $_Gist.Owner = $this.Owner; $_Gist.Id = $this.Id
+                            $_Gist.Owner = $out.Owner; $_Gist.Id = $out.Id
                             $_Gist
                         }
                     )
                 } finally {
                     [PSCustomObject].ChildItems = $null
-                    $this.files = $_files
+                    $out.files = $_files
                     if ([string]::IsNullOrWhiteSpace($this.Name)) {
-                        $this.Name = $filenames[0]
+                        $out.Name = $filenames[0]
                     }
                 }
             }

@@ -43,7 +43,7 @@ class NetworkManager {
         # https://github.com/dotnet/runtime/issues/28572
         $result = [bool](Get-Command ping -ea SilentlyContinue)
         if ($result) { return $result }
-        $HostOS = (CryptoBase)::Get_Host_Os()
+        $HostOS = Get-HostOs
         switch ($HostOS) {
             "Linux" {
                 $osID = (Get-Content -Path '/etc/os-release' | Where-Object { $_ -match '^ID=' }).Split('=')[1]
@@ -191,7 +191,7 @@ function Block-AllOutboundConnections {
     param ()
 
     process {
-        $HostOs = (CryptoBase)::Get_Host_Os()
+        $HostOs = Get-HostOs
         if ($HostOs -eq "Linux") {
             sudo iptables -P OUTPUT DROP
         } else {
@@ -204,7 +204,7 @@ function Unblock-AllOutboundConnections {
     [CmdletBinding()]
     param ()
     process {
-        $HostOs = (CryptoBase)::Get_Host_Os()
+        $HostOs = Get-HostOs
         if ($HostOs -eq "Linux") {
             sudo iptables -P OUTPUT ACCEPT
         } else {

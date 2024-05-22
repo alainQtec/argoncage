@@ -302,7 +302,7 @@ function Get-GistInfo {
             $l = New-GistFile -GistUri ([uri]::new($Uri.AbsolutePath))
             $r = Get-GistInfo -UserName $l.Owner -Id $l.Id
         }
-        $r = New-GistFile -GistInfo $r
+        $r = New-GistFile -GistInfo $r -Wrap
     }
     end {
         return $r
@@ -318,28 +318,35 @@ function New-GistFile {
 
         [Parameter(Mandatory = $true, Position = 0, ParameterSetName = 'ByInfo')]
         [ValidateNotNullOrEmpty()]
-        [PsObject]$GistInfo
+        [PsObject]$GistInfo,
+
+        [Parameter(Mandatory = $false, ParameterSetName = 'ByInfo')]
+        [switch]$Wrap
     )
     begin {
         $out = $null;
-        function Add-StaticProp {
+        function private:Set-StaticProp {
             param (
                 [Parameter(Mandatory = $true)]
                 [ValidateNotNullOrEmpty()]
                 [string]$Name,
 
                 [Parameter(Mandatory = $true)]
-                [ValidateNotNullOrEmpty()]
+                [AllowNull()]
                 [System.Object]$Value
             )
-            [PSCustomObject] | Add-Member -Name $Name -Force -MemberType ScriptProperty -Value {
-                return $Value
-            }.GetNewClosure() -SecondValue {
-                throw [System.InvalidOperationException]::new("Cannot change $Name property")
+            if ($null -ne $Value) {
+                [PSCustomObject] | Add-Member -Name $Name -Force -MemberType ScriptProperty -Value {
+                    return $Value
+                }.GetNewClosure() -SecondValue {
+                    throw [System.InvalidOperationException]::new("Cannot change $Name property")
+                }
+            } else {
+                [PSCustomObject].PSObject.Properties.Remove($Name)
             }
         }
 
-        function New-OutPutObject {
+        function private:New-OutPutObject {
             param (
                 [Parameter(Mandatory = $false)]
                 [validateNotNullOrEmpty()]
@@ -394,8 +401,8 @@ function New-GistFile {
                 }
             )
             if (![string]::IsNullOrWhiteSpace($res.Owner)) {
-                Write-Verbose 'Add-StaticProp UserName' -Verbose
-                Add-StaticProp -Name 'UserName' -Value $res.Owner
+                Write-Verbose 'Set-StaticProp UserName' -Verbose
+                Set-StaticProp -Name 'UserName' -Value $res.Owner
             }
             $out = New-GistFile -GistInfo $res
             # $JobId = $(Start-Job -ScriptBlock {
@@ -404,11 +411,8 @@ function New-GistFile {
             #     } -ArgumentList $res
             # ).Id
             # $out = Invoke-Command $(Get-WaitScript) -ArgumentList @('Get Gist items', $JobId)
-        } else {
-            return $GistInfo
-            # pause for now
+        } elseif (!$wrap.IsPresent) {
             $out = $(if ($null -eq $GistInfo) { Write-Warning "Empty InputObject ⚠"; New-OutPutObject }else { $GistInfo })
-            # $out | Get-Member -MemberType NoteProperty | Select-Object -ExpandProperty Name | ForEach-Object { $out.$_ = $Gistinfo.$_ }
             if ([string]::IsNullOrWhiteSpace($out.Owner)) {
                 if (![string]::IsNullOrWhiteSpace([PSCustomObject].UserName)) {
                     $out.Owner = [PSCustomObject].UserName
@@ -417,32 +421,44 @@ function New-GistFile {
                 }
             }
             if ($null -eq ([PSCustomObject].ChildItems) -and ![string]::IsNullOrWhiteSpace($out.Id)) {
-                Add-StaticProp -Name 'ChildItems' -Value (Get-GistInfo -UserName $out.Owner -GistId $out.Id).files
+                Write-Verbose "GetGist ChildItems ..." -Verbose
+                Set-StaticProp -Name 'ChildItems' -Value (Get-GistInfo -UserName $out.Owner -GistId $out.Id).files
             }
             if ($null -ne [PSCustomObject].ChildItems) {
-                $_files = $null; [string[]]$filenames = ([PSCustomObject].ChildItems | Get-Member -MemberType NoteProperty).Name
+                Write-Verbose '$null -ne [PSCustomObject].ChildItems ...' -Verbose
+                [PsObject[]]$_files = @(); [string[]]$filenames = ([PSCustomObject].ChildItems | Get-Member -MemberType NoteProperty).Name
                 try {
-                    $_files = [PsObject[]]$filenames.Foreach({
+                    $filenames.Foreach({
                             $_Item = [PSCustomObject].ChildItems."$_"
+                            Write-Verbose "New-OutPutObject for Filename $($_Item.filename)" -Verbose
                             $_Gist = New-OutPutObject -Name $_Item.filename
                             $_Gist.language = $_Item.language
-                            $_Gist.Ispublic = $out.IsPublic
+                            $_Gist.Ispublic = $out.public
                             $_Gist.raw_url = $_Item.raw_url
                             $_Gist.type = $_Item.type
                             $_Gist.size = $_Item.size
                             $_Gist.content = $_Item.content
-                            $_Gist.Owner = $out.Owner; $_Gist.Id = $out.Id
-                            $_Gist
+                            $_Gist.Owner = $out.Owner;
+                            $_Gist.Id = $out.Id
+                            $_files += $_Gist
                         }
                     )
                 } finally {
-                    [PSCustomObject].ChildItems = $null
+                    # Set-StaticProp -Name 'ChildItems' -Value $null
                     $out.files = $_files
-                    if ([string]::IsNullOrWhiteSpace($this.Name)) {
+                    if ([string]::IsNullOrWhiteSpace($out.Name)) {
                         $out.Name = $filenames[0]
                     }
                 }
             }
+        } else {
+            Write-Verbose "ByInfo Wrapppp ..." -Verbose
+            $out = New-OutPutObject; ($out | Get-Member -MemberType NoteProperty).Name | ForEach-Object { $out.$_ = $GistInfo.$_ }
+            $out.Ispublic = $GistInfo.public
+            ('language', 'type', 'raw_url', 'truncated', 'content').ForEach({
+                    if ($null -eq $out."$_") { $out.PSObject.Properties.Remove($_) }
+                }
+            )
         }
     }
     end {

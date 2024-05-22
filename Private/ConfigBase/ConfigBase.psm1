@@ -150,7 +150,7 @@
                     $process.StartInfo.FileName = 'nvim'
                     $process.StartInfo.Arguments = $outFile.FullName
                     $process.StartInfo.WindowStyle = [System.Diagnostics.ProcessWindowStyle]::Maximized
-                    $process.Start(); $fswatcher = New-FileSystemWatcher -File $outFile.FullName -OnComplete ([scriptblock]::Create("Stop-Process -Id $($process.Id) -Force"));
+                    $process.Start(); $fswatcher = Start-FsWatcher -File $outFile.FullName -OnComplete ([scriptblock]::Create("Stop-Process -Id $($process.Id) -Force"));
                     if ($null -eq $fswatcher) { Write-Warning "Failed to start FileMonitor"; Write-Host "Waiting nvim process to exit..." $process.WaitForExit() }
                     $private:config_ob = [IO.FILE]::ReadAllText($outFile.FullName) | ConvertFrom-Json
                 } finally {
@@ -248,6 +248,20 @@ function Get-HostOs() {
     }
 }
 
+function New-Directory {
+    [CmdletBinding()]
+    [OutputType([void])]
+    param (
+        [Parameter(Mandatory = $true, Position = 0)]
+        [string]$Path
+    )
+    process {
+        [ValidateNotNullOrEmpty()][System.IO.DirectoryInfo]$Path = $Path
+        $nF = @(); $p = $Path; while (!$p.Exists) { $nF += $p; $p = $p.Parent }
+        [Array]::Reverse($nF); $nF | ForEach-Object { $_.Create(); Write-Debug "Created $_" }
+    }
+}
+
 function Get-DataPath {
     [CmdletBinding()]
     [OutputType([System.IO.DirectoryInfo])]
@@ -258,7 +272,9 @@ function Get-DataPath {
 
         [Parameter(Mandatory = $true, Position = 1)]
         [ValidateNotNullOrEmpty()]
-        [string]$SubdirName
+        [string]$SubdirName,
+
+        [switch]$DontCreate
     )
 
     process {
@@ -278,7 +294,7 @@ function Get-DataPath {
         } else {
             throw [InvalidOperationException]::new('Could not resolve data path. Get-HostOS FAILED!')
         }
-        if (!$dataPath.Exists) { [GitHub]::Create_Dir($dataPath) }
+        if (!$dataPath.Exists -and !$DontCreate.IsPresent) { New-Directory -Path $dataPath.FullName }
         return $dataPath
     }
 }

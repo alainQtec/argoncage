@@ -28,7 +28,7 @@ function LoadBinaries {
     }
 
     # pre-load the platform specific DLL version
-    $parentFolder = Split-Path -Path $PSScriptRoot
+    # $parentFolder = Split-Path -Path $PSScriptRoot
 
     $Path = "$PSScriptRoot\bin\x$platform\SQLite.Interop.dll"
     $null = [Internal.Helper]::LoadLibrary($Path)
@@ -493,7 +493,7 @@ class Database {
         $tables = $this.InvokeSql($sql)
 
         # if the table is not present, return $null
-        if ($tables -eq $null) { return $null }
+        if ($null -eq $tables) { return $null }
 
         # else return a Table object for the found table
         return [Table]::new($this, $tables[0])
@@ -517,7 +517,7 @@ class Database {
                 $type = $_.TypeNameOfValue
                 # if there is no specific type defined, and if the object property
                 # contains data, use the type from the actual value of the property
-                if (($type -eq 'System.Object' -or $type -like '*#*') -and $_.Value -ne $null) {
+                if (($type -eq 'System.Object' -or $type -like '*#*') -and $null -ne $_.Value) {
                     $type = $_.Value.GetType().FullName
                 }
 
@@ -545,7 +545,7 @@ class Database {
 
         # creating an index may take a long time, so take a look at the table size
         $table = $this.GetTable($TableName)
-        if ($table -eq $null) {
+        if ($null -eq $table) {
             throw "Table $table not found."
         } elseif ($table.Count -gt 10000) {
             Write-Warning "Creating an index on large tables may take considerable time. Please be patient."
@@ -731,43 +731,36 @@ class Table {
 
 #endregion Class Definitions
 
-#region functions
-
-
-
 function Get-Database {
-    <#
-      .SYNOPSIS
-      Returns a database object representing a SQLite database.
-      The database object provides all properties and methods to
-      view and manage the database
-      Its content (tables, columns, indices, etc) and can execute SQL statements
-      Most of the functionality is found in the nested objects.
-      To create new tables and store new data in the database, use Import-Database and
-      supply the database object to this function
+    #   .SYNOPSIS
+    #   Returns a database object representing a SQLite database.
+    #   The database object provides all properties and methods to
+    #   view and manage the database
+    #   Its content (tables, columns, indices, etc) and can execute SQL statements
+    #   Most of the functionality is found in the nested objects.
+    #   To create new tables and store new data in the database, use Import-Database and
+    #   supply the database object to this function
 
-      .EXAMPLE
-      $db = Get-Database
-      returns a memory-based database
+    #   .EXAMPLE
+    #   $db = Get-Database
+    #   returns a memory-based database
 
-      .EXAMPLE
-      $db = Get-Database -Path $env:temp\test.db
-      Opens the file-based database. If the file does not exist, a new database file is created
+    #   .EXAMPLE
+    #   $db = Get-Database -Path $env:temp\test.db
+    #   Opens the file-based database. If the file does not exist, a new database file is created
 
-      .EXAMPLE
-      $db = Get-Database -Path c:\data\database1.db
-      $db.GetTables()
-      opens the file-based database and lists the tables found in the database
+    #   .EXAMPLE
+    #   $db = Get-Database -Path c:\data\database1.db
+    #   $db.GetTables()
+    #   opens the file-based database and lists the tables found in the database
 
-      .EXAMPLE
-      $db = Get-Database -Path c:\data\database1.db
-      $db.InvokeSQL('Select * from customers')
-      runs the SQL statement and queries all records from the table "customers".
-      The table "customers" must exist.
+    #   .EXAMPLE
+    #   $db = Get-Database -Path c:\data\database1.db
+    #   $db.InvokeSQL('Select * from customers')
+    #   runs the SQL statement and queries all records from the table "customers".
+    #   The table "customers" must exist.
 
-  #>
-    param
-    (
+    param (
         # path to the database file. If the file does not yet exist, it will be created
         # this parameter defaults to ":memory:" which creates a memory-based database
         # memory-based databases are very fast but the data is not permanently stored
@@ -783,73 +776,69 @@ function Get-Database {
 }
 
 function Import-Database {
-    <#
-      .SYNOPSIS
-      Imports new data to a database table. Data can be added to existing or new tables.
-      Use Get-Database to get a database first.
-      .DETAILS
-      Import-Database automatically examines incoming objects and creates the
-      table definition required to store these objects. The first object received
-      by Import-Database determines the table layout.
-      If the specified table already exists, Import-Database checks whether the existing
-      table has fields for all object properties.
+    #       .SYNOPSIS
+    #       Imports new data to a database table. Data can be added to existing or new tables.
+    #       Use Get-Database to get a database first.
+    #       .DETAILS
+    #       Import-Database automatically examines incoming objects and creates the
+    #       table definition required to store these objects. The first object received
+    #       by Import-Database determines the table layout.
+    #       If the specified table already exists, Import-Database checks whether the existing
+    #       table has fields for all object properties.
 
-      .EXAMPLE
-      $db = Get-Database
-      Get-Service | Import-Database -Database $db -Table Services
-      $db.InvokeSql('Select * From Services') | Out-GridView
-      creates a memory-based database, then pipes all services into the database
-      and stores them in a new table called "Services"
-      Next, the table content is queried via Sql and the result displays in a gridview
-      Note that the database content is lost once PowerShell ends
+    #       .EXAMPLE
+    #       $db = Get-Database
+    #       Get-Service | Import-Database -Database $db -Table Services
+    #       $db.InvokeSql('Select * From Services') | Out-GridView
+    #       creates a memory-based database, then pipes all services into the database
+    #       and stores them in a new table called "Services"
+    #       Next, the table content is queried via Sql and the result displays in a gridview
+    #       Note that the database content is lost once PowerShell ends
 
-      .EXAMPLE
-      $db = Get-Database -Path $env:temp\temp.db
-      Get-Service | Import-Database -Database $db -Table Services
-      $db.InvokeSql('Select * From Services') | Out-GridView
-      opens the file-based database in $env:temp\temp.db, and if the file does not exist,
-      a new file is created. All services are piped into the database
-      and stored in a table called "Services".
-      If the table "Services" exists already, the data is appended to the table, else
-      a new table is created.
-      Next, the table content is queried via Sql and the result displays in a gridview
-      Since the database is file-based, all content imported to the database is stored
-      in the file specified.
+    #       .EXAMPLE
+    #       $db = Get-Database -Path $env:temp\temp.db
+    #       Get-Service | Import-Database -Database $db -Table Services
+    #       $db.InvokeSql('Select * From Services') | Out-GridView
+    #       opens the file-based database in $env:temp\temp.db, and if the file does not exist,
+    #       a new file is created. All services are piped into the database
+    #       and stored in a table called "Services".
+    #       If the table "Services" exists already, the data is appended to the table, else
+    #       a new table is created.
+    #       Next, the table content is queried via Sql and the result displays in a gridview
+    #       Since the database is file-based, all content imported to the database is stored
+    #       in the file specified.
 
-      .EXAMPLE
-      $db = Get-Database -Path $env:temp\temp.db
-      $db.QueryTimeout = 6000
-      Get-ChildItem -Path c:\ -Recurse -ErrorAction SilentlyContinue -File |
-      Import-Database -Database $db -Table Files
-      Writes all files on drive C:\ to table "Files". Since this operation may take a long
-      time, the database "QueryTimeout" property is set to 6000 seconds (100 min)
-      A better way is to split up data insertion into multiple chunks that execute
-      faster. This can be achieved via -TransactionSet. This parameter specifies the
-      chunk size (number of objects) that should be imported before a new transaction
-      starts.
+    #       .EXAMPLE
+    #       $db = Get-Database -Path $env:temp\temp.db
+    #       $db.QueryTimeout = 6000
+    #       Get-ChildItem -Path c:\ -Recurse -ErrorAction SilentlyContinue -File |
+    #       Import-Database -Database $db -Table Files
+    #       Writes all files on drive C:\ to table "Files". Since this operation may take a long
+    #       time, the database "QueryTimeout" property is set to 6000 seconds (100 min)
+    #       A better way is to split up data insertion into multiple chunks that execute
+    #       faster. This can be achieved via -TransactionSet. This parameter specifies the
+    #       chunk size (number of objects) that should be imported before a new transaction
+    #       starts.
 
-      .EXAMPLE
-      $db = Get-Database -Path $home\Documents\myDatabase.db
-      Get-ChildItem -Path $home -Recurse -File -ErrorAction SilentlyContinue |
-      Import-Database -Database $db -Table FileList -UseUnsafePerformanceTricks -LockDatabase -TransactionSet 10000
-      $db.InvokeSql('Select * From FileList Where Extension=".log" Order By "Length"') | Out-GridView
-      A file-based database is opened. If the file does not yet exist, it is created.
-      Next, all files from the current user profile are collected by Get-ChildItem,
-      and written to the database table "FileList". If the table exists, the data is
-      appended, else the table is created.
-      Next, the table "FileList" is queried by Sql, and all files with extension ".log"
-      display in a gridview ordered by file size
-      To improve performance, Import-Database temporarily locks the database and turns off
-      database features that normally improve robustness in the event of a crash.
-      By turning off these features, performance is increased considerably at the expense
-      of data corruption.
-
-  #>
-    param
-    (
+    #       .EXAMPLE
+    #       $db = Get-Database -Path $home\Documents\myDatabase.db
+    #       Get-ChildItem -Path $home -Recurse -File -ErrorAction SilentlyContinue |
+    #       Import-Database -Database $db -Table FileList -UseUnsafePerformanceTricks -LockDatabase -TransactionSet 10000
+    #       $db.InvokeSql('Select * From FileList Where Extension=".log" Order By "Length"') | Out-GridView
+    #       A file-based database is opened. If the file does not yet exist, it is created.
+    #       Next, all files from the current user profile are collected by Get-ChildItem,
+    #       and written to the database table "FileList". If the table exists, the data is
+    #       appended, else the table is created.
+    #       Next, the table "FileList" is queried by Sql, and all files with extension ".log"
+    #       display in a gridview ordered by file size
+    #       To improve performance, Import-Database temporarily locks the database and turns off
+    #       database features that normally improve robustness in the event of a crash.
+    #       By turning off these features, performance is increased considerably at the expense
+    #       of data corruption.
+    param (
         # Database object returned by Get-Database
-        [Database]
         [Parameter(Mandatory)]
+        [Database]
         $Database,
 
         # Name of table to receive the data. If the table exists, the data appends the table.
@@ -948,7 +937,7 @@ function Import-Database {
                 #region get or create table
                 # check for the destination table inside the database
                 $table = $database.GetTable($TableName)
-                if ($table -eq $null) {
+                if ($null -eq $table) {
                     # if it does not yet exist, create it based on the requirements
                     # of the first object
 
@@ -1104,7 +1093,7 @@ function Import-Database {
                         # causing problems when the data is queried later and cannot be converted
                         if ($parameter.RealType -eq 'DateTime') {
                             $dateTimeValue = $value -as [DateTime]
-                            if ($dateTimeValue -ne $null) {
+                            if ($null -ne $dateTimeValue) {
                                 $value = $dateTimeValue.ToString('yyyy-MM-dd HH:mm:ss')
                             } elseif ($value -match $wmiDatePattern) {
                                 $value = [System.Management.ManagementDateTimeConverter]::ToDateTime($value).ToString('yyyy-MM-dd HH:mm:ss')
@@ -1171,18 +1160,16 @@ function Import-Database {
 
 
 
-    #endregion functions
 
 
-    # declare public module members
-    Export-ModuleMember -Function Get-Database, Import-Database
 
-    # register argument completers
+
+
+
 
 
     Register-ArgumentCompleter -ParameterName TableName -CommandName Import-Database -ScriptBlock {
-        param
-        (
+        param (
             $CommandName,
             $ParameterName,
             $WordToComplete,
@@ -1202,6 +1189,307 @@ function Import-Database {
                         }
             } catch {}
         }
+    }
+}
+
+function New-RecordMap {
+    [CmdletBinding()]
+    [OutputType([RecordMap])]
+    param (
+        [Parameter(Mandatory = $false, Position = 0, ValueFromPipeline = $true)]
+        [AllowNull()][Alias('ht')]
+        [hashtable[]]$hashtable
+    )
+    begin {
+        class RecordMap {
+            hidden [uri] $Remote # usually a gist uri
+            hidden [string] $File
+            hidden [bool] $IsSynchronized
+            [datetime] $LastWriteTime = [datetime]::Now
+            RecordMap() { $this._init() }
+            RecordMap([hashtable[]]$array) {
+                $this.Add($array); $this._init()
+            }
+            hidden [void] _init() {
+                $this | Add-Member -MemberType ScriptProperty -Name 'Properties' -Value {
+                    return ($this | Get-Member -Type *Property).Name.Where({ $_ -notin ('Count', 'Properties', 'IsSynchronized') })
+                } -SecondValue {
+                    Throw [System.InvalidOperationException]::new("'Properties' is a readOnly property!")
+                } -Force
+                $this.PsObject.properties.add([psscriptproperty]::new('Count', [scriptblock]::Create({ $this.Properties.count })))
+            }
+            [void] Import([uri]$raw_uri, [Object]$session) {
+                try {
+                    Push-Stack -class "ArgonCage"; $pass = $null;
+                    Set-Variable -Name pass -Scope Local -Visibility Private -Option Private -Value $([RecordMap]::GetSessionKey("Paste/write a Password to decrypt configs", $session, 'configrw'))
+                    $_ob = (xconvert)::Deserialize((xconvert)::ToDeCompressed((AesGCM)::Decrypt((Base85)::Decode($(Invoke-WebRequest $raw_uri -Verbose:$false).Content), $pass)))
+                    $this.Set([hashtable[]]$_ob.Properties.Name.ForEach({ @{ $_ = $_ob.$_ } }))
+                } catch {
+                    throw $_
+                } finally {
+                    Remove-Variable Pass -Force -ErrorAction SilentlyContinue
+                }
+            }
+            [void] Import([String]$FilePath, [PsObject]$session) {
+                Write-Host "$(Show-Stack) Import records: $FilePath ..." -f Green
+                $this.Set([RecordMap]::Read($FilePath, $session))
+                Write-Host "$(Show-Stack) Import records Complete" -f Green
+            }
+            [void] Upload() {
+                if ([string]::IsNullOrWhiteSpace($this.Remote)) { throw [System.ArgumentException]::new('remote') }
+                # $gisturi = 'https://gist.github.com/' + $this.Remote.Segments[2] + $this.Remote.Segments[2].replace('/', '')
+                # Update-Gist -uri $gisturi -c $content
+            }
+            [void] Add([hashtable]$table) {
+                [ValidateNotNullOrEmpty()][hashtable]$table = $table
+                $Keys = $table.Keys | Where-Object { !$this.HasNoteProperty($_) -and ($_.GetType().FullName -eq 'System.String' -or $_.GetType().BaseType.FullName -eq 'System.ValueType') }
+                foreach ($key in $Keys) {
+                    if ($key -notin ('File', 'Remote', 'LastWriteTime')) {
+                        $this | Add-Member -MemberType NoteProperty -Name $key -Value $table[$key]
+                    } else {
+                        $this.$key = $table[$key]
+                    }
+                }
+            }
+            [void] Add([hashtable[]]$items) {
+                foreach ($item in $items) { $this.Add($item) }
+            }
+            [void] Add([string]$key, [System.Object]$value) {
+                [ValidateNotNullOrEmpty()][string]$key = $key
+                if (!$this.HasNoteProperty($key)) {
+                    $htab = [hashtable]::new(); $htab.Add($key, $value); $this.Add($htab)
+                } else {
+                    Write-Warning "Record.Add() Skipped $Key. Key already exists."
+                }
+            }
+            [void] Add([System.Collections.Generic.List[hashtable]]$items) {
+                foreach ($item in $items) { $this.Add($item) }
+            }
+            [void] Set([string]$key, [System.Object]$value) {
+                $htab = [hashtable]::new(); $htab.Add($key, $value)
+                $this.Set($htab)
+            }
+            [void] Set([hashtable[]]$items) {
+                foreach ($item in $items) { $this.Set($item) }
+            }
+            [void] Set([hashtable]$table) {
+                [ValidateNotNullOrEmpty()][hashtable]$table = $table
+                $Keys = $table.Keys | Where-Object { $_.GetType().FullName -eq 'System.String' -or $_.GetType().BaseType.FullName -eq 'System.ValueType' } | Sort-Object -Unique
+                foreach ($key in $Keys) {
+                    if (!$this.PsObject.Properties.Name.Contains($key)) {
+                        $this | Add-Member -MemberType NoteProperty -Name $key -Value $table[$key] -Force
+                    } else {
+                        $this.$key = $table[$key]
+                    }
+                }
+            }
+            [void] Set([System.Collections.Specialized.OrderedDictionary]$dict) {
+                $dict.Keys.Foreach({ $this.Set($_, $dict["$_"]) });
+            }
+            [bool] HasNoteProperty([object]$Name) {
+                [ValidateNotNullOrEmpty()][string]$Name = $($Name -as 'string')
+                return (($this | Get-Member -Type NoteProperty | Select-Object -ExpandProperty name) -contains "$Name")
+            }
+            static hidden [SecureString] GetSessionKey([string]$message, [PsObject]$session, [string]$Name) {
+                return $session.GetSessionKey($Name, [PSCustomObject]@{
+                        caller = Show-Stack
+                        prompt = $message
+                    }
+                )
+            }
+            [array] ToArray() {
+                $array = @(); $props = $this | Get-Member -MemberType NoteProperty
+                if ($null -eq $props) { return @() }
+                $props.name | ForEach-Object { $array += @{ $_ = $this.$_ } }
+                return $array
+            }
+            [string] ToJson() {
+                return [string]($this | Select-Object -ExcludeProperty count | ConvertTo-Json -Depth 3)
+            }
+            [System.Collections.Specialized.OrderedDictionary] ToOrdered() {
+                $dict = [System.Collections.Specialized.OrderedDictionary]::new(); $Keys = $this.PsObject.Properties.Where({ $_.Membertype -like "*Property" }).Name
+                if ($Keys.Count -gt 0) {
+                    $Keys | ForEach-Object { [void]$dict.Add($_, $this."$_") }
+                }
+                return $dict
+            }
+            static [hashtable[]] Read([string]$FilePath, $session) {
+                Push-Stack -class "ArgonCage"; $pass = $null; $cfg = $null; $FilePath = (AesGCM)::GetResolvedPath($FilePath);
+                if ([IO.File]::Exists($FilePath)) { if ([string]::IsNullOrWhiteSpace([IO.File]::ReadAllText($FilePath).Trim())) { throw [System.Exception]::new("File is empty: $FilePath") } } else { throw [System.IO.FileNotFoundException]::new("File not found: $FilePath") }
+                Set-Variable -Name pass -Scope Local -Visibility Private -Option Private -Value $([RecordMap]::GetSessionKey("Paste/write a Password to decrypt configs", $session, 'configrw'))
+                $txt = [IO.File]::ReadAllText($FilePath)
+                $_ob = (xconvert)::Deserialize((xconvert)::ToDeCompressed((AesGCM)::Decrypt((Base85)::Decode($txt), $pass)))
+                $cfg = [hashtable[]]$_ob.PsObject.Properties.Name.Where({ $_ -notin ('Count', 'Properties', 'IsSynchronized') }).ForEach({ @{ $_ = $_ob.$_ } })
+                return $cfg
+            }
+            [hashtable[]] Edit($session) {
+                $result = $this.Edit($this.File, $session)
+                $this.Set($result); $this.Save($session)
+                return $result
+            }
+            [hashtable[]] Edit([string]$FilePath, [Object]$session) {
+                $result = @(); $private:config_ob = $null; $fswatcher = $null; $process = $null;
+                $FilePath = (AesGCM)::GetResolvedPath($FilePath);
+                if ([IO.File]::Exists($FilePath)) { if ([string]::IsNullOrWhiteSpace([IO.File]::ReadAllText($FilePath).Trim())) { throw [System.Exception]::new("File is empty: $FilePath") } } else { throw [System.IO.FileNotFoundException]::new("File not found: $FilePath") }
+                $OutFile = [IO.FileInfo][IO.Path]::GetTempFileName()
+                $UseVerbose = [bool]$((Get-Variable verbosePreference -ValueOnly) -eq "continue")
+                try {
+                    Block-AllOutboundConnections
+                    if ($UseVerbose) { "[+] Edit Config started .." | Write-Host -f Magenta }
+                    $parsed_content = [RecordMap]::Read($FilePath, $session);
+                    [ValidateNotNullOrEmpty()][hashtable[]]$parsed_content = $parsed_content
+                    $parsed_content | ConvertTo-Json | Out-File $OutFile.FullName -Encoding utf8BOM
+                    Set-Variable -Name OutFile -Value $(Rename-Item $outFile.FullName -NewName ($outFile.BaseName + '.json') -PassThru)
+                    $process = [System.Diagnostics.Process]::new()
+                    $process.StartInfo.FileName = 'nvim'
+                    $process.StartInfo.Arguments = $outFile.FullName
+                    $process.StartInfo.WindowStyle = [System.Diagnostics.ProcessWindowStyle]::Maximized
+                    $process.Start(); $fswatcher = Start-FsWatcher -File $outFile.FullName -OnComplete ([scriptblock]::Create("Stop-Process -Id $($process.Id) -Force"));
+                    if ($null -eq $fswatcher) { Write-Warning "Failed to start FileMonitor"; Write-Host "Waiting nvim process to exit..." $process.WaitForExit() }
+                    $private:config_ob = [IO.FILE]::ReadAllText($outFile.FullName) | ConvertFrom-Json
+                } finally {
+                    Unblock-AllOutboundConnections
+                    if ($fswatcher) { $fswatcher.Dispose() }
+                    if ($process) {
+                        "[+] Neovim process {0} successfully" -f $(if (!$process.HasExited) {
+                                $process.Kill($true)
+                                "closed"
+                            } else {
+                                "exited"
+                            }
+                        ) | Write-Host -f Green
+                        $process.Close()
+                        $process.Dispose()
+                    }
+                    Remove-Item $outFile.FullName -Force
+                    Set-Variable -Name (Get-FMLogvariableName) -Scope Global -Value (Get-FileMonitorLog) | Out-Null
+                    if ($UseVerbose) { "[+] FileMonitor Log saved in variable: `$$(Get-FMLogvariableName)" | Write-Host -f Magenta }
+                    if ($null -ne $config_ob) { $result = $config_ob.ForEach({ (xconvert)::ToHashTable($_) }) }
+                    if ($UseVerbose) { "[+] Edit Config completed." | Write-Host -f Magenta }
+                }
+                return $result
+            }
+            [void] Save($session) {
+                try {
+                    [ValidateNotNullOrEmpty()][Object]$session = $session
+                    $cllr = Show-Stack; [ValidateNotNullOrEmpty()][string]$cllr = $cllr
+                    $pass = $null; Write-Host "$cllr Saving records to file: $($this.File) ..." -f Blue
+                    Set-Variable -Name pass -Scope Local -Visibility Private -Option Private -Value $($session.GetSessionKey('configrw', [PSCustomObject]@{
+                                caller = $cllr
+                                prompt = "Paste/write a Password to encrypt configs"
+                            }
+                        )
+                    ); [ValidateNotNullOrEmpty()][securestring]$pass = $pass
+                    $this.LastWriteTime = [datetime]::Now; [IO.File]::WriteAllText($this.File, (Base85)::Encode((AesGCM)::Encrypt((xconvert)::ToCompressed($this.ToByte()), $pass)), [System.Text.Encoding]::UTF8)
+                    Write-Host "$cllr Saving records " -f Blue -NoNewline; Write-Host "Completed." -f Green
+                } catch {
+                    throw $_
+                } finally {
+                    Remove-Variable Pass -Force -ErrorAction SilentlyContinue
+                }
+            }
+            [byte[]] ToByte() {
+                return (xconvert)::Serialize($this)
+            }
+            [string] ToString() {
+                $r = $this.ToArray(); $s = ''
+                $shortnr = [scriptblock]::Create({
+                        param([string]$str, [int]$MaxLength)
+                        while ($str.Length -gt $MaxLength) {
+                            $str = $str.Substring(0, [Math]::Floor(($str.Length * 4 / 5)))
+                        }
+                        return $str
+                    }
+                )
+                if ($r.Count -gt 1) {
+                    $b = $r[0]; $e = $r[-1]
+                    $0 = $shortnr.Invoke("{'$($b.Keys)' = '$($b.values.ToString())'}", 40)
+                    $1 = $shortnr.Invoke("{'$($e.Keys)' = '$($e.values.ToString())'}", 40)
+                    $s = "@($0 ... $1)"
+                } elseif ($r.count -eq 1) {
+                    $0 = $shortnr.Invoke("{'$($r[0].Keys)' = '$($r[0].values.ToString())'}", 40)
+                    $s = "@($0)"
+                } else {
+                    $s = '@()'
+                }
+                return $s
+            }
+        }
+    }
+    end {
+        if ($PSCmdlet.MyInvocation.BoundParameters.ContainsKey('hashtable')) {
+            if ($null -ne $hashtable) {
+                return [RecordMap]::New($hashtable)
+            }
+        }
+        return [RecordMap]::New()
+    }
+}
+function Get-HostOs() {
+    process {
+        #TODO: refactor so that it returns one of these: [Enum]::GetNames([System.PlatformID])
+        return $(
+            if ($(Get-Variable IsWindows -Value)) {
+                "Windows"
+            } elseif ($(Get-Variable IsLinux -Value)) {
+                "Linux"
+            } elseif ($(Get-Variable IsMacOS -Value)) {
+                "macOS"
+            } else {
+                "UNKNOWN"
+            }
+        )
+    }
+}
+
+function New-Directory {
+    [CmdletBinding()]
+    [OutputType([void])]
+    param (
+        [Parameter(Mandatory = $true, Position = 0)]
+        [string]$Path
+    )
+    process {
+        [ValidateNotNullOrEmpty()][System.IO.DirectoryInfo]$Path = $Path
+        $nF = @(); $p = $Path; while (!$p.Exists) { $nF += $p; $p = $p.Parent }
+        [Array]::Reverse($nF); $nF | ForEach-Object { $_.Create(); Write-Debug "Created $_" }
+    }
+}
+
+function Get-DataPath {
+    [CmdletBinding()]
+    [OutputType([System.IO.DirectoryInfo])]
+    param (
+        [Parameter(Mandatory = $true, Position = 0)]
+        [ValidateNotNullOrEmpty()]
+        [string]$appName,
+
+        [Parameter(Mandatory = $true, Position = 1)]
+        [ValidateNotNullOrEmpty()]
+        [string]$SubdirName,
+
+        [switch]$DontCreate
+    )
+
+    process {
+        $_Host_OS = Get-HostOs
+        $dataPath = if ($_Host_OS -eq 'Windows') {
+            [System.IO.DirectoryInfo]::new([IO.Path]::Combine($Env:HOME, "AppData", "Roaming", $appName, $SubdirName))
+        } elseif ($_Host_OS -in ('Linux', 'MacOs')) {
+            [System.IO.DirectoryInfo]::new([IO.Path]::Combine((($env:PSModulePath -split [IO.Path]::PathSeparator)[0] | Split-Path | Split-Path), $appName, $SubdirName))
+        } elseif ($_Host_OS -eq 'Unknown') {
+            try {
+                [System.IO.DirectoryInfo]::new([IO.Path]::Combine((($env:PSModulePath -split [IO.Path]::PathSeparator)[0] | Split-Path | Split-Path), $appName, $SubdirName))
+            } catch {
+                Write-Warning "Could not resolve chat data path"
+                Write-Warning "HostOS = '$_Host_OS'. Could not resolve data path."
+                [System.IO.Directory]::CreateTempSubdirectory(($SubdirName + 'Data-'))
+            }
+        } else {
+            throw [InvalidOperationException]::new('Could not resolve data path. Get-HostOS FAILED!')
+        }
+        if (!$dataPath.Exists -and !$DontCreate.IsPresent) { New-Directory -Path $dataPath.FullName }
+        return $dataPath
     }
 }
 

@@ -1,6 +1,6 @@
 ﻿
 # .SYNOPSIS
-# BackJobTools.psm1 Contains classes & functions to help with Background jobs
+# BackJobs.psm1 Contains classes & functions to help with Background jobs
 
 
 class cli {

@@ -603,7 +603,7 @@ function Resolve-HostNameProperty {
                     # check each background thread:
                     foreach ($thread in $threads) {
                         # for any thread that has completed...
-                        if ($thread.Handle -ne $null -and $thread.Handle.isCompleted) {
+                        if ($null -ne $thread.Handle -and $thread.Handle.isCompleted) {
                             # read the results the thread produced:
                             $thread.powershell.EndInvoke($thread.Handle)
                             # remove the thread from memory:
@@ -611,7 +611,7 @@ function Resolve-HostNameProperty {
                             # blank the thread in the $threads list:
                             $thread.Handle = $null
                             $thread.powershell = $null
-                        } elseif ($thread.Handle -ne $null) {
+                        } elseif ($null -ne $thread.Handle) {
                             # if there are any threads that haven't completed,
                             # set a flag indicating that we need to check again later:
                             $hasdata = $true

@@ -1,8 +1,5 @@
 
-# load platform-specific sqlite binaries
-
 #region prerequisites (MUST BE FIRST!)
-
 
 function LoadBinaries {
 
@@ -40,16 +37,9 @@ function LoadBinaries {
     Write-Verbose "database assembly loaded"
 
 }
-
 # load SQLite DLLs
 LoadBinaries
-
-
-
 #endregion prerequisites
-
-
-
 
 #region Class Definitions
 # this class represents a table column
@@ -166,7 +156,7 @@ class NewFieldRequest {
 class Database {
     #region public properties
     [string]$Path
-    [System.Data.SQLite.SQLiteConnection]$Connection
+    [object]$Connection
     [bool]$IsOpen = $false
 
     # maximum time (in sec) for a query to complete
@@ -358,7 +348,7 @@ class Database {
         $ds = [System.Data.DataSet]::new()
 
         # create a new data adapter based on the sql command
-        $da = [System.Data.SQLite.SQLiteDataAdapter]::new($cmd)
+        $da = New-Object System.Data.SQLite.SQLiteDataAdapter($cmd)
 
         # fill the dataset with the results
         $null = $da.fill($ds)
@@ -415,12 +405,14 @@ class Database {
     [void]Open() {
         # if the database connection is already open, bail out:
         if ($this.IsOpen) { return }
-
         # create a new database connection using the path as connection string
-
         $ConnectionString = 'Data Source={0}' -f $this._path
-        $this.Connection = [System.Data.SQLite.SQLiteConnection]::new($ConnectionString)
-
+        $_connectionObject = New-Object System.Data.SQLite.SQLiteConnection($ConnectionString)
+        if ($_ -as 'System.Data.SQLite.SQLiteConnection' -is 'System.Data.SQLite.SQLiteConnection') {
+            $this.Connection = $_connectionObject
+        } else {
+            throw "Could not createe a valid SQLite connection"
+        }
         # set this property to $true to allow UNC paths to work
         $this.Connection.ParseViaFramework = $true
 
@@ -1157,17 +1149,6 @@ function Import-Database {
             }
         }
     }
-
-
-
-
-
-
-
-
-
-
-
     Register-ArgumentCompleter -ParameterName TableName -CommandName Import-Database -ScriptBlock {
         param (
             $CommandName,
@@ -1549,4 +1530,5 @@ Register-ArgumentCompleter -ParameterName Database -CommandName Import-Database 
         [System.Management.Automation.CompletionResult]::new($value, $value, [System.Management.Automation.CompletionResultType]::Variable, ("$($_.Value)".Trim() | Out-String))
     }
 }
+
 Export-ModuleMember -Function '*' -Variable '*' -Cmdlet '*' -Alias '*' -Verbose:($VerbosePreference -eq "Continue")

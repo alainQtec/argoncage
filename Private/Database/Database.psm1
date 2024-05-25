@@ -1,42 +1,32 @@
-
-#region prerequisites (MUST BE FIRST!)
-
-function LoadBinaries {
-
-    # use API method to load Interop databases from wherever we want
-    # (else, the DLL needs to be in the search path or inside the
-    # folder the .NET assembly is located in)
-    # FreeLibrary allows us to potentially remove the DLL (for temp file cleanup)
-    $code = '
+function Import-SQLiteDlls {
+    # .SYNOPSIS
+    #     Imports database assembly and Interop DLLs
+    # .DESCRIPTION
+    #    Uses API method to load Interop databases and the .NET assembly
+    [CmdletBinding()]
+    param ()
+    begin {
+        $code = '
         [DllImport("kernel32.dll")]
         public static extern IntPtr LoadLibrary(string dllToLoad);
         [DllImport("kernel32.dll")]
         public static extern bool FreeLibrary(IntPtr hModule);'
-    Add-Type -MemberDefinition $code -Namespace Internal -Name Helper
-
-    # check the platform:
-    if ([Environment]::Is64BitProcess) {
-        Write-Verbose "Platform x64"
-        $platform = "64"
-    } else {
-        Write-Verbose "Platform x86"
-        $platform = "86"
     }
-    # pre-load the platform specific DLL version
-    Set-Variable parentFolder -Value (Split-Path -Path $PSScriptRoot)
-
-    $Path = "$PSScriptRoot/bin/x$platform/SQLite.Interop.dll"
-    if ('Internal.Helper' -as 'type' -isnot [type]) {
-        $null = [Internal.Helper]::LoadLibrary($Path)
-        Write-Verbose "Interop assembly loaded"
+    process {
+        Add-Type -MemberDefinition $code -Namespace Internal -Name Helper
+        # pre-load the platform specific DLL version
+        Set-Variable parentFolder -Value (Split-Path -Path $PSScriptRoot)
+        if ('Internal.Helper' -as 'type' -isnot [type]) {
+            $Path = "$PSScriptRoot/bin/x$(if ([Environment]::Is64BitProcess) { 64 } else { 86 })/SQLite.Interop.dll"
+            $null = [Internal.Helper]::LoadLibrary($Path)
+            Write-Verbose "Interop assembly loaded"
+        }
+        # Load the .NET assembly. Since the Interop DLL is already
+        Add-Type -Path "$PSScriptRoot/bin/System.Data.SQLite.dll"
+        Write-Verbose "SQLite dlls loaded"
     }
-    # next, load the .NET assembly. Since the Interop DLL is already
-    # pre-loaded, all is good:
-    Add-Type -Path "$PSScriptRoot/bin/System.Data.SQLite.dll"
-    Write-Verbose "database assembly loaded"
 }
-# load SQLite DLLs
-LoadBinaries
+Import-SQLiteDlls
 
 # this class represents a table column
 class DatabaseField {
@@ -751,9 +741,12 @@ function Get-Database {
         [Parameter(Mandatory = $false)]
         $Path = ':memory:'
     )
-
-    # all work is done by the constructor of Database
-    return [Database]::new($Path)
+    begin {
+        if ('Internal.Helper' -as 'type' -isnot [type]) { Import-SQLiteDlls }
+    }
+    Process {
+        return [Database]::new($Path)
+    }
 }
 
 function Import-Database {
@@ -896,6 +889,7 @@ function Import-Database {
     }
 
     process {
+        if ('Internal.Helper' -as 'type' -isnot [type]) { Import-SQLiteDlls }
         # process any object that is received either via the pipeline
         # or via an array
         foreach ($object in $InputObject) {

@@ -497,50 +497,37 @@ function CheckConnection {
 }
 
 function Resolve-HostNameProperty {
-    <#
-            .SYNOPSIS
-            Batch-resolves IP addresses to host names
+    # .SYNOPSIS
+    # Batch-resolves IP addresses to host names
+    # .DESCRIPTION
+    # Takes *any* object and resolves IP addresses in *any* of its properties
+    # .PARAMETER Property
+    # List of properties to resolve. Can be one property name or a comma-separated list
+    # .PARAMETER ThrottleLimit
+    # Number of parallel threads. Defaults to 80.
+    # .PARAMETER InputObject
+    # The object with the properties to resolve
+    # .PARAMETER PassThru
+    # When specified, no resolution takes place, and the objects are passed through unchanged
+    # This can be useful if you want to use this command inside a pipeline and resolve based on
+    # some user-submitted parameter.
+    # .EXAMPLE
+    # 1..255 | ForEach-Object { [PSCustomObject]@{IP1 = "192.168.2.$_"; IP2 = "40.112.72.$_" } } | Resolve-HostNameProperty -Property IP1, IP2
+    # Creates dummy objects with properties IP1 and IP2 containing dummy IP addresses.
+    # Next,properties IP1 and IP2 of all of these objects are resolved.
+    # This typically would take many minutes. Thanks to caching and multithreading, it takes only a few seconds.
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $true, ValueFromPipeline = $true)]
+        [Object[]]$InputObject,
 
-            .DESCRIPTION
-            Takes *any* object and resolves IP addresses in *any* of its properties
+        [Parameter(Mandatory = $true)]
+        [string[]]$Property,
 
-            .PARAMETER Property
-            List of properties to resolve. Can be one property name or a comma-separated list
+        [Parameter(Mandatory = $false)]
+        [int]$ThrottleLimit = 80,
 
-            .PARAMETER ThrottleLimit
-            Number of parallel threads. Defaults to 80.
-
-            .PARAMETER InputObject
-            The object with the properties to resolve
-
-            .PARAMETER PassThru
-            When specified, no resolution takes place, and the objects are passed through unchanged
-            This can be useful if you want to use this command inside a pipeline and resolve based on
-            some user-submitted parameter.
-
-            .EXAMPLE
-            1..255 | ForEach-Object { [PSCustomObject]@{IP1 = "192.168.2.$_"; IP2="40.112.72.$_"}} | Resolve-HostNameProperty -Property IP1, IP2
-            Creates dummy objects with properties IP1 and IP2 containing dummy IP addresses.
-            Next, properties IP1 and IP2 of all of these objects are resolved.
-            This typically would take many minutes. Thanks to caching and multithreading, it takes only a few seconds.
-    #>
-
-
-    param
-    (
-        [Parameter(Mandatory)]
-        [string[]]
-        $Property,
-
-        [int]
-        $ThrottleLimit = 80,
-
-        [Parameter(Mandatory, ValueFromPipeline)]
-        [Object[]]
-        $InputObject,
-
-        [switch]
-        $PassThru
+        [switch]$PassThru
     )
 
     begin {
@@ -741,39 +728,33 @@ function Get-NetStat {
             80 parallel name resolutions.
     #>
 
-
     [CmdletBinding(DefaultParameterSetName = 'TCP')]
-    param
-    (
-        [UInt16]
-        $LocalPort,
+    param(
+        [Parameter(Mandatory = $false)]
+        [UInt16]$LocalPort,
 
-        [UInt16]
-        $RemotePort,
+        [Parameter(Mandatory = $false)]
+        [UInt16]$RemotePort,
 
-        [NetStat+State]
-        $State,
+        [Parameter(Mandatory = $false)]
+        [NetStat+State]$State,
 
-        [string]
-        $PidName,
+        [Parameter(Mandatory = $false)]
+        [string]$PidName,
 
-        [int]
+        [Parameter(Mandatory = $false)]
         [Alias('Pid')]
-        $ProcessId,
+        [int]$ProcessId,
 
         [Parameter(ParameterSetName = 'TCP')]
-        [switch]
-        $TCP,
+        [switch]$TCP,
 
         [Parameter(ParameterSetName = 'UDP')]
-        [switch]
-        $UDP,
+        [switch]$UDP,
 
-        [switch]
-        $Resolve,
+        [switch]$Resolve,
 
-        [switch]
-        $IncludeOrigin
+        [switch]$IncludeOrigin
     )
 
     # there are TWO sources for information: GetTCP() and GetUDP().
@@ -810,11 +791,7 @@ function Get-NetStat {
                 } catch {}
             }
             $_ | Add-Member -MemberType NoteProperty -Name Origin -Value $origin -PassThru
-        } |
-        # DNS Resolution is expensive and slow, so it is done only on special request
-        # Furthermore, it is NOT included in this function. Rather, to resolve IP addresses,
-        # a highly optimized and reusable Resolve-HostNameProperty command  is used:
-        Resolve-HostNameProperty -Property RemoteIp, LocalIp -PassThru:$(!$Resolve.IsPresent)
+        } | Resolve-HostNameProperty -Property RemoteIp, LocalIp -PassThru:$(!$Resolve.IsPresent)
     # this command takes ANY object and tries to resolve ANY property.
     # In this specific case, the properties RemoteIp and LocalIp will be resolved
     # The command uses multithreading to resolve up to 80 host names in parallel

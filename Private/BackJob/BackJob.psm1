@@ -601,7 +601,7 @@ function New-Task {
         )
         $powershell.AddScript({
                 param (
-                    [Parameter(Mandatory)]
+                    [Parameter(Mandatory = $true)]
                     [ValidateNotNull()]
                     [System.Action]$Action
                 )

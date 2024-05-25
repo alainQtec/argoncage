@@ -191,7 +191,7 @@ Begin {
     function Invoke-CommandWithLog {
         [CmdletBinding()]
         Param (
-            [parameter(Mandatory, Position = 0)]
+            [Parameter(Mandatory = $true, Position = 0)]
             [ScriptBlock]$ScriptBlock
         )
         Write-CommandLog -Command ($ScriptBlock.ToString() -join "`n"); $ScriptBlock.Invoke()

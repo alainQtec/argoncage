@@ -1,4 +1,43 @@
 
+#region prerequisites (MUST BE FIRST!)
+
+function LoadBinaries {
+
+    # use API method to load Interop databases from wherever we want
+    # (else, the DLL needs to be in the search path or inside the
+    # folder the .NET assembly is located in)
+    # FreeLibrary allows us to potentially remove the DLL (for temp file cleanup)
+    $code = '
+        [DllImport("kernel32.dll")]
+        public static extern IntPtr LoadLibrary(string dllToLoad);
+        [DllImport("kernel32.dll")]
+        public static extern bool FreeLibrary(IntPtr hModule);'
+    Add-Type -MemberDefinition $code -Namespace Internal -Name Helper
+
+    # check the platform:
+    if ([Environment]::Is64BitProcess) {
+        Write-Verbose "Platform x64"
+        $platform = "64"
+    } else {
+        Write-Verbose "Platform x86"
+        $platform = "86"
+    }
+    # pre-load the platform specific DLL version
+    Set-Variable parentFolder -Value (Split-Path -Path $PSScriptRoot)
+
+    $Path = "$PSScriptRoot/bin/x$platform/SQLite.Interop.dll"
+    if ('Internal.Helper' -as 'type' -isnot [type]) {
+        $null = [Internal.Helper]::LoadLibrary($Path)
+        Write-Verbose "Interop assembly loaded"
+    }
+    # next, load the .NET assembly. Since the Interop DLL is already
+    # pre-loaded, all is good:
+    Add-Type -Path "$PSScriptRoot/bin/System.Data.SQLite.dll"
+    Write-Verbose "database assembly loaded"
+}
+# load SQLite DLLs
+LoadBinaries
+
 # this class represents a table column
 class DatabaseField {
     #region public properties
@@ -671,54 +710,6 @@ class Table {
     }
 
     # TODO: add method to query this table
-}
-
-function Import-DbBinaries {
-    [CmdletBinding()]
-    param (
-        [Parameter(Mandatory = $false, Position = 0)]
-        [ValidateSet('x64', 'x86')]
-        [string]$platform = "x$(if ([Environment]::Is64BitProcess) { 64 } else { 86 })"
-    )
-    Begin {
-        function LoadLibrary {
-            [CmdletBinding()]
-            [OutputType([System.IntPtr])]
-            param (
-                [Parameter(Mandatory = $true, Position = 0)]
-                [Alias('Path')][ValidateNotNullOrEmpty()]
-                [string]$dllToLoad
-            )
-            process {
-                $code = '
-                [DllImport("kernel32.dll")]
-                public static extern IntPtr LoadLibrary(string dllToLoad);
-                [DllImport("kernel32.dll")]
-                public static extern bool FreeLibrary(IntPtr hModule);'
-                if (!('Internal.Helper' -as 'type' -is [type])) {
-                    Add-Type -MemberDefinition $code -Namespace Internal -Name Helper
-                }
-                return [Internal.Helper]::LoadLibrary("$dllToLoad")
-            }
-        }
-    }
-
-    process {
-        $dll_path = [IO.Path]::Combine("$PSScriptRoot", 'bin', "$platform", 'SQLite.Interop.dll')
-        if (![IO.FILE]::Exists($dll_path)) {
-            throw "Path for SQLite.Interop.dll not found! `$dll_path = $dll_path"
-        }
-        # use API method to load Interop databases from wherever we want
-        # (else, the DLL needs to be in the search path or inside the
-        # folder the .NET assembly is located in)
-        # FreeLibrary allows us to potentially remove the DLL (for temp file cleanup)
-        LoadLibrary -Path $dll_path | Out-Null
-        $IsSuccess = $?
-        Write-Verbose "Interop assembly loaded"
-        # Load the .NET assembly. Since the Interop DLL is already
-        Add-Type -Path "$PSScriptRoot\bin\System.Data.SQLite.dll"
-        Write-Verbose "database assembly loaded. IsSuccess = $IsSuccess"
-    }
 }
 
 function Get-Database {
@@ -1511,8 +1502,6 @@ function Dump_chromepass {
         $db.InvokeSql($sql) | Select-Object $url, $username, $password
     }
 }
-
-Import-DbBinaries
 
 # LoadBinaries
 Register-ArgumentCompleter -ParameterName Database -CommandName Import-Database -ScriptBlock {

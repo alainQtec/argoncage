@@ -617,46 +617,45 @@ class Table {
         # since Count(*) takes a long time on large tables, we output the number of rows
         # this is a good approximation but will not take into account deleted records
         # as the row id is constantly increasing
-        $this |
-            Add-Member -MemberType ScriptProperty -Name Count -Value {
-                #$this.Database.InvokeSql("Select Count(*) from $($this.Name)") |
-                $count = $this.Database.InvokeSql("SELECT MAX(_ROWID_) FROM $($this.Name) LIMIT 1;") |
-                    #Select-Object -ExpandProperty 'Count(*)'
-                    Select-Object -ExpandProperty 'MAX(_ROWID_)'
-                    if ($Count -eq [System.DBNull]::Value) {
-                        'EMPTY'
-                    } else {
-                        $count
-                    }
+        $this | Add-Member -MemberType ScriptProperty -Name Count -Value {
+            #$this.Database.InvokeSql("Select Count(*) from $($this.Name)") |
+            $count = $this.Database.InvokeSql("SELECT MAX(_ROWID_) FROM $($this.Name) LIMIT 1;") |
+                #Select-Object -ExpandProperty 'Count(*)'
+                Select-Object -ExpandProperty 'MAX(_ROWID_)'
+                if ($Count -eq [System.DBNull]::Value) {
+                    'EMPTY'
+                } else {
+                    $count
                 }
-        #endregion
-    }
-
-    # get the column names and types of this table
-    # similar approach as GetTables() in regards to returning an ordered hashtable
-    [System.Collections.Specialized.OrderedDictionary]GetFields() {
-        # get the detailed table information for this table
-        $sql = 'PRAGMA table_info({0});' -f $this.Name
-        # and translate each returned record into a Column object
-        $hash = [Ordered]@{}
-        foreach ($column in $this.Database.InvokeSql($sql)) {
-            $hash[$column.Name] = [DatabaseField]::new($this, $column)
+            }
+            #endregion
         }
-        return $hash
-    }
+
+        # get the column names and types of this table
+        # similar approach as GetTables() in regards to returning an ordered hashtable
+        [System.Collections.Specialized.OrderedDictionary]GetFields() {
+            # get the detailed table information for this table
+            $sql = 'PRAGMA table_info({0});' -f $this.Name
+            # and translate each returned record into a Column object
+            $hash = [Ordered]@{}
+            foreach ($column in $this.Database.InvokeSql($sql)) {
+                $hash[$column.Name] = [DatabaseField]::new($this, $column)
+            }
+            return $hash
+        }
 
 
-    # override the ToString() method so that this object displays in a more
-    # meaningful way
-    [string]ToString() {
-        # return the number of records in this table, left-bound with a minimum of 6 characters,
-        # plus a comma-separated list of the table columns
-        return '{0,-6}:{1}' -f $this.Count, ($this.GetFields().Keys -join ',')
-    }
+        # override the ToString() method so that this object displays in a more
+        # meaningful way
+        [string]ToString() {
+            # return the number of records in this table, left-bound with a minimum of 6 characters,
+            # plus a comma-separated list of the table columns
+            return '{0,-6}:{1}' -f $this.Count, ($this.GetFields().Keys -join ',')
+        }
 
-    [int]GetRecordCount() {
-        return ($this.Database.InvokeSql("Select Count(*) from $($this.Name)") |
-                Select-Object -ExpandProperty 'Count(*)') -as [int]
+        [int]GetRecordCount() {
+            return ($this.Database.InvokeSql("Select Count(*) from $($this.Name)") |
+                    Select-Object -ExpandProperty 'Count(*)') -as [int]
     }
 
     # delete the table from the database
@@ -702,6 +701,19 @@ class Table {
     # TODO: add method to query this table
 }
 
+function New-Database {
+    [CmdletBinding()]
+    [OutputType([Database])]
+    param (
+        [Parameter(Mandatory = $false, Position = 0, ValueFromPipeline = $true, ValueFromPipelineByPropertyName = $true)]
+        [string]$Path = ':memory:'
+    )
+
+    process {
+        return New-Object Database($Path)
+    }
+}
+
 function Get-Database {
     #   .SYNOPSIS
     #   Returns a database object representing a SQLite database.
@@ -737,15 +749,14 @@ function Get-Database {
         # memory-based databases are very fast but the data is not permanently stored
         # once the database is closed or PowerShell ends, the memory-based database is
         # deleted
-        [String]
         [Parameter(Mandatory = $false)]
-        $Path = ':memory:'
+        [String]$Path = ':memory:'
     )
     begin {
         if ('Internal.Helper' -as 'type' -isnot [type]) { Import-SQLiteDlls }
     }
     Process {
-        return [Database]::new($Path)
+        return New-Database $Path
     }
 }
 
@@ -811,20 +822,17 @@ function Import-Database {
     #       of data corruption.
     param (
         # Database object returned by Get-Database
-        [Parameter(Mandatory)]
-        [Database]
-        $Database,
+        [Parameter(Mandatory = $true)]
+        [Database]$Database,
 
         # Name of table to receive the data. If the table exists, the data appends the table.
         # Else, a new table is created based on the properties of the first received object.
-        [String]
-        [Parameter(Mandatory)]
-        $TableName,
+        [Parameter(Mandatory = $true)]
+        [String]$TableName,
 
         # the data to be written to the database table
-        [Object[]]
-        [Parameter(Mandatory, ValueFromPipeline)]
-        $InputObject,
+        [Parameter(Mandatory = $true, ValueFromPipeline = $true)]
+        [Object[]]$InputObject,
 
         # to increase performance, transactions are used. To increase robustness and
         # receive progress information, the transaction can be limited to any number of

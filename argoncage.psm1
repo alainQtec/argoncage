@@ -680,7 +680,7 @@ class NameCompleter : IArgumentCompleter {
 class Vault {
     [string] $UserName
     [securestring] $Password
-    [string] $Name = "PersonalVault"
+    [string] $Name = "ArgonCage"
     hidden [securestring] $Key
     [string] $ConnectionFilePath = ([Vault]::GetConnectionFile())
     Vault() {

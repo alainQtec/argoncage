@@ -778,8 +778,8 @@ class Vault {
     }
     static [void] ClearConnection() {
         Remove-Item -Path ([Vault]::GetConnectionFile()) -Force
-        [System.Environment]::SetEnvironmentVariable("PERSONALVAULT_U", "", [System.EnvironmentVariableTarget]::Process)
-        [System.Environment]::SetEnvironmentVariable("PERSONALVAULT_P", "", [System.EnvironmentVariableTarget]::Process)
+        [System.Environment]::SetEnvironmentVariable("ARGONCAGE_U", "", [System.EnvironmentVariableTarget]::Process)
+        [System.Environment]::SetEnvironmentVariable("ARGONCAGE_P", "", [System.EnvironmentVariableTarget]::Process)
     }
     static [string] CreateDb() {
         $__dBPath = [IO.Path]::Combine((Get-Variable Home -ValueOnly), ".cos_$([Vault]::GetUser().ToLower())")
@@ -930,8 +930,8 @@ class Vault {
             Session = [Vault]::new()
             IsValid = $false
         }
-        $_userName = [System.Environment]::GetEnvironmentVariable("PERSONALVAULT_U")
-        $_password = [System.Environment]::GetEnvironmentVariable("PERSONALVAULT_P")
+        $_userName = [System.Environment]::GetEnvironmentVariable("ARGONCAGE_U")
+        $_password = [System.Environment]::GetEnvironmentVariable("ARGONCAGE_P")
         if (!([string]::IsNullOrEmpty($_userName)) -and !([string]::IsNullOrEmpty($_password))) {
             $connection.Session.UserName = $_userName
             $connection.Session.Password = $_password | ConvertTo-SecureString -ErrorAction SilentlyContinue
@@ -969,8 +969,7 @@ if ($PrivateModules.Count -gt 0) {
         }
     }
 }
-# Dot source the files
-foreach ($Import in ($Public, $Private)) {
+foreach ($Import in $($Public + $Private)) {
     Try {
         if ([string]::IsNullOrWhiteSpace($Import.fullname)) { continue }
         . "$($Import.fullname)"

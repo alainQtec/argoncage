@@ -24,7 +24,7 @@
             $PwndCount = ([Vault]::GetHackedPasswords($value)).Count
             $Is_Hacked = $PwndCount -gt 0
             if ($Is_Hacked) {
-                Write-Warning "Secret '$value' was hacked $($res) time(s); Consider changing it ASAP!"
+                Write-Host "WARNING: Secret '$value' was hacked $($res) time(s); Consider changing it ASAP!" -f Red
             }
             $encryptedValue = [Vault]::Encrypt($Value, $Key)
             # create the database and save the KV pair

@@ -3,7 +3,10 @@ using namespace System.Web
 using namespace System.Text
 using namespace System.Net.Http
 using namespace System.Security
-using namespace System.Runtime.InteropServices
+using namespace System.Collections;
+using namespace System.Collections.Generic;
+using namespace System.Management.Automation;
+using namespace System.Runtime.InteropServices;
 
 #Requires -Version 5.1
 # https://learn.microsoft.com/en-us/answers/questions/444991/powershell-system-security-cryptography-aesgcm-not.html
@@ -20,8 +23,8 @@ enum EncryptionScope {
     Machine # The encrypted data can only be decrypted with the same user on the same machine it was encrypted on.
 }
 
-#region    Main
-#     A simple cli tool that uses state-of-the-art encryption to save secrets.
+#region    ArgonCage
+#     A simple cli tool that uses custom encryption combos to save secrets.
 # .DESCRIPTION
 #     Argon2 KDF is widely considered one of the most secure and modern method for deriving cryptographic keys from passwords.
 #     It is designed to be memory-hard, making it extremely resistant to GPU/ASIC cracking attacks.
@@ -33,10 +36,11 @@ enum EncryptionScope {
 # .EXAMPLE
 #     $pm = [ArgonCage]::New()
 #     Explanation of the function or its result. You can include multiple examples with additional .EXAMPLE lines
+
 class ArgonCage {
     [ValidateNotNullOrEmpty()][Object] $Config
     [ValidateNotNullOrEmpty()][version] $version
-    static hidden [ValidateNotNull()][Object] $vault
+    static hidden [ValidateNotNull()][Vault] $vault
     static hidden [ValidateNotNull()][PsObject] $Tmp
     Static hidden [ValidateNotNull()][IO.DirectoryInfo] $DataPath = (Get-DataPath 'ArgonCage' 'Data')
     static [System.Collections.ObjectModel.Collection[PsObject]] $banners = @()
@@ -317,75 +321,18 @@ class ArgonCage {
     }
     static hidden [void] Get_CachedCreds($Config) {
         #Note: $Config should be a valid [RecordMap] object
-        if ($null -eq [ArgonCage]::vault) { [ArgonCage]::vault = [ArgonCage]::Create_Vault($Config.VaultFileName) }
+        if ($null -eq [ArgonCage]::vault) { [ArgonCage]::vault = [Vault]::Create($Config.VaultFileName) }
         if ([IO.File]::Exists($Config.CachedCredsPath)) {
             [ArgonCage]::vault.Cache.Read((xconvert)::ToSecurestring($Config.CachedCredsPath))
         } else {
             [ArgonCage]::Read_Cache()
         }
     }
-    static [Object] Create_Vault([string]$Name) {
-        if ([string]::IsNullOrWhiteSpace($Name)) { throw [System.ArgumentException]::new($Name) }
-        [Object]$result = New-Object System.Object; ('Name', 'Remote', 'Cache').ForEach({ Add-Member -InputObject $result -Type NoteProperty -Name $_ -Value $null })
-        # [ValidateNotNullOrEmpty()][string]$Name
-        # [ValidateNotNullOrEmpty()][uri]$Remote
-        # hidden [VaultCache]$Cache
-        $result.Name = $Name
-        if ([string]::IsNullOrWhiteSpace([ArgonCage]::DataPath)) {
-            [ArgonCage]::DataPath = [IO.Path]::Combine((Get-DataPath 'ArgonCage' 'Data'), 'secrets')
-        }
-        $result.PsObject.Properties.Add([psscriptproperty]::new('File', {
-                    return [IO.FileInfo]::new([IO.Path]::Combine([ArgonCage]::DataPath, $result.Name))
-                }, {
-                    param($value)
-                    if ($value -is [IO.FileInfo]) {
-                        [ArgonCage]::DataPath = $value.Directory.FullName
-                        $this.Name = $value.Name
-                    } else {
-                        throw "Invalid value assigned to File property"
-                    }
-                }
-            )
-        )
-        $result.PsObject.Properties.Add([psscriptproperty]::new('Size', {
-                    if ([IO.File]::Exists($result.File.FullName)) {
-                        $this.File = Get-Item $this.File.FullName
-                        return $this.File.Length
-                    }
-                    return 0
-                }, { throw "Cannot set Size property" }
-            )
-        )
-        $result.PsObject.Properties.Add([psscriptproperty]::new('Cache', {
-                    if ($null -eq [ArgonCage].Cache) {
-                        [ArgonCage] | Add-Member -Name Cache -Force -MemberType ScriptProperty -Value { return [ArgonCage]::Create_VaultCache() }.GetNewClosure() -SecondValue { throw [System.InvalidOperationException]::new("Cannot change Cache") }
-                    }
-                    return [ArgonCage].Cache
-                }, { throw [System.InvalidOperationException]::new("Cannot set Cache") }
-            )
-        )
-        if ($null -eq [ArgonCage]::Tmp.vars) { [ArgonCage]::Set_variables() }else {
-            $result.Remote = [ArgonCage]::GetVaultRawUri($result.Name, [ArgonCage]::Tmp.vars.sessionConfig.Remote)
-        }
-        return $result
+    static [Vault] Create_Vault([string]$Name) {
+        return [Vault]::Create($Name)
     }
     static [Object] Create_Vault([string]$FilePath, [uri]$RemoteUri) {
-        [ValidateNotNullOrEmpty()][string]$FileName = $FilePath
-        [ValidateNotNullOrEmpty()][uri]$RemoteUri = $RemoteUri
-        $__FilePath = (CryptoBase)::GetUnResolvedPath($FilePath);
-        $result = [ArgonCage]::Create_Vault([IO.Path]::GetFileName($__FilePath))
-        $result.File = $(if ([IO.File]::Exists($__FilePath)) {
-                Write-Host "    Found secrets file '$([IO.Path]::GetFileName($__FilePath))'" -f Green
-                Get-Item $__FilePath
-            } else {
-                $result.File
-            }
-        )
-        $result.Name = [IO.Path]::GetFileName($result.File.FullName); $result.Remote = $RemoteUri
-        if (![IO.File]::Exists($result.File.FullName)) {
-            $result.File = [ArgonCage]::FetchSecrets($result.Remote, $result.File.FullName)
-        }
-        return $result
+        return [Vault]::Create($FilePath, $RemoteUri)
     }
     static [Object] Create_VaultCache() {
         $cache = New-Object System.Object;
@@ -581,7 +528,7 @@ class ArgonCage {
     static [uri] GetVaultRawUri() {
         [ArgonCage]::NewSession(); if ([ArgonCage]::Tmp.vars.count -eq 0) { [ArgonCage]::Set_variables() }
         $curr_Config = [ArgonCage]::Tmp.vars.SessionConfig; [ValidateNotNull()][Object]$curr_Config = $curr_Config
-        if ($null -eq [ArgonCage]::vault) { [ArgonCage]::vault = [ArgonCage]::Create_Vault($curr_Config.VaultFileName) }
+        if ($null -eq [ArgonCage]::vault) { [ArgonCage]::vault = [Vault]::Create($curr_Config.VaultFileName) }
         return [ArgonCage]::GetVaultRawUri([ArgonCage]::vault.Name, $curr_Config.Remote)
     }
     static [uri] GetVaultRawUri([string]$vaultName, [uri]$remote) {
@@ -686,8 +633,328 @@ class ArgonCage {
     }
 }
 
-#endregion Main
+#endregion ArgonCage
 
+class IdCompleter : IArgumentCompleter {
+    [IEnumerable[CompletionResult]] CompleteArgument(
+        [string] $CommandName,
+        [string] $ParameterName,
+        [string] $WordToComplete,
+        [Language.CommandAst] $CommandAst,
+        [IDictionary] $FakeBoundParameters
+    ) {
+        $results = [List[CompletionResult]]::new()
+        $Ids = Invoke-SqliteQuery -DataSource ([Vault]::GetDbPath()) -Query "SELECT * FROM _"
+        foreach ($value in $Ids.Id) {
+            if ($value -like "*$WordToComplete*") {
+                $results.Add($value)
+            }
+        }
+        if ([Vault]::GetConnection().IsValid) {
+            return $results
+        }
+        return $null
+    }
+}
+class NameCompleter : IArgumentCompleter {
+    [IEnumerable[CompletionResult]] CompleteArgument(
+        [string] $CommandName,
+        [string] $ParameterName,
+        [string] $WordToComplete,
+        [Language.CommandAst] $CommandAst,
+        [IDictionary] $FakeBoundParameters
+    ) {
+        $results = [List[CompletionResult]]::new()
+        $names = Invoke-SqliteQuery -DataSource ([Vault]::GetDbPath()) -Query "SELECT * FROM _"
+        foreach ($value in $names.Name) {
+            if ($value -like "*$WordToComplete*") {
+                $results.Add($value)
+            }
+        }
+        if ([Vault]::GetConnection().IsValid) {
+            return $results
+        }
+        return $null
+    }
+}
+class Vault {
+    [string] $UserName
+    [securestring] $Password
+    [string] $Name = "PersonalVault"
+    hidden [securestring] $Key
+    [string] $ConnectionFilePath = ([Vault]::GetConnectionFile())
+    Vault() {
+        # $this.UserName = _getUser
+        # $this.Password = _generateKey
+        # $this.Key = _getBytes($this.Password)
+    }
+    static [Vault] Create([string]$Name) {
+        [Vault]$vault = [Vault]::new()
+        if ([string]::IsNullOrWhiteSpace($Name)) { throw [System.ArgumentException]::new($Name) }
+        @('Name', 'Remote', 'Cache').ForEach({ Add-Member -InputObject $vault -Type NoteProperty -Name $_ -Value $null })
+        $vault.Name = $Name
+        if ([string]::IsNullOrWhiteSpace([ArgonCage]::DataPath)) {
+            [ArgonCage]::DataPath = [IO.Path]::Combine((Get-DataPath 'ArgonCage' 'Data'), 'secrets')
+        }
+        $vault.PsObject.Properties.Add([psscriptproperty]::new('File', {
+                    return [IO.FileInfo]::new([IO.Path]::Combine([ArgonCage]::DataPath, $vault.Name))
+                }, {
+                    param($value)
+                    if ($value -is [IO.FileInfo]) {
+                        [ArgonCage]::DataPath = $value.Directory.FullName
+                        $this.Name = $value.Name
+                    } else {
+                        throw "Invalid value assigned to File property"
+                    }
+                }
+            )
+        )
+        $vault.PsObject.Properties.Add([psscriptproperty]::new('Size', {
+                    if ([IO.File]::Exists($vault.File.FullName)) {
+                        $this.File = Get-Item $this.File.FullName
+                        return $this.File.Length
+                    }
+                    return 0
+                }, { throw "Cannot set Size property" }
+            )
+        )
+        $vault.PsObject.Properties.Add([psscriptproperty]::new('Cache', {
+                    if ($null -eq [ArgonCage].Cache) {
+                        [ArgonCage] | Add-Member -Name Cache -Force -MemberType ScriptProperty -Value { return [ArgonCage]::Create_VaultCache() }.GetNewClosure() -SecondValue { throw [System.InvalidOperationException]::new("Cannot change Cache") }
+                    }
+                    return [ArgonCage].Cache
+                }, { throw [System.InvalidOperationException]::new("Cannot set Cache") }
+            )
+        )
+        if ($null -eq [ArgonCage]::Tmp.vars) { [ArgonCage]::Set_variables() }else {
+            $vault.Remote = [ArgonCage]::GetVaultRawUri($vault.Name, [ArgonCage]::Tmp.vars.sessionConfig.Remote)
+        }
+        return $vault
+    }
+    static [Vault] Create([string]$FilePath, [uri]$RemoteUri) {
+        [ValidateNotNullOrEmpty()][string]$FileName = $FilePath
+        [ValidateNotNullOrEmpty()][uri]$RemoteUri = $RemoteUri
+        $__FilePath = (CryptoBase)::GetUnResolvedPath($FilePath);
+        $vault = [Vault]::Create([IO.Path]::GetFileName($__FilePath))
+        $vault.File = $(if ([IO.File]::Exists($__FilePath)) {
+                Write-Host "    Found secrets file '$([IO.Path]::GetFileName($__FilePath))'" -f Green
+                Get-Item $__FilePath
+            } else {
+                $vault.File
+            }
+        )
+        $vault.Name = [IO.Path]::GetFileName($vault.File.FullName); $vault.Remote = $RemoteUri
+        if (![IO.File]::Exists($vault.File.FullName)) {
+            $vault.File = [ArgonCage]::FetchSecrets($vault.Remote, $vault.File.FullName)
+        }
+        return $vault
+    }
+    static [string] GenerateKey() {
+        return (CryptoBase)::GeneratePassword()
+    }
+    static [string] Encrypt([string]$plainText, [string]$key) {
+        return $plainText | ConvertTo-SecureString -AsPlainText -Force | ConvertFrom-SecureString -Key ([System.Text.Encoding]::UTF8.GetBytes($key))
+    }
+    static [string] Decrypt([string]$encryptedText, [string]$key) {
+        try {
+            $cred = [pscredential]::new("x", ($encryptedText | ConvertTo-SecureString -Key ([System.Text.Encoding]::UTF8.GetBytes($key)) -ErrorAction SilentlyContinue))
+            return $cred.GetNetworkCredential().Password
+        } catch {
+            throw "Cannot get the value as plain text; Use the right key to get the secret value as plain text."
+        }
+    }
+    static [string] GetUser() {
+        return [System.Environment]::UserName
+    }
+    static [void] ClearHistory([string]$functionName) {
+        $path = (Get-PSReadLineOption).HistorySavePath
+        if (!([string]::IsNullOrEmpty($path)) -and (Test-Path -Path $path)) {
+            $contents = Get-Content -Path $path
+            if ($contents -notmatch $functionName) { $contents -notmatch $functionName | Set-Content -Path $path -Encoding UTF8 }
+        }
+    }
+    static [void] ClearDb() {
+        Remove-Item -Path (Split-Path -Path ([Vault]::GetDbPath()) -Parent) -Recurse -Force
+    }
+    static [void] ClearConnection() {
+        Remove-Item -Path ([Vault]::GetConnectionFile()) -Force
+        [System.Environment]::SetEnvironmentVariable("PERSONALVAULT_U", "", [System.EnvironmentVariableTarget]::Process)
+        [System.Environment]::SetEnvironmentVariable("PERSONALVAULT_P", "", [System.EnvironmentVariableTarget]::Process)
+    }
+    static [string] CreateDb() {
+        $__dBPath = [IO.Path]::Combine((Get-Variable Home -ValueOnly), ".cos_$([Vault]::GetUser().ToLower())")
+        return [Vault]::CreateDb($__dBPath)
+    }
+    static [string] CreateDb([string]$Path) {
+        $pathExists = Test-Path $path
+        $file = Join-Path -Path $path -ChildPath "_.db"
+        $fileExists = Test-Path $file
+        # Metadata section is required so that we know what we are storing.
+        $query = "CREATE TABLE _ (
+        Id INTEGER PRIMARY KEY AUTOINCREMENT,
+        Name TEXT NOT NULL,
+        Value TEXT NOT NULL,
+        Metadata TEXT NOT NULL,
+        AddedOn TEXT,
+        UpdatedOn TEXT)"
+        # Make ID as primary key and copy all data from old table.
+        # This should run if the file exists with older schema
+        if ($fileExists) {
+            $columns = (Invoke-SqliteQuery -DataSource $file -Query "PRAGMA table_info(_)").name
+            if (!$columns.Contains("AddedOn")) {
+                $dataTable = $null
+                $res = Invoke-SqliteQuery -DataSource $file -Query "SELECT * FROM _"
+                $null = Remove-Item -Path $file -Force
+                $null = New-Item -Path $file -ItemType File
+                Invoke-SqliteQuery -DataSource $file -Query $query
+                foreach ($i in $res) {
+                    $dataTable = [PSCustomObject]@{
+                        Name      = $i.Name
+                        Value     = $i.Value
+                        Metadata  = $i.Metadata
+                        AddedOn   = $null
+                        UpdatedOn = $null
+                    } | Out-DataTable
+                }
+                Invoke-SQLiteBulkCopy -DataTable $dataTable -DataSource $file -Table _ -ConflictClause Ignore -Force
+                [Vault]::Hide($file)
+            }
+        } else {
+            if (!$pathExists) { $null = New-Item -Path $path -ItemType Directory }
+            if (!$fileExists) {
+                $null = New-Item -Path $file -ItemType File
+                Invoke-SqliteQuery -DataSource $file -Query $query
+                [Vault]::Hide($file)
+            }
+        }
+        return $file
+    }
+    static [string] GetDbPath() {
+        $__dBPath = [IO.Path]::Combine((Get-Variable Home -ValueOnly), ".cos_$([Vault]::GetUser().ToLower())")
+        if ([Io.File]::Exists($__dBPath)) {
+            return $__dBPath
+        }
+        return [Vault]::CreateDb()
+    }
+    static hidden [void] Write_connectionWarning() {
+        Write-Warning "You must create a connection to the vault to manage the secrets. Check your connection object and pass the right credential."
+    }
+    static [string] GetKeyFile() {
+        $path = Split-Path -Path ([Vault]::GetDbPath()) -Parent
+        return [IO.Path]::Combine($path, "private.key")
+    }
+    static [string] GetConnectionFile() {
+        $path = Split-Path -Path ([Vault]::GetKeyFile()) -Parent
+        return (Join-Path -Path $path -ChildPath "connection.clixml")
+    }
+    static [void] ArchiveKeyFile() {
+        [Vault]::ArchiveKeyFile([Vault]::GetKeyFile())
+    }
+    static [void] ArchiveKeyFile([string]$keyFile) {
+        $path = Split-Path -Path ([Vault]::GetKeyFile()) -Parent
+        $file = $keyFile.Replace("private", "private_$(Get-Date -Format ddMMyyyy-HH_mm_ss)")
+        $archivePath = Join-Path -Path $path -ChildPath "archive"
+        if (!(Test-Path $archivePath)) { $null = New-Item -Path $archivePath -ItemType Directory }
+        [Vault]::Unhide([Vault]::GetKeyFile())
+        Rename-Item -Path ([Vault]::GetKeyFile()) -NewName $file
+        Move-Item -Path $file -Destination "$archivePath" -Force
+    }
+    static [void] SaveKey([string]$key, [bool]$force) {
+        $file = [Vault]::GetKeyFile()
+        $fileExists = [IO.File]::Exists([Vault]::GetKeyFile())
+        if ($fileExists -and !$force) { Write-Warning "Key file already exists; Use Force parameter to update the file." }
+        if ($fileExists -and $force) {
+            [Vault]::Unhide($file)
+            $encryptedKey = [pscredential]::new("key", ($key | ConvertTo-SecureString -AsPlainText -Force))
+            $encryptedKey.Password | Export-Clixml -Path $file -Force
+            [Vault]::Hide($file)
+        }
+        if (!$fileExists) {
+            $encryptedKey = [pscredential]::new("key", ($key | ConvertTo-SecureString -AsPlainText -Force))
+            $encryptedKey.Password | Export-Clixml -Path $file -Force
+            [Vault]::Hide($file)
+        }
+    }
+    static [void] Hide([string]$filePath) {
+        if ((Get-HostOs) -eq "Windows") {
+            if ((Get-Item $filePath -Force).Attributes -notmatch 'Hidden') { (Get-Item $filePath).Attributes += 'Hidden' }
+        }
+    }
+    static [void] Unhide([string]$filePath) {
+        if ((Get-HostOs) -eq "Windows") {
+            if ((Get-Item $filePath -Force).Attributes -match 'Hidden') { (Get-Item $filePath -Force).Attributes -= 'Hidden' }
+        }
+    }
+    static [PsObject[]] GetHackedPasswords([string[]]$List) {
+        $encoding = [System.Text.Encoding]::UTF8
+        $result = @(); $hackedresults = @()
+        foreach ($string in $List) {
+            $SHA1Hash = [System.Security.Cryptography.SHA1CryptoServiceProvider]::new()
+            $Hashcode = ($SHA1Hash.ComputeHash($encoding.GetBytes($string)) | ForEach-Object { "{0:X2}" -f $_ }) -join ""
+            $Start, $Tail = $Hashcode.Substring(0, 5), $Hashcode.Substring(5)
+            $Url = "https://api.pwnedpasswords.com/range/" + $Start
+            $Request = Invoke-RestMethod -Uri $Url -UseBasicParsing -Method Get
+            $hashedArray = $Request.Split()
+            foreach ($item in $hashedArray) {
+                if (!([string]::IsNullOrEmpty($item))) {
+                    $encodedPassword = $item.Split(":")[0]
+                    $count = $item.Split(":")[1]
+                    $Hash = [PSCustomObject]@{
+                        HackedPassword = $encodedPassword.Trim()
+                        Count          = $count.Trim()
+                    }
+                    $result += $Hash
+                }
+            }
+            foreach ($pass in $result) {
+                if ($pass.HackedPassword -eq $Tail) {
+                    $newHash = [PSCustomObject]@{
+                        Name  = $string
+                        Count = $pass.Count
+                    }
+                    $hackedresults += $newHash
+                }
+            }
+            if ($string -notin $hackedresults.Name) {
+                $finalHash = [PSCustomObject]@{
+                    Name  = $string
+                    Count = 0
+                }
+                $hackedresults += $finalHash
+            }
+        }
+        return $hackedresults
+    }
+    static [PsObject] GetConnection() {
+        $connection = [PSCustomObject]@{
+            Session = [Vault]::new()
+            IsValid = $false
+        }
+        $_userName = [System.Environment]::GetEnvironmentVariable("PERSONALVAULT_U")
+        $_password = [System.Environment]::GetEnvironmentVariable("PERSONALVAULT_P")
+        if (!([string]::IsNullOrEmpty($_userName)) -and !([string]::IsNullOrEmpty($_password))) {
+            $connection.Session.UserName = $_userName
+            $connection.Session.Password = $_password | ConvertTo-SecureString -ErrorAction SilentlyContinue
+        }
+        if (($null -ne $connection.Session.UserName) -and ($null -ne $connection.Session.Password)) {
+            if (Test-Path -Path ([Vault]::GetConnectionFile())) {
+                $properties = Import-Clixml -Path ([Vault]::GetConnectionFile())
+                $prop = [pscredential]::new($properties.UserName, $properties.Password)
+                $conn = [pscredential]::new($connection.Session.UserName, $connection.Session.Password)
+                if (($prop.UserName -eq $conn.UserName) -and ($prop.GetNetworkCredential().Password -eq $conn.GetNetworkCredential().Password)) {
+                    $connection.IsValid = $true
+                }
+            }
+        }
+        return $connection
+    }
+    static [bool] ValidateRecoveryWord([securestring]$recoveryWord) {
+        $_res = Import-Clixml -Path ([Vault]::GetConnectionFile())
+        $_key = [pscredential]::new("Key", $_res.Key)
+        $recKey = [pscredential]::new("Key", $recoveryWord)
+        return ($recKey.GetNetworkCredential().Password -eq $_key.GetNetworkCredential().Password)
+    }
+}
 #endregion Classes
 $Private = Get-ChildItem ([IO.Path]::Combine($PSScriptRoot, 'Private')) -Filter "*.ps1" -ErrorAction SilentlyContinue
 $Public = Get-ChildItem ([IO.Path]::Combine($PSScriptRoot, 'Public')) -Filter "*.ps1" -ErrorAction SilentlyContinue

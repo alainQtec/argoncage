@@ -14,18 +14,34 @@ function Import-SQLiteDlls {
         Add-Type -MemberDefinition $code -Namespace Internal -Name Helper
         Set-Variable parentFolder -Value (Split-Path -Path $PSScriptRoot)
         $UseVerbose = $VerbosePreference -eq "continue"
+        $Path = [IO.Path]::Combine($PSScriptRoot, 'bin', "x$(if ([Environment]::Is64BitProcess) { 64 } else { 86 })", 'SQLite.Interop.dll')
     }
     process {
         if ('Internal.Helper' -as 'type' -isnot [type]) {
-            $Path = [IO.Path]::Combine($PSScriptRoot, 'bin', "x$(if ([Environment]::Is64BitProcess) { 64 } else { 86 })", 'SQLite.Interop.dll')
             if (![IO.File]::Exists($Path)) {
-                Throw [System.IO.FileNotFoundException]::New('Platform dll not found', $Path)
+                Throw [System.DllNotFoundException]::new("Platform SQLite dll not found", [System.IO.FileNotFoundException]::New("Could not find file $Path"))
             }
             $null = [Internal.Helper]::LoadLibrary($Path)
             if ($UseVerbose) { Write-Host "VERBOSE: Loaded Interop assembly" -f Blue }
         }
         Add-Type -Path ([IO.Path]::Combine($PSScriptRoot, 'bin', 'System.Data.SQLite.dll'))
         if ($UseVerbose) { Write-Host "VERBOSE: SQLite dlls loaded successfully" -f Green }
+        # TODO: Fix this error that occurs when I run: $db = New-Database -Path /tmp/database1.db
+        #
+        # PS /home/alain> $db.InvokeSql('Select * from customers')
+        # New-Object: Exception calling ".ctor" with "1" argument(s): "Unable to load shared library 'SQLite.Interop.dll' or one of its dependencies. In order to help diagnose loading
+        # problems, consider using a tool like strace. If you're using glibc, consider setting the LD_DEBUG environment variable:  /usr/lib/powershell-7/SQLite.Interop.dll.so:
+        #
+        # Fix attempt 1: but it failed :(
+        # $pwshparentFolder = ((Get-Command pwsh).Source | Split-Path)
+        # if (![IO.File]::Exists([IO.Path]::Combine($pwshparentFolder, (Split-Path $Path -Leaf)))) {
+        #     if ($(Get-Variable IsLinux -Value)) {
+        #         Write-Host "sudo cp: Enter password to copying dll file to $pwshparentFolder" -f Blue
+        #         sudo cp -v -u $Path $pwshparentFolder
+        #     } else {
+        #         Copy-Item $Path -Destination $pwshparentFolder -Force
+        #     }
+        # }
     }
 }
 
@@ -563,34 +579,29 @@ function Get-DataPath {
 }
 
 function New-Database {
-    #   .SYNOPSIS
+    #  .SYNOPSIS
     #   Creates a database object (A representation a SQLite database).
-    #   The database object provides all properties and methods to
-    #   view and manage the database
-    #   Its content (tables, columns, indices, etc) and can execute SQL statements
-    #   Most of the functionality is found in the nested objects.
+    # .DESCRIPTION
+    #   If the database (.db) file already exists, then it opens that instead.
     #   To create new tables and store new data in the database, use Import-Database and
     #   supply the database object to this function
-
-    #   .EXAMPLE
+    # .EXAMPLE
     #   $db = New-Database
     #   returns a memory-based database
-    #   .EXAMPLE
+    # .EXAMPLE
     #   $db = New-Database -Path $env:temp\test.db
     #   Opens the file-based database. If the file does not exist, a new database file is created
-
-    #   .EXAMPLE
+    # .EXAMPLE
     #   $db = Open-Database -Path c:\data\database1.db
     #   $db.GetTables()
     #   opens the file-based database and lists the tables found in the database
-
-    #   .EXAMPLE
+    # .EXAMPLE
     #   $db = New-Database -Path c:\data\database1.db
     #   $db.InvokeSQL('Select * from customers')
     #   runs the SQL statement and queries all records from the table "customers".
     #   The table "customers" must exist.
     [CmdletBinding()]
-    [Alias('New-Database')]
+    [Alias('Open-Database')]
     [OutputType([Database])]
     param (
         # Path to the database file. If the file does not yet exist, it will be created
@@ -611,73 +622,73 @@ function New-Database {
 
 function Import-Database {
     # .SYNOPSIS
-    # Imports new data to a database table. Data can be added to existing or new tables.
+    #   Imports new data to a database table. Data can be added to existing or new tables.
     # .DESCRIPTION
-    # Import-Database automatically examines incoming objects and creates the
-    # table definition required to store these objects. The first object received
-    # by Import-Database determines the table layout.
-    # If the specified table already exists, Import-Database checks whether the existing
-    # table has fields for all object properties.
+    #   Import-Database automatically examines incoming objects and creates the
+    #   table definition required to store these objects. The first object received
+    #   by Import-Database determines the table layout.
+    #   If the specified table already exists, Import-Database checks whether the existing
+    #   table has fields for all object properties.
     # .EXAMPLE
-    # $db = New-Database
-    # Get-Service | Import-Database -Database $db -Table Services
-    # $db.InvokeSql('Select * From Services') | Out-GridView
-    # creates a memory-based database, then pipes all services into the database
-    # and stores them in a new table called "Services"
-    # Next,the table content is queried via Sql and the result displays in a gridview
-    # Note that the database content is lost once PowerShell ends
+    #   $db = New-Database
+    #   Get-Service | Import-Database -Database $db -Table Services
+    #   $db.InvokeSql('Select * From Services') | Out-GridView
+    #   creates a memory-based database, then pipes all services into the database
+    #   and stores them in a new table called "Services"
+    #   Next,the table content is queried via Sql and the result displays in a gridview
+    #   Note that the database content is lost once PowerShell ends
     # .EXAMPLE
-    # $db = New-Database -Path $env:temp\temp.db
-    # Get-Service | Import-Database -Database $db -Table Services
-    # $db.InvokeSql('Select * From Services') | Out-GridView
-    # opens the file-based database in $env:temp\temp.db, and if the file does not exist,
-    # a new file is created. All services are piped into the database
-    # and stored in a table called "Services".
-    # If the table "Services" exists already, the data is appended to the table, else
-    # a new table is created.
-    # Next,the table content is queried via Sql and the result displays in a gridview
-    # Since the database is file-based, all content imported to the database is stored
-    # In the file specified.
+    #   $db = New-Database -Path $env:temp\temp.db
+    #   Get-Service | Import-Database -Database $db -Table Services
+    #   $db.InvokeSql('Select * From Services') | Out-GridView
+    #   opens the file-based database in $env:temp\temp.db, and if the file does not exist,
+    #   a new file is created. All services are piped into the database
+    #   and stored in a table called "Services".
+    #   If the table "Services" exists already, the data is appended to the table, else
+    #   a new table is created.
+    #   Next,the table content is queried via Sql and the result displays in a gridview
+    #   Since the database is file-based, all content imported to the database is stored
+    #   In the file specified.
     # .EXAMPLE
-    # $db = New-Database -Path $env:temp\temp.db
-    # $db.QueryTimeout = 6000
-    # Get-ChildItem -Path c:\ -Recurse -ErrorAction SilentlyContinue -File | Import-Database -Database $db -Table Files
-    # Writes all files on drive C:\ to table "Files". Since this operation may take a long
-    # time,the database "QueryTimeout" property is set to 6000 seconds (100 min)
-    # A better way is to split up data insertion into multiple chunks that execute
-    # faster. This can be achieved via -TransactionSet. This parameter specifies the
-    # chunk size (number of objects) that should be imported before a new transaction
-    # starts.
+    #   $db = New-Database -Path $env:temp\temp.db
+    #   $db.QueryTimeout = 6000
+    #   Get-ChildItem -Path c:\ -Recurse -ErrorAction SilentlyContinue -File | Import-Database -Database $db -Table Files
+    #   Writes all files on drive C:\ to table "Files". Since this operation may take a long
+    #   time,the database "QueryTimeout" property is set to 6000 seconds (100 min)
+    #   A better way is to split up data insertion into multiple chunks that execute
+    #   faster. This can be achieved via -TransactionSet. This parameter specifies the
+    #   chunk size (number of objects) that should be imported before a new transaction
+    #   starts.
     # .EXAMPLE
-    # $db = New-Database -Path $home\Documents\myDatabase.db
-    # Get-ChildItem -Path $home -Recurse -File -ErrorAction SilentlyContinue | Import-Database -Database $db -Table FileList -UseUnsafePerformanceTricks -LockDatabase -TransactionSet 10000
-    # $db.InvokeSql('Select * From FileList Where Extension=".log" Order By "Length"') | Out-GridView
-    # A file-based database is opened. If the file does not yet exist, it is created.
-    # Next,all files from the current user profile are collected by Get-ChildItem,
-    # and written to the database table "FileList". If the table exists, the data is
-    # appended,else the table is created.
-    # Next,the table "FileList" is queried by Sql, and all files with extension ".log"
-    # display in a gridview ordered by file size
-    # To improve performance, Import-Database temporarily locks the database and turns off
-    # Get-database features that normally improve robustness in the event of a crash.
-    # By turning off these features, performance is increased considerably at the expense
-    # of data corruption.
+    #   $db = New-Database -Path $home\Documents\myDatabase.db
+    #   Get-ChildItem -Path $home -Recurse -File -ErrorAction SilentlyContinue | Import-Database -Database $db -Table FileList -UseUnsafePerformanceTricks -LockDatabase -TransactionSet 10000
+    #   $db.InvokeSql('Select * From FileList Where Extension=".log" Order By "Length"') | Out-GridView
+    #   A file-based database is opened. If the file does not yet exist, it is created.
+    #   Next,all files from the current user profile are collected by Get-ChildItem,
+    #   and written to the database table "FileList". If the table exists, the data is
+    #   appended,else the table is created.
+    #   Next,the table "FileList" is queried by Sql, and all files with extension ".log"
+    #   display in a gridview ordered by file size
+    #   To improve performance, Import-Database temporarily locks the database and turns off
+    #   Get-database features that normally improve robustness in the event of a crash.
+    #   By turning off these features, performance is increased considerably at the expense
+    #   of data corruption.
     # .NOTES
-    # Use New-Database to get the database first.
+    #   Use New-Database to get the database first.
     [CmdletBinding()]
     param (
+        # The data to be written to the database table
+        [Parameter(Mandatory = $true, Position = 0, ValueFromPipeline = $true)]
+        [Object[]]$InputObject,
+
         # Database object returned by New-Database
-        [Parameter(Mandatory = $true)]
+        [Parameter(Mandatory = $true, Position = 1)]
         [Database]$Database,
 
         # Name of table to receive the data. If the table exists, the data appends the table.
         # Else, a new table is created based on the properties of the first received object.
-        [Parameter(Mandatory = $true)]
+        [Parameter(Mandatory = $true, Position = 2)]
         [String]$TableName,
-
-        # the data to be written to the database table
-        [Parameter(Mandatory = $true, ValueFromPipeline = $true)]
-        [Object[]]$InputObject,
 
         # to increase performance, transactions are used. To increase robustness and
         # receive progress information, the transaction can be limited to any number of

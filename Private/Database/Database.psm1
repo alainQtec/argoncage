@@ -1094,6 +1094,34 @@ function Invoke-SqliteQuery {
     }
 }
 
+function Select-ValueFromDB {
+    [CmdletBinding()]
+    [OutputType([System.Management.Automation.PSCustomObject], [System.Data.DataRow], [System.Data.DataTable], [System.Data.DataTableCollection], [System.Data.DataSet])]
+    param (
+        [Parameter(Mandatory = $false)]
+        [ValidateNotNullOrEmpty()]
+        [string]$name,
+
+        [Parameter(Mandatory = $false)]
+        [ValidateNotNullOrEmpty()]
+        [int]$id
+    )
+
+    process {
+        $BoundParams = $PSCmdlet.MyInvocation.BoundParameters
+        if ($BoundParams.ContainsKey('name') -and $BoundParams.ContainsKey('id')) {
+            return (Invoke-SqliteQuery -DataSource ([Vault]::GetDbPath()) -Query "SELECT Value FROM _ WHERE Name = '$name' AND Id = '$id'")
+        }
+        if (!$BoundParams.ContainsKey('name') -and $BoundParams.ContainsKey('id')) {
+            return (Invoke-SqliteQuery -DataSource ([Vault]::GetDbPath()) -Query "SELECT Value FROM _ WHERE Id = '$id'")
+        }
+        if ($BoundParams.ContainsKey('name') -and !$BoundParams.ContainsKey('id')) {
+            return (Invoke-SqliteQuery -DataSource ([Vault]::GetDbPath()) -Query "SELECT Value FROM _ WHERE Name = '$name'")
+        }
+        return (Invoke-SqliteQuery -DataSource ([Vault]::GetDbPath()) -Query "SELECT * FROM _")
+    }
+}
+
 function New-SQLiteConnection {
     <#
     .SYNOPSIS

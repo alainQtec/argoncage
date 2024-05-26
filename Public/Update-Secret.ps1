@@ -22,7 +22,7 @@
             $res = ([Vault]::GetHackedPasswords($value)).Count
             $IsHacked = $res -gt 0
             if ($IsHacked) {
-                Write-Warning "Secret '$value' was hacked $($res) time(s); Consider changing it ASAP!"
+                Write-Host "WARNING: Secret '$value' was hacked $($res) time(s); Consider changing it ASAP!" -f Red
             }
             if ($Force -or $PSCmdlet.ShouldProcess($Value, "Update-Secret")) {
                 $encryptedValue = [Vault]::Encrypt($Value, $Key)

@@ -6,113 +6,59 @@ function Import-SQLiteDlls {
     [CmdletBinding()]
     param ()
     begin {
-        $code = '
-        [DllImport("kernel32.dll")]
-        public static extern IntPtr LoadLibrary(string dllToLoad);
-        [DllImport("kernel32.dll")]
-        public static extern bool FreeLibrary(IntPtr hModule);'
-        Add-Type -MemberDefinition $code -Namespace Internal -Name Helper
-        Set-Variable parentFolder -Value (Split-Path -Path $PSScriptRoot)
         $UseVerbose = $VerbosePreference -eq "continue"
-    }
-    process {
-        # if ('Internal.Helper' -as 'type' -isnot [type]) {
-        #     if (![IO.File]::Exists($Path)) {
-        #         Throw [System.DllNotFoundException]::new("Platform SQLite dll not found", [System.IO.FileNotFoundException]::New("Could not find file $Path"))
-        #     }
-        #     $null = [Internal.Helper]::LoadLibrary($Path)
-        #     if ($UseVerbose) { Write-Host "VERBOSE: Loaded Interop assembly" -f Blue }
-        # }
-        #handle PS2
-        if (-not $PSScriptRoot) {
+        if (!$PSScriptRoot) {
             Set-Variable PSScriptRoot -Option Constant -Value (Split-Path $MyInvocation.MyCommand.Path -Parent)
         }
-        #Pick and import assemblies:
-        if ($PSEdition -eq 'core') {
-            if ($isLinux) {
-                Write-Verbose "loading linux-x64 core"
-                $SQLiteAssembly = Join-Path $PSScriptRoot "core\linux-x64\System.Data.SQLite.dll"
-            }
-
-            if ($isMacOS) {
-                Write-Verbose "loading mac-x64 core"
-                $SQLiteAssembly = Join-Path $PSScriptRoot "core\osx-x64\System.Data.SQLite.dll"
-            }
-
-            if ($isWindows) {
-                if ([IntPtr]::size -eq 8) {
-                    #64
-                    Write-Verbose "loading win-x64 core"
-                    $SQLiteAssembly = Join-Path $PSScriptRoot "core\win-x64\System.Data.SQLite.dll"
-                } elseif ([IntPtr]::size -eq 4) {
-                    #32
-                    Write-Verbose "loading win-x32 core"
-                    $SQLiteAssembly = Join-Path $PSScriptRoot "core\win-x86\System.Data.SQLite.dll"
+    }
+    process {
+        $SQLiteAssembly = [IO.Path]::Combine($PSScriptRoot, $(switch ($true) {
+            ($PSEdition -eq 'core') {
+                        [IO.Path]::Combine('core', (@{
+                                    Windows = $(
+                                        if ([IntPtr]::size -eq 8) {
+                                            "win-x64"
+                                        } elseif ([IntPtr]::size -eq 4) {
+                                            "win-x86"
+                                        }
+                                    )
+                                    Linux   = 'linux-x64'
+                                    macOS   = 'osx-x64'
+                                    UNKNOWN = 'Unknown HostOs'
+                                }[(Get-HostOs)])); break
+                    }
+            ([IntPtr]::size -eq 8) {
+                        "x64"; break
+                    }
+            ([IntPtr]::size -eq 4) {
+                        "x86"; break
+                    }
+                    Default {
+                        Throw "Something is odd with bitness..."
+                    }
                 }
-            }
-            Write-Verbose -Message "is PS Core, loading dotnet core dll"
-        } elseif ([IntPtr]::size -eq 8) {
-            #64
-            Write-Verbose -Message "is x64, loading..."
-            $SQLiteAssembly = Join-Path $PSScriptRoot "x64\System.Data.SQLite.dll"
-        } elseif ([IntPtr]::size -eq 4) {
-            #32
-            $SQLiteAssembly = Join-Path $PSScriptRoot "x86\System.Data.SQLite.dll"
-        } else {
-            Throw "Something is odd with bitness..."
+            ),
+            "System.Data.SQLite.dll"
+        )
+        if (![IO.File]::Exists($SQLiteAssembly)) {
+            Throw [System.DllNotFoundException]::new("Platform SQLite dll not found", [System.IO.FileNotFoundException]::New("Could not find file $SQLiteAssembly"))
         }
-
-        $Library = Add-Type -Path $SQLiteAssembly -PassThru -ErrorAction stop
-        if (!$Library) {
+        if ($UseVerbose) { Write-Host "VERBOSE: Load Interop assembly ..." -f Blue }
+        $Lib = Add-Type -Path $SQLiteAssembly -PassThru -ErrorAction stop
+        if (!$Lib) {
             Throw "This module requires the ADO.NET driver for SQLite:`n`thttp://system.data.sqlite.org/index.html/doc/trunk/www/downloads.wiki"
+        } else {
+            if ($UseVerbose) { Write-Host "VERBOSE: SQLite dlls loaded successfully" -f Green }
         }
-        if ($UseVerbose) { Write-Host "VERBOSE: SQLite dlls loaded successfully" -f Green }
     }
 }
 
 function Initialize-SQLiteDB {
     [CmdletBinding()]
     param ()
-    begin {
-        $script:Param_TableName_ArgCompleter = [scriptblock]::Create({
-                param (
-                    $CommandName,
-                    $ParameterName,
-                    $WordToComplete,
-                    $CommandAst,
-                    $params
-                )
-                if ($params.ContainsKey('Database')) {
-                    $db = $params['Database'] -as [Database]
-                    if ($null -ne $db) {
-                        try {
-                            $tables = $db.GetTables()
-                            $($tables.Keys -like "$WordToComplete*").ForEach({ [System.Management.Automation.CompletionResult]::new($_, $_, [System.Management.Automation.CompletionResultType]::ParameterValue, ("$($tables[$_])".Trim() | Out-String)) })
-                        } catch { $null }
-                    }
-                }
-            }
-        )
-        $script:Param_Database_ArgCompleter = [scriptblock]::Create({
-                param (
-                    $CommandName,
-                    $ParameterName,
-                    $WordToComplete,
-                    $CommandAst,
-                    $params
-                )
-                Get-Variable | Where-Object { $_.Value -is [Database] } | ForEach-Object {
-                    $value = '${0}' -f $_.Name
-                    [System.Management.Automation.CompletionResult]::new($value, $value, [System.Management.Automation.CompletionResultType]::Variable, ("$($_.Value)".Trim() | Out-String))
-                }
-            }
-        )
-    }
     process {
-        if (($VerbosePreference -eq "Continue")) { Write-Host "VERBOSE: Initializing SQLiteDB ..." -f Green }
+        if (($VerbosePreference -eq "Continue")) { Write-Host "VERBOSE: Initializing SQLiteDB." -f Green }
         Import-SQLiteDlls
-        # Register-ArgumentCompleter -ParameterName TableName -CommandName Import-Database -ScriptBlock $Param_TableName_ArgCompleter
-        # Register-ArgumentCompleter -ParameterName Database -CommandName Import-Database -ScriptBlock $Param_Database_ArgCompleter
     }
 }
 function Get-DataPath {
@@ -471,15 +417,14 @@ function Invoke-SQLiteBulkCopy {
         See https://www.sqlite.org/lang_conflict.html for more details
 
     .EXAMPLE
-        #
-        #Create a table
+        # Create a table
             Invoke-SqliteQuery -DataSource "C:\Names.SQLite" -Query "CREATE TABLE NAMES (
                 fullname VARCHAR(20) PRIMARY KEY,
                 surname TEXT,
                 givenname TEXT,
                 BirthDate DATETIME)"
 
-        #Build up some fake data to bulk insert, convert it to a datatable
+        # Build up some fake data to bulk insert, convert it to a datatable
             $DataTable = 1..10000 | %{
                 [pscustomobject]@{
                     fullname = "Name $_"
@@ -489,7 +434,7 @@ function Invoke-SQLiteBulkCopy {
                 }
             } | Out-DataTable
 
-        #Copy the data in within a single transaction (SQLite is faster this way)
+        # Copy the data in within a single transaction (SQLite is faster this way)
             Invoke-SQLiteBulkCopy -DataTable $DataTable -DataSource $Database -Table Names -NotifyAfter 1000 -ConflictClause Ignore -Verbose
 
     .INPUTS
@@ -513,23 +458,12 @@ function Invoke-SQLiteBulkCopy {
     .FUNCTIONALITY
         SQL
     #>
-    [cmdletBinding( DefaultParameterSetName = 'Datasource',
-        SupportsShouldProcess = $true,
-        ConfirmImpact = 'High' )]
+    [cmdletBinding(DefaultParameterSetName = 'Datasource', SupportsShouldProcess = $true, ConfirmImpact = 'High' )]
     param(
-        [parameter( Position = 0,
-            Mandatory = $true,
-            ValueFromPipeline = $false,
-            ValueFromPipelineByPropertyName = $false)]
-        [System.Data.DataTable]
-        $DataTable,
+        [parameter(Mandatory = $true, Position = 0, ValueFromPipeline = $false, ValueFromPipelineByPropertyName = $false)]
+        [System.Data.DataTable]$DataTable,
 
-        [Parameter( ParameterSetName = 'Datasource',
-            Position = 1,
-            Mandatory = $true,
-            ValueFromRemainingArguments = $false,
-            HelpMessage = 'SQLite Data Source required...' )]
-        [Alias('Path', 'File', 'FullName', 'Database')]
+        [Parameter(Mandatory = $true, Position = 1, ParameterSetName = 'Datasource', ValueFromRemainingArguments = $false, HelpMessage = 'SQLite Data Source required...' )]
         [validatescript({
                 #This should match memory, or the parent path should exist
                 if ( $_ -match ":MEMORY:" -or (Test-Path $_) ) {
@@ -537,246 +471,232 @@ function Invoke-SQLiteBulkCopy {
                 } else {
                     Throw "Invalid datasource '$_'.`nThis must match :MEMORY:, or must exist"
                 }
-            })]
-        [string]
-        $DataSource,
+            }
+        )][Alias('Path', 'File', 'FullName', 'Database')]
+        [string]$DataSource,
 
-        [Parameter( ParameterSetName = 'Connection',
-            Position = 1,
-            Mandatory = $true,
-            ValueFromPipeline = $false,
-            ValueFromPipelineByPropertyName = $true,
-            ValueFromRemainingArguments = $false )]
+        [Parameter(Mandatory = $true, Position = 1, ParameterSetName = 'Connection', ValueFromPipeline = $false, ValueFromPipelineByPropertyName = $true, ValueFromRemainingArguments = $false )]
         [Alias( 'Connection', 'Conn' )]
         [System.Data.SQLite.SQLiteConnection]
         $SQLiteConnection,
 
-        [parameter( Position = 2,
-            Mandatory = $true)]
-        [string]
-        $Table,
+        [parameter(Mandatory = $true, Position = 2)]
+        [string]$Table,
 
-        [Parameter( Position = 3,
-            Mandatory = $false,
-            ValueFromPipeline = $false,
-            ValueFromPipelineByPropertyName = $false,
-            ValueFromRemainingArguments = $false)]
+        [Parameter(Mandatory = $false, Position = 3, ValueFromPipeline = $false, ValueFromPipelineByPropertyName = $false, ValueFromRemainingArguments = $false)]
         [ValidateSet("Rollback", "Abort", "Fail", "Ignore", "Replace")]
-        [string]
-        $ConflictClause,
+        [string]$ConflictClause,
 
-        [int]
-        $NotifyAfter = 0,
+        [int]$NotifyAfter = 0,
 
-        [switch]
-        $Force,
+        [Int32]$QueryTimeout = 600,
 
-        [Int32]
-        $QueryTimeout = 600
+        [switch]$Force
 
     )
-
-    Write-Verbose "Running Invoke-SQLiteBulkCopy with ParameterSet '$($PSCmdlet.ParameterSetName)'."
-
-    Function CleanUp {
-        [cmdletbinding()]
-        param($conn, $com, $BoundParams)
-        #Only dispose of the connection if we created it
-        if ($BoundParams.Keys -notcontains 'SQLiteConnection') {
-            $conn.Close()
-            $conn.Dispose()
-            Write-Verbose "Closed connection"
+    begin {
+        function private:CleanUp {
+            [cmdletbinding()]
+            param($conn, $com, $BoundParams)
+            #Only dispose of the connection if we created it
+            if ($BoundParams.Keys -notcontains 'SQLiteConnection') {
+                $conn.Close()
+                $conn.Dispose()
+                Write-Verbose "Closed connection"
+            }
+            $com.Dispose()
         }
-        $com.Dispose()
-    }
 
-    function Get-ParameterName {
-        [CmdletBinding()]
-        Param(
-            [Parameter(Mandatory = $true, ValueFromPipeline = $true)]
-            [string[]]$InputObject,
+        function private:Get-ParameterName {
+            [CmdletBinding()]
+            Param(
+                [Parameter(Mandatory = $true, ValueFromPipeline = $true)]
+                [string[]]$InputObject,
 
-            [Parameter(ValueFromPipelineByPropertyName = $true)]
-            [string]$Regex = '(\W+)',
+                [Parameter(ValueFromPipelineByPropertyName = $true)]
+                [string]$Regex = '(\W+)',
 
-            [Parameter(ValueFromPipelineByPropertyName = $true)]
-            [string]$Separator = '_'
-        )
+                [Parameter(ValueFromPipelineByPropertyName = $true)]
+                [string]$Separator = '_'
+            )
 
-        Process {
-            $InputObject | ForEach-Object {
-                if ($_ -match $Regex) {
-                    $Groups = @($_ -split $Regex | Where-Object { $_ })
-                    for ($i = 0; $i -lt $Groups.Count; $i++) {
-                        if ($Groups[$i] -match $Regex) {
-                            $Groups[$i] = ($Groups[$i].ToCharArray() | ForEach-Object { [string][int]$_ }) -join $Separator
+            Process {
+                $InputObject | ForEach-Object {
+                    if ($_ -match $Regex) {
+                        $Groups = @($_ -split $Regex | Where-Object { $_ })
+                        for ($i = 0; $i -lt $Groups.Count; $i++) {
+                            if ($Groups[$i] -match $Regex) {
+                                $Groups[$i] = ($Groups[$i].ToCharArray() | ForEach-Object { [string][int]$_ }) -join $Separator
+                            }
                         }
+                        $Groups -join $Separator
+                    } else {
+                        $_
                     }
-                    $Groups -join $Separator
-                } else {
-                    $_
                 }
             }
         }
-    }
 
-    function New-SqliteBulkQuery {
-        [CmdletBinding()]
-        Param(
-            [Parameter(Mandatory = $true, ValueFromPipelineByPropertyName = $true)]
-            [string]$Table,
+        function private:New-SqliteBulkQuery {
+            [CmdletBinding()]
+            Param(
+                [Parameter(Mandatory = $true, ValueFromPipelineByPropertyName = $true)]
+                [string]$Table,
 
-            [Parameter(Mandatory = $true, ValueFromPipelineByPropertyName = $true)]
-            [string[]]$Columns,
+                [Parameter(Mandatory = $true, ValueFromPipelineByPropertyName = $true)]
+                [string[]]$Columns,
 
-            [Parameter(Mandatory = $true, ValueFromPipelineByPropertyName = $true)]
-            [string[]]$Parameters,
+                [Parameter(Mandatory = $true, ValueFromPipelineByPropertyName = $true)]
+                [string[]]$Parameters,
 
-            [Parameter(ValueFromPipelineByPropertyName = $true)]
-            [string]$ConflictClause = ''
-        )
+                [Parameter(ValueFromPipelineByPropertyName = $true)]
+                [string]$ConflictClause = ''
+            )
 
-        Begin {
-            $EscapeSingleQuote = "'", "''"
-            $Delimeter = ", "
-            $QueryTemplate = "INSERT{0} INTO {1} ({2}) VALUES ({3})"
-        }
-
-        Process {
-            $fmtConflictClause = if ($ConflictClause) { " OR $ConflictClause" }
-            $fmtTable = "'{0}'" -f ($Table -replace $EscapeSingleQuote)
-            $fmtColumns = ($Columns | ForEach-Object { "'{0}'" -f ($_ -replace $EscapeSingleQuote) }) -join $Delimeter
-            $fmtParameters = ($Parameters | ForEach-Object { "@$_" }) -join $Delimeter
-
-            $QueryTemplate -f $fmtConflictClause, $fmtTable, $fmtColumns, $fmtParameters
-        }
-    }
-
-    #Connections
-    if ($PSBoundParameters.Keys -notcontains "SQLiteConnection") {
-        if ($DataSource -match ':MEMORY:') {
-            $Database = $DataSource
-        } else {
-            $Database = $ExecutionContext.SessionState.Path.GetUnresolvedProviderPathFromPSPath($DataSource)
-        }
-
-        $ConnectionString = "Data Source={0}" -f $Database
-        $SQLiteConnection = New-Object System.Data.SQLite.SQLiteConnection -ArgumentList $ConnectionString
-        $SQLiteConnection.ParseViaFramework = $true #Allow UNC paths, thanks to Ray Alex!
-    }
-
-    Write-Debug "ConnectionString $($SQLiteConnection.ConnectionString)"
-    Try {
-        if ($SQLiteConnection.State -notlike "Open") {
-            $SQLiteConnection.Open()
-        }
-        $Command = $SQLiteConnection.CreateCommand()
-        Set-Variable CommandTimeout -Scope Local -Value $QueryTimeout
-        $Transaction = $SQLiteConnection.BeginTransaction()
-    } Catch {
-        Throw $_
-    }
-
-    Write-Verbose "DATATABLE IS $($DataTable.gettype().fullname) with value $($Datatable | Out-String)"
-    $RowCount = $Datatable.Rows.Count
-    Write-Verbose "Processing datatable with $RowCount rows"
-
-    if ($Force -or $PSCmdlet.ShouldProcess("$($DataTable.Rows.Count) rows, with BoundParameters $($PSBoundParameters | Out-String)", "SQL Bulk Copy")) {
-        #Get column info...
-        [array]$Columns = $DataTable.Columns | Select-Object -ExpandProperty ColumnName
-        $ColumnTypeHash = @{}
-        $ColumnToParamHash = @{}
-        $Index = 0
-        foreach ($Col in $DataTable.Columns) {
-            $Type = Switch -regex ($Col.DataType.FullName) {
-                # I figure we create a hashtable, can act upon expected data when doing insert
-                # Might be a better way to handle this...
-                '^(|\ASystem\.)Boolean$' { "BOOLEAN" } #I know they're fake...
-                '^(|\ASystem\.)Byte\[\]' { "BLOB" }
-                '^(|\ASystem\.)Byte$' { "BLOB" }
-                '^(|\ASystem\.)Datetime$' { "DATETIME" }
-                '^(|\ASystem\.)Decimal$' { "REAL" }
-                '^(|\ASystem\.)Double$' { "REAL" }
-                '^(|\ASystem\.)Guid$' { "TEXT" }
-                '^(|\ASystem\.)Int16$' { "INTEGER" }
-                '^(|\ASystem\.)Int32$' { "INTEGER" }
-                '^(|\ASystem\.)Int64$' { "INTEGER" }
-                '^(|\ASystem\.)UInt16$' { "INTEGER" }
-                '^(|\ASystem\.)UInt32$' { "INTEGER" }
-                '^(|\ASystem\.)UInt64$' { "INTEGER" }
-                '^(|\ASystem\.)Single$' { "REAL" }
-                '^(|\ASystem\.)String$' { "TEXT" }
-                Default { "BLOB" } #Let SQLite handle the rest...
+            Begin {
+                $EscapeSingleQuote = "'", "''"
+                $Delimeter = ", "
+                $QueryTemplate = "INSERT{0} INTO {1} ({2}) VALUES ({3})"
             }
 
-            #We ref columns by their index, so add that...
-            $ColumnTypeHash.Add($Index, $Type)
+            Process {
+                $fmtConflictClause = if ($ConflictClause) { " OR $ConflictClause" }
+                $fmtTable = "'{0}'" -f ($Table -replace $EscapeSingleQuote)
+                $fmtColumns = ($Columns | ForEach-Object { "'{0}'" -f ($_ -replace $EscapeSingleQuote) }) -join $Delimeter
+                $fmtParameters = ($Parameters | ForEach-Object { "@$_" }) -join $Delimeter
 
-            # Parameter names can only be alphanumeric: https://www.sqlite.org/c3ref/bind_blob.html
-            # So we have to replace all non-alphanumeric chars in column name to use it as parameter later.
-            # This builds hashtable to correlate column name with parameter name.
-            $ColumnToParamHash.Add($Col.ColumnName, (Get-ParameterName $Col.ColumnName))
+                $QueryTemplate -f $fmtConflictClause, $fmtTable, $fmtColumns, $fmtParameters
+            }
+        }
+    }
+    process {
+        Write-Verbose "Running Invoke-SQLiteBulkCopy with ParameterSet '$($PSCmdlet.ParameterSetName)'."
+        if ($PSBoundParameters.Keys -notcontains "SQLiteConnection") {
+            if ($DataSource -match ':MEMORY:') {
+                $Database = $DataSource
+            } else {
+                $Database = $ExecutionContext.SessionState.Path.GetUnresolvedProviderPathFromPSPath($DataSource)
+            }
 
-            $Index++
+            $ConnectionString = "Data Source={0}" -f $Database
+            $SQLiteConnection = New-Object System.Data.SQLite.SQLiteConnection -ArgumentList $ConnectionString
+            $SQLiteConnection.ParseViaFramework = $true #Allow UNC paths, thanks to Ray Alex!
         }
 
-        #Build up the query
-        if ($PSBoundParameters.ContainsKey('ConflictClause')) {
-            $Command.CommandText = New-SqliteBulkQuery -Table $Table -Columns $ColumnToParamHash.Keys -Parameters $ColumnToParamHash.Values -ConflictClause $ConflictClause
-        } else {
-            $Command.CommandText = New-SqliteBulkQuery -Table $Table -Columns $ColumnToParamHash.Keys -Parameters $ColumnToParamHash.Values
+        Write-Debug "ConnectionString $($SQLiteConnection.ConnectionString)"
+        Try {
+            if ($SQLiteConnection.State -notlike "Open") {
+                $SQLiteConnection.Open()
+            }
+            $Command = $SQLiteConnection.CreateCommand()
+            Set-Variable CommandTimeout -Scope Local -Value $QueryTimeout
+            $Transaction = $SQLiteConnection.BeginTransaction()
+        } Catch {
+            Throw $_
         }
 
-        foreach ($Column in $Columns) {
-            $param = New-Object System.Data.SQLite.SqLiteParameter $ColumnToParamHash[$Column]
-            [void]$Command.Parameters.Add($param)
-        }
+        Write-Verbose "DATATABLE IS $($DataTable.gettype().fullname) with value $($Datatable | Out-String)"
+        $RowCount = $Datatable.Rows.Count
+        Write-Verbose "Processing datatable with $RowCount rows"
 
-        for ($RowNumber = 0; $RowNumber -lt $RowCount; $RowNumber++) {
-            $row = $Datatable.Rows[$RowNumber]
-            for ($col = 0; $col -lt $Columns.count; $col++) {
-                # Depending on the type of thid column, quote it
-                # For dates, convert it to a string SQLite will recognize
-                switch ($ColumnTypeHash[$col]) {
-                    "BOOLEAN" {
-                        $Command.Parameters[$ColumnToParamHash[$Columns[$col]]].Value = [int][boolean]$row[$col]
-                    }
-                    "DATETIME" {
-                        Try {
-                            $Command.Parameters[$ColumnToParamHash[$Columns[$col]]].Value = $row[$col].ToString("yyyy-MM-dd HH:mm:ss")
-                        } Catch {
+        if ($Force -or $PSCmdlet.ShouldProcess("$($DataTable.Rows.Count) rows, with BoundParameters $($PSBoundParameters | Out-String)", "SQL Bulk Copy")) {
+            #Get column info...
+            [array]$Columns = $DataTable.Columns | Select-Object -ExpandProperty ColumnName
+            $ColumnTypeHash = @{}
+            $ColumnToParamHash = @{}
+            $Index = 0
+            foreach ($Col in $DataTable.Columns) {
+                $Type = Switch -regex ($Col.DataType.FullName) {
+                    # I figure we create a hashtable, can act upon expected data when doing insert
+                    # Might be a better way to handle this...
+                    '^(|\ASystem\.)Boolean$' { "BOOLEAN" } #I know they're fake...
+                    '^(|\ASystem\.)Byte\[\]' { "BLOB" }
+                    '^(|\ASystem\.)Byte$' { "BLOB" }
+                    '^(|\ASystem\.)Datetime$' { "DATETIME" }
+                    '^(|\ASystem\.)Decimal$' { "REAL" }
+                    '^(|\ASystem\.)Double$' { "REAL" }
+                    '^(|\ASystem\.)Guid$' { "TEXT" }
+                    '^(|\ASystem\.)Int16$' { "INTEGER" }
+                    '^(|\ASystem\.)Int32$' { "INTEGER" }
+                    '^(|\ASystem\.)Int64$' { "INTEGER" }
+                    '^(|\ASystem\.)UInt16$' { "INTEGER" }
+                    '^(|\ASystem\.)UInt32$' { "INTEGER" }
+                    '^(|\ASystem\.)UInt64$' { "INTEGER" }
+                    '^(|\ASystem\.)Single$' { "REAL" }
+                    '^(|\ASystem\.)String$' { "TEXT" }
+                    Default { "BLOB" } #Let SQLite handle the rest...
+                }
+
+                #We ref columns by their index, so add that...
+                $ColumnTypeHash.Add($Index, $Type)
+
+                # Parameter names can only be alphanumeric: https://www.sqlite.org/c3ref/bind_blob.html
+                # So we have to replace all non-alphanumeric chars in column name to use it as parameter later.
+                # This builds hashtable to correlate column name with parameter name.
+                $ColumnToParamHash.Add($Col.ColumnName, (Get-ParameterName $Col.ColumnName))
+
+                $Index++
+            }
+
+            #Build up the query
+            if ($PSBoundParameters.ContainsKey('ConflictClause')) {
+                $Command.CommandText = New-SqliteBulkQuery -Table $Table -Columns $ColumnToParamHash.Keys -Parameters $ColumnToParamHash.Values -ConflictClause $ConflictClause
+            } else {
+                $Command.CommandText = New-SqliteBulkQuery -Table $Table -Columns $ColumnToParamHash.Keys -Parameters $ColumnToParamHash.Values
+            }
+
+            foreach ($Column in $Columns) {
+                $param = New-Object System.Data.SQLite.SqLiteParameter $ColumnToParamHash[$Column]
+                [void]$Command.Parameters.Add($param)
+            }
+
+            for ($RowNumber = 0; $RowNumber -lt $RowCount; $RowNumber++) {
+                $row = $Datatable.Rows[$RowNumber]
+                for ($col = 0; $col -lt $Columns.count; $col++) {
+                    # Depending on the type of thid column, quote it
+                    # For dates, convert it to a string SQLite will recognize
+                    switch ($ColumnTypeHash[$col]) {
+                        "BOOLEAN" {
+                            $Command.Parameters[$ColumnToParamHash[$Columns[$col]]].Value = [int][boolean]$row[$col]
+                        }
+                        "DATETIME" {
+                            Try {
+                                $Command.Parameters[$ColumnToParamHash[$Columns[$col]]].Value = $row[$col].ToString("yyyy-MM-dd HH:mm:ss")
+                            } Catch {
+                                $Command.Parameters[$ColumnToParamHash[$Columns[$col]]].Value = $row[$col]
+                            }
+                        }
+                        Default {
                             $Command.Parameters[$ColumnToParamHash[$Columns[$col]]].Value = $row[$col]
                         }
                     }
-                    Default {
-                        $Command.Parameters[$ColumnToParamHash[$Columns[$col]]].Value = $row[$col]
-                    }
                 }
-            }
 
-            #We have the query, execute!
-            Try {
-                [void]$Command.ExecuteNonQuery()
-            } Catch {
-                #Minimal testing for this rollback...
-                Write-Verbose "Rolling back due to error:`n$_"
-                $Transaction.Rollback()
+                #We have the query, execute!
+                Try {
+                    [void]$Command.ExecuteNonQuery()
+                } Catch {
+                    #Minimal testing for this rollback...
+                    Write-Verbose "Rolling back due to error:`n$_"
+                    $Transaction.Rollback()
 
-                #Clean up and throw an error
-                CleanUp -conn $SQLiteConnection -com $Command -BoundParams $PSBoundParameters
-                Throw "Rolled back due to error:`n$_"
-            }
+                    #Clean up and throw an error
+                    CleanUp -conn $SQLiteConnection -com $Command -BoundParams $PSBoundParameters
+                    Throw "Rolled back due to error:`n$_"
+                }
 
-            if ($NotifyAfter -gt 0 -and $($RowNumber % $NotifyAfter) -eq 0) {
-                Write-Verbose "Processed $($RowNumber + 1) records"
+                if ($NotifyAfter -gt 0 -and $($RowNumber % $NotifyAfter) -eq 0) {
+                    Write-Verbose "Processed $($RowNumber + 1) records"
+                }
             }
         }
     }
 
-    #Commit the transaction and clean up the connection
-    $Transaction.Commit()
-    CleanUp -conn $SQLiteConnection -com $Command -BoundParams $PSBoundParameters
-
+    end {
+        #Commit the transaction and clean up the connection
+        $Transaction.Commit()
+        CleanUp -conn $SQLiteConnection -com $Command -BoundParams $PSBoundParameters
+    }
 }
 
 function Invoke-SqliteQuery {
@@ -953,108 +873,50 @@ function Invoke-SqliteQuery {
     [CmdletBinding( DefaultParameterSetName = 'Src-Que' )]
     [OutputType([System.Management.Automation.PSCustomObject], [System.Data.DataRow], [System.Data.DataTable], [System.Data.DataTableCollection], [System.Data.DataSet])]
     param(
-        [Parameter( ParameterSetName = 'Src-Que',
-            Position = 0,
-            Mandatory = $true,
-            ValueFromPipeline = $true,
-            ValueFromPipelineByPropertyName = $true,
-            ValueFromRemainingArguments = $false,
-            HelpMessage = 'SQLite Data Source required...' )]
-        [Parameter( ParameterSetName = 'Src-Fil',
-            Position = 0,
-            Mandatory = $true,
-            ValueFromPipeline = $true,
-            ValueFromPipelineByPropertyName = $true,
-            ValueFromRemainingArguments = $false,
-            HelpMessage = 'SQLite Data Source required...' )]
+        [Parameter(Mandatory = $true, Position = 0, ValueFromPipeline = $true, ParameterSetName = 'Src-Que', ValueFromPipelineByPropertyName = $true, ValueFromRemainingArguments = $false, HelpMessage = 'SQLite Data Source required...' )]
+        [Parameter(Mandatory = $true, Position = 0, ValueFromPipeline = $true, ParameterSetName = 'Src-Fil', ValueFromPipelineByPropertyName = $true, ValueFromRemainingArguments = $false, HelpMessage = 'SQLite Data Source required...' )]
         [Alias('Path', 'File', 'FullName', 'Database')]
         [validatescript({
                 #This should match memory, or the parent path should exist
                 $Parent = Split-Path $_ -Parent
-                if (
-                    $_ -match ":MEMORY:|^WHAT$" -or
-                ( $Parent -and (Test-Path $Parent))
-                ) {
+                if ($_ -match ":MEMORY:|^WHAT$" -or ($Parent -and (Test-Path $Parent))) {
                     $True
                 } else {
                     Throw "Invalid datasource '$_'.`nThis must match :MEMORY:, or '$Parent' must exist"
                 }
-            })]
-        [string[]]
-        $DataSource,
+            }
+        )]
+        [string[]]$DataSource,
 
-        [Parameter( ParameterSetName = 'Src-Que',
-            Position = 1,
-            Mandatory = $true,
-            ValueFromPipelineByPropertyName = $true,
-            ValueFromRemainingArguments = $false )]
-        [Parameter( ParameterSetName = 'Con-Que',
-            Position = 1,
-            Mandatory = $true,
-            ValueFromPipelineByPropertyName = $true,
-            ValueFromRemainingArguments = $false )]
-        [string]
-        $Query,
+        [Parameter(Mandatory = $true, Position = 1, ParameterSetName = 'Src-Que', ValueFromPipelineByPropertyName = $true, ValueFromRemainingArguments = $false )]
+        [Parameter(Mandatory = $true, Position = 1, ParameterSetName = 'Con-Que', ValueFromPipelineByPropertyName = $true, ValueFromRemainingArguments = $false )]
+        [string]$Query,
 
-        [Parameter( ParameterSetName = 'Src-Fil',
-            Position = 1,
-            Mandatory = $true,
-            ValueFromPipelineByPropertyName = $true,
-            ValueFromRemainingArguments = $false )]
-        [Parameter( ParameterSetName = 'Con-Fil',
-            Position = 1,
-            Mandatory = $true,
-            ValueFromPipelineByPropertyName = $true,
-            ValueFromRemainingArguments = $false )]
+        [Parameter(Mandatory = $true, Position = 1, ParameterSetName = 'Src-Fil', ValueFromPipelineByPropertyName = $true, ValueFromRemainingArguments = $false )]
+        [Parameter(Mandatory = $true, Position = 1, ParameterSetName = 'Con-Fil', ValueFromPipelineByPropertyName = $true, ValueFromRemainingArguments = $false )]
         [ValidateScript({ Test-Path $_ })]
-        [string]
-        $InputFile,
+        [string]$InputFile,
 
-        [Parameter( Position = 2,
-            Mandatory = $false,
-            ValueFromPipelineByPropertyName = $true,
-            ValueFromRemainingArguments = $false )]
-        [Int32]
-        $QueryTimeout = 600,
+        [Parameter(Mandatory = $false, Position = 2, ValueFromPipelineByPropertyName = $true, ValueFromRemainingArguments = $false )]
+        [Int32]$QueryTimeout = 600,
 
-        [Parameter( Position = 3,
-            Mandatory = $false,
-            ValueFromPipelineByPropertyName = $true,
-            ValueFromRemainingArguments = $false )]
+        [Parameter(Mandatory = $false, Position = 3, ValueFromPipelineByPropertyName = $true, ValueFromRemainingArguments = $false )]
         [ValidateSet("DataSet", "DataTable", "DataRow", "PSObject", "SingleValue")]
-        [string]
-        $As = "PSObject",
+        [string]$As = "PSObject",
 
-        [Parameter( Position = 4,
-            Mandatory = $false,
-            ValueFromPipelineByPropertyName = $true,
-            ValueFromRemainingArguments = $false )]
-        [System.Collections.IDictionary]
-        $SqlParameters,
+        [Parameter(Mandatory = $false, Position = 4, ValueFromPipelineByPropertyName = $true, ValueFromRemainingArguments = $false )]
+        [System.Collections.IDictionary]$SqlParameters,
 
-        [Parameter( Position = 5,
-            Mandatory = $false )]
-        [switch]
-        $AppendDataSource,
+        [Parameter(Mandatory = $false, Position = 5)]
+        [switch]$AppendDataSource,
 
-        [Parameter( Position = 6,
-            Mandatory = $false )]
+        [Parameter(Mandatory = $false, Position = 6)]
         [validatescript({ Test-Path $_ })]
         [string]$AssemblyPath = $SQLiteAssembly,
 
-        [Parameter( ParameterSetName = 'Con-Que',
-            Position = 7,
-            Mandatory = $true,
-            ValueFromPipeline = $false,
-            ValueFromPipelineByPropertyName = $true,
-            ValueFromRemainingArguments = $false )]
-        [Parameter( ParameterSetName = 'Con-Fil',
-            Position = 7,
-            Mandatory = $true,
-            ValueFromPipeline = $false,
-            ValueFromPipelineByPropertyName = $true,
-            ValueFromRemainingArguments = $false )]
-        [Alias( 'Connection', 'Conn' )]
+        [Parameter(Mandatory = $true, Position = 7, ParameterSetName = 'Con-Que', ValueFromPipeline = $false, ValueFromPipelineByPropertyName = $true, ValueFromRemainingArguments = $false )]
+        [Parameter(Mandatory = $true, Position = 7, ParameterSetName = 'Con-Fil', ValueFromPipeline = $false, ValueFromPipelineByPropertyName = $true, ValueFromRemainingArguments = $false )]
+        [Alias('Connection', 'Conn')]
         [System.Data.SQLite.SQLiteConnection]
         $SQLiteConnection
     )
@@ -1079,55 +941,24 @@ function Invoke-SqliteQuery {
 
         If ($As -eq "PSObject") {
             #This code scrubs DBNulls.  Props to Dave Wyatt
-            $cSharp = @'
-                using System;
-                using System.Data;
-                using System.Management.Automation;
-
-                public class DBNullScrubber
-                {
-                    public static PSObject DataRowToPSObject(DataRow row)
-                    {
-                        PSObject psObject = new PSObject();
-
-                        if (row != null && (row.RowState & DataRowState.Detached) != DataRowState.Detached)
-                        {
-                            foreach (DataColumn column in row.Table.Columns)
-                            {
-                                Object value = null;
-                                if (!row.IsNull(column))
-                                {
-                                    value = row[column];
-                                }
-
-                                psObject.Properties.Add(new PSNoteProperty(column.ColumnName, value));
-                            }
-                        }
-
-                        return psObject;
-                    }
-                }
-'@
-
+            $cSharp = 'using System; using System.Data; using System.Management.Automation; public class DBNullScrubber { public static PSObject DataRowToPSObject(DataRow row) { PSObject psObject = new PSObject(); if (row != null && (row.RowState & DataRowState.Detached) != DataRowState.Detached) { foreach (DataColumn column in row.Table.Columns) { Object value = null; if (!row.IsNull(column)) { value = row[column]; } psObject.Properties.Add(new PSNoteProperty(column.ColumnName, value)); } } return psObject; } }'
             Try {
-                if ($PSEdition -eq 'Core') {
-                    # Core doesn't auto-load these assemblies unlike desktop?
-                    # Not csharp coder, unsure why
-                    # by fffnite
-                    $Ref = @(
-                        'System.Data.Common'
-                        'System.Management.Automation'
-                        'System.ComponentModel.TypeConverter'
-                    )
-                } else {
-                    $Ref = @(
-                        'System.Data'
-                        'System.Xml'
-                    )
-                }
+                $Ref = $(if ($PSEdition -eq 'Core') {
+                        @(
+                            'System.Data.Common'
+                            'System.Management.Automation'
+                            'System.ComponentModel.TypeConverter'
+                        )
+                    } else {
+                        @(
+                            'System.Data'
+                            'System.Xml'
+                        )
+                    }
+                )
                 Add-Type -TypeDefinition $cSharp -ReferencedAssemblies $Ref -ErrorAction stop
             } Catch {
-                If (-not $_.ToString() -like "*The type name 'DBNullScrubber' already exists*") {
+                If (('DBNullScrubber' -as 'type' -isnot [type]) -or (!$_.ToString() -like "*The type name 'DBNullScrubber' already exists*")) {
                     Write-Warning "Could not load DBNullScrubber.  Defaulting to DataRow output: $_"
                     $As = "Datarow"
                 }
@@ -1143,17 +974,14 @@ function Invoke-SqliteQuery {
                     Throw $_
                 }
             }
-
             if ($SQLiteConnection.state -notlike "Open") {
                 Throw "SQLiteConnection is not open:`n$($SQLiteConnection | Out-String)"
             }
-
             $DataSource = @("WHAT")
         }
     }
     Process {
         foreach ($DB in $DataSource) {
-
             if ($PSBoundParameters.Keys -contains "SQLiteConnection") {
                 $Conn = $SQLiteConnection
             } else {
@@ -1237,7 +1065,7 @@ function Invoke-SqliteQuery {
                     $Datasrc = $DB
                 }
 
-                Foreach ($row in $ds.Tables[0]) {
+                foreach ($row in $ds.Tables[0]) {
                     $row.Datasource = $Datasrc
                 }
             }
@@ -1325,37 +1153,19 @@ function New-SQLiteConnection {
     [cmdletbinding()]
     [OutputType([System.Data.SQLite.SQLiteConnection])]
     param(
-        [Parameter( Position = 0,
-            Mandatory = $true,
-            ValueFromPipeline = $true,
-            ValueFromPipelineByPropertyName = $true,
-            ValueFromRemainingArguments = $false,
-            HelpMessage = 'SQL Server Instance required...' )]
+        [Parameter(Mandatory = $true, Position = 0, ValueFromPipeline = $true, ValueFromPipelineByPropertyName = $true, ValueFromRemainingArguments = $false, HelpMessage = 'SQL Server Instance required...' )]
         [Alias( 'Instance', 'Instances', 'ServerInstance', 'Server', 'Servers', 'cn', 'Path', 'File', 'FullName', 'Database' )]
         [ValidateNotNullOrEmpty()]
-        [string[]]
-        $DataSource,
+        [string[]]$DataSource,
 
-        [Parameter( Position = 2,
-            Mandatory = $false,
-            ValueFromPipelineByPropertyName = $true,
-            ValueFromRemainingArguments = $false )]
-        [System.Security.SecureString]
-        $Password,
+        [Parameter(Mandatory = $false, Position = 2, ValueFromPipelineByPropertyName = $true, ValueFromRemainingArguments = $false )]
+        [System.Security.SecureString]$Password,
 
-        [Parameter( Position = 3,
-            Mandatory = $false,
-            ValueFromPipelineByPropertyName = $true,
-            ValueFromRemainingArguments = $false )]
-        [Switch]
-        $ReadOnly,
+        [Parameter(Mandatory = $false, Position = 3, ValueFromPipelineByPropertyName = $true, ValueFromRemainingArguments = $false )]
+        [Switch]$ReadOnly,
 
-        [Parameter( Position = 4,
-            Mandatory = $false,
-            ValueFromPipelineByPropertyName = $true,
-            ValueFromRemainingArguments = $false )]
-        [bool]
-        $Open = $True
+        [Parameter( Position = 4, Mandatory = $false, ValueFromPipelineByPropertyName = $true, ValueFromRemainingArguments = $false )]
+        [bool]$Open = $True
     )
     Process {
         foreach ($DataSRC in $DataSource) {
@@ -1436,7 +1246,7 @@ function Out-DataTable {
         Invoke-Sqlcmd2
 
     .LINK
-        New-SQLConnection
+        New-SQLiteConnection
 
     .FUNCTIONALITY
         SQL
@@ -1444,9 +1254,7 @@ function Out-DataTable {
     [CmdletBinding()]
     [OutputType([System.Data.DataTable])]
     param(
-        [Parameter( Position = 0,
-            Mandatory = $true,
-            ValueFromPipeline = $true)]
+        [Parameter(Mandatory = $true, Position = 0, ValueFromPipeline = $true)]
         [PSObject[]]$InputObject,
 
         [string[]]$NonNullable = @()

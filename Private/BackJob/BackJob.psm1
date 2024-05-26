@@ -514,7 +514,7 @@ function Wait-Task {
             throw [System.NotSupportedException]::new("Sorry, ParameterSetName is not yet supported")
         }
         # $Tasks += $Task
-        # While (-not [System.Threading.Tasks.Task]::WaitAll($Tasks, 200)) {}
+        # While (![System.Threading.Tasks.Task]::WaitAll($Tasks, 200)) {}
         # $Tasks.ForEach( { $_.GetAwaiter().GetResult() })
     }
     end {

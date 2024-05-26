@@ -83,7 +83,7 @@
                 $SecureString = $null; Set-Variable -Name SecureString -Scope Local -Visibility Private -Option Private -Value ([System.Security.SecureString]::new());
                 if (![string]::IsNullOrEmpty($String)) {
                     $Chars = $String.toCharArray()
-                    ForEach ($Char in $Chars) {
+                    foreach ($Char in $Chars) {
                         $SecureString.AppendChar($Char)
                     }
                 }

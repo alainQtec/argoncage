@@ -607,7 +607,7 @@ Process {
                             $should_Publish_GitHubRelease = ![string]::IsNullOrWhiteSpace($env:GitHubPAT) -and ($env:CI -eq "true" -and $env:GITHUB_RUN_ID) -and !$Is_Lower_GitHub_Version
                             if ($should_Publish_ToPsGallery) {
                                 $manifestPath = Join-Path $outputModVerDir "$($([Environment]::GetEnvironmentVariable($env:RUN_ID + 'ProjectName'))).psd1"
-                                if (-not $manifest) {
+                                if (!$manifest) {
                                     $manifest = Import-PowerShellDataFile -Path $manifestPath
                                 }
                                 if ($manifest.ModuleVersion.ToString() -eq $versionToDeploy.ToString()) {

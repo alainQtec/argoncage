@@ -69,7 +69,7 @@ class Base85 : EncodingBase {
                     $A85Chars[4] = [Base85]::GetChars([Math]::Floor($Sum % 85) + 33)[0]
                     [Array]::Copy($A85Chars, $A85Chunk, $ByteLen)
                 }
-                forEach ($A85Char in $A85Chunk) {
+                foreach ($A85Char in $A85Chunk) {
                     [void]$Ascii85Output.Append($A85Char)
                     if (!$Format) {
                         if ($LineLen -eq 64) {

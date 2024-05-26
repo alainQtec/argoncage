@@ -14,533 +14,107 @@ function Import-SQLiteDlls {
         Add-Type -MemberDefinition $code -Namespace Internal -Name Helper
         Set-Variable parentFolder -Value (Split-Path -Path $PSScriptRoot)
         $UseVerbose = $VerbosePreference -eq "continue"
-        $Path = [IO.Path]::Combine($PSScriptRoot, 'bin', "x$(if ([Environment]::Is64BitProcess) { 64 } else { 86 })", 'SQLite.Interop.dll')
     }
     process {
-        if ('Internal.Helper' -as 'type' -isnot [type]) {
-            if (![IO.File]::Exists($Path)) {
-                Throw [System.DllNotFoundException]::new("Platform SQLite dll not found", [System.IO.FileNotFoundException]::New("Could not find file $Path"))
-            }
-            $null = [Internal.Helper]::LoadLibrary($Path)
-            if ($UseVerbose) { Write-Host "VERBOSE: Loaded Interop assembly" -f Blue }
-        }
-        Add-Type -Path ([IO.Path]::Combine($PSScriptRoot, 'bin', 'System.Data.SQLite.dll'))
-        if ($UseVerbose) { Write-Host "VERBOSE: SQLite dlls loaded successfully" -f Green }
-        # TODO: Fix this error that occurs when I run: $db = New-Database -Path /tmp/database1.db
-        #
-        # PS /home/alain> $db.InvokeSql('Select * from customers')
-        # New-Object: Exception calling ".ctor" with "1" argument(s): "Unable to load shared library 'SQLite.Interop.dll' or one of its dependencies. In order to help diagnose loading
-        # problems, consider using a tool like strace. If you're using glibc, consider setting the LD_DEBUG environment variable:  /usr/lib/powershell-7/SQLite.Interop.dll.so:
-        #
-        # Fix attempt 1: but it failed :(
-        # $pwshparentFolder = ((Get-Command pwsh).Source | Split-Path)
-        # if (![IO.File]::Exists([IO.Path]::Combine($pwshparentFolder, (Split-Path $Path -Leaf)))) {
-        #     if ($(Get-Variable IsLinux -Value)) {
-        #         Write-Host "sudo cp: Enter password to copying dll file to $pwshparentFolder" -f Blue
-        #         sudo cp -v -u $Path $pwshparentFolder
-        #     } else {
-        #         Copy-Item $Path -Destination $pwshparentFolder -Force
+        # if ('Internal.Helper' -as 'type' -isnot [type]) {
+        #     if (![IO.File]::Exists($Path)) {
+        #         Throw [System.DllNotFoundException]::new("Platform SQLite dll not found", [System.IO.FileNotFoundException]::New("Could not find file $Path"))
         #     }
+        #     $null = [Internal.Helper]::LoadLibrary($Path)
+        #     if ($UseVerbose) { Write-Host "VERBOSE: Loaded Interop assembly" -f Blue }
         # }
-    }
-}
-
-class DatabaseField {
-    [Table]$Table
-    [string]$Name
-    [string]$Type
-    [bool]$NotNull
-    [object]$DefaultValue
-    [int]$Id
-
-    DatabaseField([Table]$Table, [System.Data.DataRow]$ColumnInfo) {
-        # the constructor takes the table object plus the datarow returned by the database with the column details
-        # Translates the raw datarow information to the Column object properties
-        $this.Name = $ColumnInfo.Name
-        $this.Type = $ColumnInfo.type
-        $this.NotNull = $ColumnInfo.notnull
-        $this.DefaultValue = $ColumnInfo.dflt_value
-        $this.Table = $Table
-        $this.Id = $ColumnInfo.cid
-    }
-    [void] AddIndex() {
-        $tbl = $this.Table
-        $clm = $this.Name
-        $existingIndex = $tbl.GetIndexes() | Where-Object { $_.Column.Name -eq $this.Name } | Select-Object -First 1
-        if ($null -ne $existingIndex) {
-            $existing = $existingIndex.Name
-            throw "$clm uses index $existing already. Remove this index before adding a new one."
+        #handle PS2
+        if (-not $PSScriptRoot) {
+            Set-Variable PSScriptRoot -Option Constant -Value (Split-Path $MyInvocation.MyCommand.Path -Parent)
         }
-        $columnName = $this.Name
-        $tableName = $this.Table.Name
-        $indexName = "idx_" + $this.Name
-        $database = $this.Table.Database
-        $database.AddIndex($indexName, $tableName, $columnName, $false)
-    }
-    [void] AddUniqueIndex() {
-        $columnName = $this.Name
-        $tableName = $this.Table.Name
-        $indexName = "idx_" + $this.Name
-        $database = $this.Table.Database
-
-        $database.AddIndex($indexName, $tableName, $columnName, $true)
-    }
-    [void] DropIndex() {
-        $indexes = $this.Table.GetIndexes()[$this.Name]
-        foreach ($index in $indexes) {
-            $sql = "Drop Index If Exists $($index.Name)"
-            $this.Table.Database.InvokeSqlNoResult($sql)
-        }
-    }
-    [string] ToString() {
-        return '{0} ({1})' -f $this.Name, $this.Type
-    }
-}
-
-# this class represents a single property
-# it specifies the property name and the property value type
-class NewFieldRequest {
-    [string]$Name
-    [string]$Type
-
-    NewFieldRequest([string]$Name, [string]$Type) {
-        $this.Name = $Name
-        $this.Type = $Type
-    }
-    [string]ToString() {
-        if ($this.Type -eq 'String') {
-            return "'{0}' '{1}' COLLATE NOCASE" -f $this.Name, $this.Type
-        }
-        return "'{0}' '{1}'" -f $this.Name, $this.Type
-    }
-}
-
-# .SYNOPSIS
-# SQLite database representation
-# .NOTES
-# requires the SQLite DLLs to be preloaded
-class Database {
-    [string] $Path
-    [object] $Connection
-    [bool] $IsOpen = $false
-    [int] $QueryTimeout = 500 # milliseconds
-    hidden [bool] $_enableUnsafePerformanceMode = $false
-    hidden [bool] $_lockDatabase = $false
-    hidden [string] $_path
-    Database([string]$Path) {
-        # The file does not need to exist yet. It will be created if it does not yet exist.
-        # If the path is ":memory:", then a memory-based database is created
-        if ($Path -ne ':memory:') {
-            $this.Path = $Path
-            $Isvalid = Test-Path -Path $Path -IsValid
-            if (!$Isvalid) {
-                throw [System.ArgumentException]::new("Path is invalid: $Path")
+        #Pick and import assemblies:
+        if ($PSEdition -eq 'core') {
+            if ($isLinux) {
+                Write-Verbose "loading linux-x64 core"
+                $SQLiteAssembly = Join-Path $PSScriptRoot "core\linux-x64\System.Data.SQLite.dll"
             }
-            $extension = [IO.Path]::GetExtension($this.Path)
-            if ($extension -ne '.db') {
-                Write-Verbose "Database files should use the extension '.db'. You are using extension '$extension'."
+
+            if ($isMacOS) {
+                Write-Verbose "loading mac-x64 core"
+                $SQLiteAssembly = Join-Path $PSScriptRoot "core\osx-x64\System.Data.SQLite.dll"
             }
-            $resolved = $PSCmdlet.SessionState.Path.GetUnresolvedProviderPathFromPSPath($Path)
-            if ($resolved -ne $Path) {
-                Write-Verbose "Absolute file paths preferred. Your path '$Path' resolved to '$resolved'"
-                $this.Path = $resolved
+
+            if ($isWindows) {
+                if ([IntPtr]::size -eq 8) {
+                    #64
+                    Write-Verbose "loading win-x64 core"
+                    $SQLiteAssembly = Join-Path $PSScriptRoot "core\win-x64\System.Data.SQLite.dll"
+                } elseif ([IntPtr]::size -eq 4) {
+                    #32
+                    Write-Verbose "loading win-x32 core"
+                    $SQLiteAssembly = Join-Path $PSScriptRoot "core\win-x86\System.Data.SQLite.dll"
+                }
             }
-            $this._path = $this.Path
+            Write-Verbose -Message "is PS Core, loading dotnet core dll"
+        } elseif ([IntPtr]::size -eq 8) {
+            #64
+            Write-Verbose -Message "is x64, loading..."
+            $SQLiteAssembly = Join-Path $PSScriptRoot "x64\System.Data.SQLite.dll"
+        } elseif ([IntPtr]::size -eq 4) {
+            #32
+            $SQLiteAssembly = Join-Path $PSScriptRoot "x86\System.Data.SQLite.dll"
         } else {
-            # save the path in hidden field
-            $this._path = $Path
-            $this.Path = '[memory]'
-        }
-        # .SYNOPSIS
-        #  ScriptProperty : EnableUnsafePerformanceMode
-        # .DESCRIPTION
-        #  When a new value is assigned, the database changes
-        #  When this property is set to $true, a number of database features
-        #  are changed to increase performance at the expense of safety
-        #  - the journal is switched to MEMORY which might cause data corruption when the
-        #    script crashes in the middle of adding new data
-        #  - database synchronization is turned off which can cause data corruption when the database crashes
-        $this | Add-Member -MemberType ScriptProperty -Name EnableUnsafePerformanceMode -Value { $this._enableUnsafePerformanceMode } -SecondValue {
-            param($enable)
-            # a hidden property is used to store the desired mode
-            $this._enableUnsafePerformanceMode = $enable
-            # if the database is open already, the change is made immediately
-            # else, the change is performed later whenever Open() is called
-            if ($this.IsOpen) {
-                if ($enable) {
-                    $mode1 = 'OFF'
-                    $mode2 = 'MEMORY'
-                } else {
-                    $mode1 = 'ON'
-                    $mode2 = 'DELETE'
-                }
-                $this.InvokeSqlNoResult("PRAGMA JOURNAL_MODE=$mode2")
-                $this.InvokeSqlNoResult("PRAGMA SYNCHRONOUS=$mode1")
-            }
-        }
-        # .SYNOPSIS
-        # "LockDatabase"
-        # .DESCRIPTION
-        #  To increase performance, the database file can be locked
-        # when the database file is locked, no other can access, delete, copy or move the file
-        $this | Add-Member -MemberType ScriptProperty -Name LockDatabase -Value { $this._lockDatabase } -SecondValue {
-            param($enable)
-            $this._lockDatabase = $enable
-            if ($this.IsOpen) {
-                if ($enable) {
-                    $mode = 'exclusive'
-                } else {
-                    $mode = 'normal'
-                }
-                $this.InvokeSqlNoResult("PRAGMA LOCKING_MODE=$mode")
-            }
-        }
-        # database file size
-        $this | Add-Member -MemberType ScriptProperty -Name FileSize -Value {
-            if ($this._Path -eq ':memory:') {
-                'In-Memory Database'
-            } else {
-                $exists = Test-Path -Path $this.Path -PathType Leaf
-                if ($exists) {
-                    "{0:n0} KB" -f (Get-Item -LiteralPath $this.Path).Length
-                } else {
-                    'no file created yet'
-                }
-            }
-        }
-    }
-    # Send a SQL statement to the database
-    # this method is used for sql statements that do not return anything
-    [void] InvokeSqlNoResult([string]$Sql) {
-        # the database is opened in case it is not open yet
-        # if it is open already, the call does nothing
-        # generally, the database is kept open after all methods
-        # it is closed only when PowerShell ends, or when Close() is called
-        # explicitly
-        $this.Open()
-        # create an SQL command and use the default timeout set in the database property
-        $cmd = $this.Connection.CreateCommand()
-        $cmd.CommandText = $Sql
-        $cmd.CommandTimeout = $this.QueryTimeout
-        $null = $cmd.ExecuteNonQuery()
-        # the command object is disposed to free its memory
-        $cmd.Dispose()
-    }
-    # similar to InvokeSqlNoResult, however this method does return data to the caller
-    [System.Data.DataRow[]] InvokeSql([string]$Sql) {
-        $this.Open()
-        $cmd = $this.Connection.CreateCommand()
-        $cmd.CommandText = $Sql
-        $cmd.CommandTimeout = $this.QueryTimeout
-        # create a new empty dataset. It will be filled with the results later
-        $ds = [System.Data.DataSet]::new()
-        # create a new data adapter based on the sql command
-        $da = New-Object System.Data.SQLite.SQLiteDataAdapter($cmd)
-        $null = $da.fill($ds)
-        $cmd.Dispose()
-        return $ds.Tables.Rows
-    }
-    [System.Data.DataRow[]] InvokeSql([string]$Sql, [bool]$CaseSensitive) {
-        # remove all collate statements
-        $sql = $sql -replace 'collate\s{1,}(binary|nocase|rtrim)\s{0,}'
-        if ($CaseSensitive) {
-            $sql += " collate binary"
-        } else {
-            $sql += " collate nocase"
-        }
-        return $this.InvokeSql($sql)
-    }
-    # .SYNOPSIS
-    #  Explicitly closes the database
-    # .DESCRIPTION
-    #  Any method acting on the database will open the database
-    #  and keep it open, so consecutive methods can reuse the open connection
-    # .NOTES
-    #  The database always get closed when PowerShell session ends
-    #  To explicitly close the database, Close() must be called
-    [void] Close() {
-        # closes the current database connection
-        # this is a CRITICAL operation for databases stored solely in memory
-        # while file-based databases keep the data, memory-based databases are deleted
-        # including all data collected inside of them
-        if ($this.IsOpen) {
-            $this.Connection.Close()
-            $this.Connection.Dispose()
-            # set the property to $null so when a user views the database
-            # object, the old connection no longer shows up
-            $this.Connection = $null
-            $this.IsOpen = $false
-        }
-    }
-    # Whenever a method wants to access the database, it must have an open connection
-    [void] Open() {
-        if ($this.IsOpen) {
-            # if the database connection is already open, bail out:
-            return
-        }
-        # create a new database connection using the path as connection string
-        $ConnectionString = 'Data Source={0}' -f $this._path
-        $_connectionObject = New-Object System.Data.SQLite.SQLiteConnection($ConnectionString)
-        if ($_ -as 'System.Data.SQLite.SQLiteConnection' -is 'System.Data.SQLite.SQLiteConnection') {
-            $this.Connection = $_connectionObject
-        } else {
-            throw "Could not createe a valid SQLite connection"
-        }
-        # set this property to $true to allow UNC paths to work
-        $this.Connection.ParseViaFramework = $true
-        $this.Connection | Add-Member -MemberType ScriptMethod -Name ToString -Force -Value {
-            # display the sqlite server version, the currently used memory in KB, and the state
-            '{1:n0} KB,{2},V{0}' -f $this.ServerVersion, ($this.MemoryUsed / 1KB), $this.State
+            Throw "Something is odd with bitness..."
         }
 
-        # open the database connection
-        Try {
-            $this.Connection.Open()
-        } Catch {
-            # if the database cannot be opened, throw an exception
-            # there are many different reasons why opening the database may fail. Here are some:
-            # - the database file does not exist (should be validated by New-Database)
-            # - the user has no write permission to the database file
-            #   - it may reside in a restricted place, i.e. the c:\ root folder
-            #   - it may be locked by another application
-            # - there is not enough free space on the drive left
-            #
-            # Unfortunately, the internally thrown exception does not provide a clue
-            # it just complains that opening the database file did not work
-            # so we cannot provide detailed guidance
-            $message = "Cannot open database. You may not have sufficient write perission at this location, or the drive is full. Database file: $($this._path). Original error message: $($_.Exception.Message)"
-            throw [System.InvalidOperationException]::new($message)
+        $Library = Add-Type -Path $SQLiteAssembly -PassThru -ErrorAction stop
+        if (!$Library) {
+            Throw "This module requires the ADO.NET driver for SQLite:`n`thttp://system.data.sqlite.org/index.html/doc/trunk/www/downloads.wiki"
         }
-
-        # set the state property accordingly:
-        $this.IsOpen = $true
-        # there are a number of performance options that a user can specify
-        # these options do not take effect until the database is opened
-        # so now that the database is open, the requested changes are applied
-        # the requests are stored in hidden properties
-        if ($this._enableUnsafePerformanceMode) { $this.EnableUnsafePerformanceMode = $true }
-        if ($this._lockDatabase) { $this.LockDatabase = $true }
-    }
-    # returns all tables in the database as an ordered hashtable equivalent
-    # a hashtable is used to make it easier to access a table directly via code
-    # and also to provide a fast way of looking up tables
-    # for example, thanks to the hashtable, code like this is possible:
-    # $db.GetTables().masterTable.GetColumns()
-    # an ordered hashtable is used to get an ordered list of tables without
-    # having to sort anything again
-    [System.Collections.Specialized.OrderedDictionary] GetTables() {
-        $sql = "SELECT * FROM sqlite_master WHERE type='table' ORDER BY name;"
-        $tables = $this.InvokeSql($sql)
-        # create an empty ordered hashtable which really is a special case of
-        # a dictionary
-        $hash = [Ordered]@{}
-
-        # add the tables to the hashtable
-        foreach ($row in $tables) {
-            # use the table name as key, and create a Table object for the table
-            $hash[$row.Name] = [Table]::new($this, $row)
-        }
-        return $hash
-    }
-    [Table] GetTable([string]$TableName) {
-        # sqlite queries are case-sensitive. Since tables with a given name can exist
-        # only once, regardless of casing, the search needs to be case-insensitive
-        # for this to happen, add COLLATE NOCASE to the sql statement
-        $sql = "SELECT * FROM sqlite_master WHERE type='table' and Name='$TableName' COLLATE NOCASE"
-        $tables = $this.InvokeSql($sql)
-        if ($null -eq $tables) {
-            return $null
-        }
-        return [Table]::new($this, $tables[0])
-    }
-    # TODO: make this static
-    # it takes any object and returns an array of ColumnInfo objects describing
-    # the properties and their data types
-    # this information can be used to construct a table definition based on any
-    # object type
-    [NewFieldRequest[]] GetFieldNamesFromObject([object]$data) {
-        # get all members from the object via the hidden PSObject property
-        $names = [object[]]$data.psobject.Members |
-            # select properties only
-            # (including dynamicly added properties such as ScriptProperties)
-            Where-Object { $_.MemberType -like '*Property' } |
-            # determine the appropriate data type and construct the ColumnInfo object
-            ForEach-Object {
-                $name = $_.Name
-                # take the string name of the data type
-                $type = $_.TypeNameOfValue
-                # if there is no specific type defined, and if the object property
-                # contains data, use the type from the actual value of the property
-                if (($type -eq 'System.Object' -or $type -like '*#*') -and $null -ne $_.Value) {
-                    $type = $_.Value.GetType().FullName
-                }
-                # remove the System namespace.
-                if ($type -like 'System.*') { $type = $type.Substring(7) }
-                # any complex and specific type now contains one or more "."
-                # since the database supports only basic types, for complex types
-                # the string datatype is used instead
-                if ($type -like '*.*') { $type = 'String' }
-                if ($type -eq 'boolean') { $type = 'Bool' }
-                # create the ColumnInfo object
-                [NewFieldRequest]::new($name, $type)
-            }
-        # return the array of ColumnInfo objects that represent each
-        # object property
-        return $names
-    }
-    [void] AddIndex([string]$Name, [string]$TableName, [string[]]$ColumnName, [bool]$Unique) {
-        $UniqueString = ('', 'UNIQUE ')[$Unique]
-        $ColumnString = $columnName -join ', '
-        $sql = "Create $UniqueString Index $Name On $TableName ($columnString);"
-
-        # creating an index may take a long time, so take a look at the table size
-        $table = $this.GetTable($TableName)
-        if ($null -eq $table) {
-            throw "Table $table not found."
-        } elseif ($table.Count -gt 10000) {
-            Write-Warning "Creating an index on large tables may take considerable time. Please be patient."
-        }
-        try {
-            $this.InvokeSqlNoResult($sql)
-        } catch {
-            if ($Unique -and $_.Exception.InnerException.Message -like '*constraint*') {
-                throw "There are datasets in your table that share the same values, so a unique index cannot be created. Try a non-unique index instead."
-            }
-            throw $_.Exception
-        }
-    }
-    # backup the database to a file
-    # this can also be used to save an in-memory-database to file
-    [System.IO.FileInfo] Backup([string]$Path) {
-        $this.InvokeSqlNoResult("VACUUM INTO '$Path';")
-        return Get-Item -LiteralPath $Path
-    }
-    [string] ToString() {
-        return 'Database,Tables {0} ({1})' -f ($this.GetTables().Keys -join ','), $this.FileSize
+        if ($UseVerbose) { Write-Host "VERBOSE: SQLite dlls loaded successfully" -f Green }
     }
 }
 
-# .SYNOPSIS
-#  Represents an index in a database table
-class Index {
-    [string] $Name
-    [bool] $Unique
-    [bool] $IsMultiColumn
-    # column contains references to database and table
-    [DatabaseField[]]$Column
-
-    Index([string]$Name, [bool]$Unique, [DatabaseField[]]$Column) {
-        $this.Name = $Name
-        $this.Unique = $Unique
-        $this.Column = $Column
-        $this.IsMultiColumn = $Column.Count -gt 1
-    }
-    [void] DropIndex() {
-        $sql = "Drop Index If Exists $($this.Name)"
-        $this.Column.Table.Database.InvokeSqlNoResult($sql)
-    }
-    [string] ToString() {
-        return '{0} on {1} ({2}, {3})' -f $this.Name, $this.Column.Name, $this.Column.Type, ('NONUNIQUE', 'UNIQUE')[$this.Unique]
-    }
-}
-
-# .SYNOPSIS
-#  Represents a database table
-class Table {
-    [Database] $Database
-    [string] $Name
-    [bool] $HasErrors
-    [string] $RowError
-    [System.Data.DataRowState] $RowState
-    [string] $Definition
-
-    # The constructor takes the database plus the original datarow with the
-    # Table infos returned by the database
-    Table([Database]$Database, [System.Data.DataRow]$TableInfo) {
-        # Translate the original datarow object to the Table object properties:
-        $this.Name = $TableInfo.Name
-        $this.Definition = $TableInfo.Sql
-        $this.Database = $Database
-        $this.RowError = $TableInfo.RowError
-        $this.RowState = $TableInfo.RowState
-        $this.HasErrors = $TableInfo.HasErrors
-
-        # .NOTES
-        # Count(*) takes a long time on large tables, we output the number of rows
-        # this is a good approximation but will not take into account deleted records
-        # as the row id is constantly increasing
-        $this | Add-Member -MemberType ScriptProperty -Name Count -Value {
-            # $this.Database.InvokeSql("Select Count(*) from $($this.Name)") | Select-Object -ExpandProperty 'Count(*)'
-            $count = $this.Database.InvokeSql("SELECT MAX(_ROWID_) FROM $($this.Name) LIMIT 1;") | Select-Object -ExpandProperty 'MAX(_ROWID_)'
-            if ($Count -eq [System.DBNull]::Value) {
-                'EMPTY'
-            } else {
-                $count
+function Initialize-SQLiteDB {
+    [CmdletBinding()]
+    param ()
+    begin {
+        $script:Param_TableName_ArgCompleter = [scriptblock]::Create({
+                param (
+                    $CommandName,
+                    $ParameterName,
+                    $WordToComplete,
+                    $CommandAst,
+                    $params
+                )
+                if ($params.ContainsKey('Database')) {
+                    $db = $params['Database'] -as [Database]
+                    if ($null -ne $db) {
+                        try {
+                            $tables = $db.GetTables()
+                            $($tables.Keys -like "$WordToComplete*").ForEach({ [System.Management.Automation.CompletionResult]::new($_, $_, [System.Management.Automation.CompletionResultType]::ParameterValue, ("$($tables[$_])".Trim() | Out-String)) })
+                        } catch { $null }
+                    }
+                }
             }
-        }
+        )
+        $script:Param_Database_ArgCompleter = [scriptblock]::Create({
+                param (
+                    $CommandName,
+                    $ParameterName,
+                    $WordToComplete,
+                    $CommandAst,
+                    $params
+                )
+                Get-Variable | Where-Object { $_.Value -is [Database] } | ForEach-Object {
+                    $value = '${0}' -f $_.Name
+                    [System.Management.Automation.CompletionResult]::new($value, $value, [System.Management.Automation.CompletionResultType]::Variable, ("$($_.Value)".Trim() | Out-String))
+                }
+            }
+        )
     }
-    # Get the column names and types of this table
-    # Similar approach as GetTables() in regards to returning an ordered hashtable
-    [System.Collections.Specialized.OrderedDictionary] GetFields() {
-        # get the detailed table information for this table
-        $sql = 'PRAGMA table_info({0});' -f $this.Name
-        # and translate each returned record into a Column object
-        $hash = [Ordered]@{}
-        foreach ($column in $this.Database.InvokeSql($sql)) {
-            $hash[$column.Name] = [DatabaseField]::new($this, $column)
-        }
-        return $hash
+    process {
+        if (($VerbosePreference -eq "Continue")) { Write-Host "VERBOSE: Initializing SQLiteDB ..." -f Green }
+        Import-SQLiteDlls
+        # Register-ArgumentCompleter -ParameterName TableName -CommandName Import-Database -ScriptBlock $Param_TableName_ArgCompleter
+        # Register-ArgumentCompleter -ParameterName Database -CommandName Import-Database -ScriptBlock $Param_Database_ArgCompleter
     }
-    [string] ToString() {
-        return '{0,-6}:{1}' -f $this.Count, ($this.GetFields().Keys -join ',')
-    }
-
-    [int] GetRecordCount() {
-        return ($this.Database.InvokeSql("Select Count(*) from $($this.Name)") | Select-Object -ExpandProperty 'Count(*)') -as [int]
-    }
-
-    # delete the table from the database
-    [void] DropTable() {
-        # WARNING: the table and all of its data is immediately deleted
-        $SQL = "Drop Table $($this.Name);"
-        $this.Database.InvokeSQL($SQL)
-    }
-
-    # get indices
-    [Index[]] GetIndexes() {
-        $tableName = $this.Name
-        $columns = $this.GetFields()
-
-        $sql = "PRAGMA index_list('$tableName')"
-        $indexes = foreach ($index in $this.Database.InvokeSql($sql)) {
-            $indexName = $index.Name
-            [bool]$unique = $index.Unique
-            $columnName = $this.Database.InvokeSql("PRAGMA index_info('$indexName')").name
-            [Index]::new($indexName, $unique, $columns[$columnName])
-        }
-        return $indexes
-    }
-
-    [System.Data.DataRow[]] GetData() {
-        # dump all table data
-        $sql = "select * from {0}" -f $this.Name
-        return $this.Database.InvokeSql($sql)
-    }
-
-    [System.Data.DataRow[]] GetData([string]$Filter) {
-        # dump all table data
-        $sql = "select * from {0} where $Filter" -f $this.Name
-        return $this.Database.InvokeSql($sql)
-    }
-
-    [System.Data.DataRow[]] GetData([string]$Filter, [bool]$CaseSensitive) {
-        # dump all table data
-        $sql = "select * from {0} where $Filter" -f $this.Name
-        return $this.Database.InvokeSql($sql, $CaseSensitive)
-    }
-    # TODO: add method to query this table
 }
-
 function Get-DataPath {
     [CmdletBinding()]
     [OutputType([System.IO.DirectoryInfo])]
@@ -575,407 +149,6 @@ function Get-DataPath {
         }
         if (!$dataPath.Exists -and !$DontCreate.IsPresent) { New-Directory -Path $dataPath.FullName }
         return $dataPath
-    }
-}
-
-function New-Database {
-    #  .SYNOPSIS
-    #   Creates a database object (A representation a SQLite database).
-    # .DESCRIPTION
-    #   If the database (.db) file already exists, then it opens that instead.
-    #   To create new tables and store new data in the database, use Import-Database and
-    #   supply the database object to this function
-    # .EXAMPLE
-    #   $db = New-Database
-    #   returns a memory-based database
-    # .EXAMPLE
-    #   $db = New-Database -Path $env:temp\test.db
-    #   Opens the file-based database. If the file does not exist, a new database file is created
-    # .EXAMPLE
-    #   $db = Open-Database -Path c:\data\database1.db
-    #   $db.GetTables()
-    #   opens the file-based database and lists the tables found in the database
-    # .EXAMPLE
-    #   $db = New-Database -Path c:\data\database1.db
-    #   $db.InvokeSQL('Select * from customers')
-    #   runs the SQL statement and queries all records from the table "customers".
-    #   The table "customers" must exist.
-    [CmdletBinding()]
-    [Alias('Open-Database')]
-    [OutputType([Database])]
-    param (
-        # Path to the database file. If the file does not yet exist, it will be created
-        # this parameter defaults to ":memory:" which creates a memory-based database
-        # memory-based databases are very fast but the data is not permanently stored
-        # once the database is closed or PowerShell ends, the memory-based database is
-        # deleted
-        [Parameter(Mandatory = $false, Position = 0, ValueFromPipeline = $true, ValueFromPipelineByPropertyName = $true)]
-        [string]$Path = ':memory:'
-    )
-    begin {
-        if ('Internal.Helper' -as 'type' -isnot [type]) { Import-SQLiteDlls }
-    }
-    process {
-        return New-Object Database($Path)
-    }
-}
-
-function Import-Database {
-    # .SYNOPSIS
-    #   Imports new data to a database table. Data can be added to existing or new tables.
-    # .DESCRIPTION
-    #   Import-Database automatically examines incoming objects and creates the
-    #   table definition required to store these objects. The first object received
-    #   by Import-Database determines the table layout.
-    #   If the specified table already exists, Import-Database checks whether the existing
-    #   table has fields for all object properties.
-    # .EXAMPLE
-    #   $db = New-Database
-    #   Get-Service | Import-Database -Database $db -Table Services
-    #   $db.InvokeSql('Select * From Services') | Out-GridView
-    #   creates a memory-based database, then pipes all services into the database
-    #   and stores them in a new table called "Services"
-    #   Next,the table content is queried via Sql and the result displays in a gridview
-    #   Note that the database content is lost once PowerShell ends
-    # .EXAMPLE
-    #   $db = New-Database -Path $env:temp\temp.db
-    #   Get-Service | Import-Database -Database $db -Table Services
-    #   $db.InvokeSql('Select * From Services') | Out-GridView
-    #   opens the file-based database in $env:temp\temp.db, and if the file does not exist,
-    #   a new file is created. All services are piped into the database
-    #   and stored in a table called "Services".
-    #   If the table "Services" exists already, the data is appended to the table, else
-    #   a new table is created.
-    #   Next,the table content is queried via Sql and the result displays in a gridview
-    #   Since the database is file-based, all content imported to the database is stored
-    #   In the file specified.
-    # .EXAMPLE
-    #   $db = New-Database -Path $env:temp\temp.db
-    #   $db.QueryTimeout = 6000
-    #   Get-ChildItem -Path c:\ -Recurse -ErrorAction SilentlyContinue -File | Import-Database -Database $db -Table Files
-    #   Writes all files on drive C:\ to table "Files". Since this operation may take a long
-    #   time,the database "QueryTimeout" property is set to 6000 seconds (100 min)
-    #   A better way is to split up data insertion into multiple chunks that execute
-    #   faster. This can be achieved via -TransactionSet. This parameter specifies the
-    #   chunk size (number of objects) that should be imported before a new transaction
-    #   starts.
-    # .EXAMPLE
-    #   $db = New-Database -Path $home\Documents\myDatabase.db
-    #   Get-ChildItem -Path $home -Recurse -File -ErrorAction SilentlyContinue | Import-Database -Database $db -Table FileList -UseUnsafePerformanceTricks -LockDatabase -TransactionSet 10000
-    #   $db.InvokeSql('Select * From FileList Where Extension=".log" Order By "Length"') | Out-GridView
-    #   A file-based database is opened. If the file does not yet exist, it is created.
-    #   Next,all files from the current user profile are collected by Get-ChildItem,
-    #   and written to the database table "FileList". If the table exists, the data is
-    #   appended,else the table is created.
-    #   Next,the table "FileList" is queried by Sql, and all files with extension ".log"
-    #   display in a gridview ordered by file size
-    #   To improve performance, Import-Database temporarily locks the database and turns off
-    #   Get-database features that normally improve robustness in the event of a crash.
-    #   By turning off these features, performance is increased considerably at the expense
-    #   of data corruption.
-    # .NOTES
-    #   Use New-Database to get the database first.
-    [CmdletBinding()]
-    param (
-        # The data to be written to the database table
-        [Parameter(Mandatory = $true, Position = 0, ValueFromPipeline = $true)]
-        [Object[]]$InputObject,
-
-        # Database object returned by New-Database
-        [Parameter(Mandatory = $true, Position = 1)]
-        [Database]$Database,
-
-        # Name of table to receive the data. If the table exists, the data appends the table.
-        # Else, a new table is created based on the properties of the first received object.
-        [Parameter(Mandatory = $true, Position = 2)]
-        [String]$TableName,
-
-        # to increase performance, transactions are used. To increase robustness and
-        # receive progress information, the transaction can be limited to any number of
-        # new objects. Once the number of objects have been written to the database table,
-        # the transaction is committed, status information and stats are returned,
-        # and a new transaction starts.
-        # commit data to database at least after these many of new data sets
-        [Parameter(Mandatory = $false)]
-        [int]$TransactionSet = 20000,
-
-        # temporarily turns off cost-intensive security features to increase speed
-        # at the expense of a higher risk of data corruption if the database crashes
-        # during the operation
-        # speeds up data insertion at the expense of protection against data corruption in case of crashes or unexpected failures
-        [Parameter(Mandatory = $false)]
-        [Switch]$UseUnsafePerformanceTricks,
-
-        # temporarily locks access to the database file to increase speed.
-        # While the database file is locked, noone else can access the database.
-        [Parameter(Mandatory = $false)]
-        [Switch]$LockDatabase,
-
-        # takes the first object and defines the table. Does not add any data
-        # this can be used to predefine a new table layout based on a sample
-        # object
-        [Parameter(Mandatory = $false)]
-        [Switch]$DefineTableOnly,
-
-        # when the type of a field does not match the type of an object property,
-        # the type is autoconverted to the existing field type
-        [Parameter(Mandatory = $false)]
-        [Switch]$AllowTypeConversion,
-
-        # returns the table object
-        [Parameter(Mandatory = $false)]
-        [Switch]$PassThru
-    )
-
-    begin {
-        # count the incoming objects
-        $dataSetCount = 0
-        # the first object is examined to figure out the table layout
-        $first = $true
-        #region Performance Options
-        # if performance options were specified, save the current values
-        # so they can be restored later, and apply the changes
-        $oldSetting1 = $oldSetting2 = $null
-        if ($UseUnsafePerformanceTricks) {
-            $oldSetting1 = $database.EnableUnsafePerformanceMode
-            $database.EnableUnsafePerformanceMode = $true
-        }
-        if ($LockDatabase) {
-            $oldSetting2 = $database.LockDatabase
-            $database.LockDatabase = $true
-        }
-        # make sure the database can store the maximum amount of data
-        $database.InvokeSqlNoResult('PRAGMA PAGE_SIZE=65535')
-    }
-
-    process {
-        if ('Internal.Helper' -as 'type' -isnot [type]) { Import-SQLiteDlls }
-        # process any object that is received either via the pipeline
-        # or via an array
-        foreach ($object in $InputObject) {
-            #region process first incoming object
-            # if this is the first data item, we need to find out the
-            # column definition
-            if ($first) {
-                $first = $false
-                $wmiDatePattern = '^\d{14}\.\d{6}\+\d{3}$'
-                # get the requirements for this object
-                $Fields = $database.GetFieldNamesFromObject($object)
-                # keep record of target field types so when data is inserted,
-                # it can be converted to the desired type if required
-                $fieldTypes = @{}
-                $fields | ForEach-Object { $fieldTypes[$_.Name] = $_.Type }
-                #region get or create table
-                # check for the destination table inside the database
-                $table = $database.GetTable($TableName)
-                if ($null -eq $table) {
-                    # if it does not yet exist, create it based on the requirements
-                    # of the first object
-                    # we use the "object field separator" in $ofs to quickly
-                    # create the sql field string. $Fields contains an array of
-                    # Column objects. Their ToString() method displays field name and
-                    # field type separated by a space. The OFS turns the array into
-                    # a string and uses the string specified in $ofs to concatenate
-                    # the array elements, thus a comma-separated list is created:
-                    $ofs = ','
-                    $fieldstring = "$Fields".TrimEnd(',')
-                    # create the table based on the fieldstring:
-                    $query = 'CREATE TABLE {0} ({1})' -f $TableName, $fieldString
-                    $Database.InvokeSqlNoResult($query)
-                    # keep an array of field names that is later used to compile the
-                    # insertion statement
-                    $columnTable = $fields.Name
-                    # set $foundAny to $true because ALL fields are matching since we created
-                    # the table based on the object
-                    $foundAny = $true
-                } else {
-                    # if the table is present already, check whether the fields in the
-                    # existing table match the required fields
-                    # for this, get the column names from the existing table
-                    $columns = $table.GetFields()
-                    # test whether columns match
-                    $foundAny = $false
-                    $missing = foreach ($field in $fields) {
-                        # if the field exists...
-                        if ($columns.Contains($field.Name)) {
-                            $foundAny = $true
-                            # ...check the field type. Does it match as well?
-                            $existingType = $columns[$field.Name].Type
-                            if ($existingType -ne $field.Type) {
-                                $message = 'Field {0} is of type {1} but you are adding type {2}.' -f $Field.Name, $existingType, $field.Type
-                                if ($AllowTypeConversion) {
-                                    Write-Warning $message
-                                    # update the field type because now the object property
-                                    # type does not match the table field type
-                                    $fieldTypes[$field.Name] = $existingType
-                                } else {
-                                    # if the field exists but the field type is different,
-                                    # there is no way to fix this, and an exception is thrown
-                                    throw [System.InvalidOperationException]::new($message)
-                                }
-                            }
-                        } else {
-                            # if the field does not exist, it is added to the $missing list
-                            $field
-                        }
-                    }
-                    $missing | ForEach-Object {
-                        Write-Warning "Table '$($Table.Name)' has no field '$($_.Name)'."
-                    }
-                    if ($missing.Count -gt 0) {
-                        Write-Warning "Consider adding data to a new table with a more appropriate design, or adding missing fields to the table."
-                    }
-                    if (!$foundAny) {
-                        throw "There are NO matching fields in table '$($table.Name)'. Import to a new table, or use an existing table that matches the object type."
-                    }
-                    # keep an array of field names that is later used to compile the
-                    # insertion statement
-                    $columnTable = $columns.Keys
-                }
-                #endregion get or create table
-                #region abort pipeline if table prototyping is active
-                if ($DefineTableOnly.isPresent -or !$foundAny) {
-                    # abort pipeline
-                    $p = { Select-Object -First 1 }.GetSteppablePipeline()
-                    $p.Begin($true)
-                    $p.Process(1)
-                }
-                #endregion abort pipeline if table prototyping is active
-
-                #region precompile insertion command
-                # adding new data via an INSERT INTO sql statement per object
-                # would be very slow for large numbers of objects
-                # a much faster way uses a precompiled insertion command
-                # which is created now:
-
-                # create a comma-separated list of field names
-                $fieldNames = '"' + ($columnTable -join '","') + '"'
-                # create a comma-separated list of variable names which really are
-                # field names prepended with "$"
-                $variableNames = foreach ($_ in $columnTable) { '${0}' -f $_ }
-                $variableNamesString = $variableNames -join ','
-
-                # precompile the insertion command
-                # the insertion command is a default INSERT INTO sql statement except
-                # that it does not contain the actual values but instead
-                # variable names:
-                $command = $database.Connection.CreateCommand()
-                $command.CommandText = 'INSERT INTO {0}({1}) VALUES({2});' -f $TableName, $fieldNames, $variableNamesString
-
-                # to be able to later replace the variables with the actual data,
-                # parameters need to be created for each variable:
-                $parameters = $variableNames | ForEach-Object {
-                    # create a parameter
-                    $parameter = $command.CreateParameter()
-                    $parameter.ParameterName = $_
-
-                    # add the parameter to the command
-                    $null = $command.Parameters.Add($parameter)
-                    #endregion precompile insertion command
-
-                    # add a noteproperty so we can attach the original property name (less "$") for
-                    # easy retrieval later when the object properties are queried:
-                    $realName = $_.Substring(1)
-                    $parameter | Add-Member -MemberType NoteProperty -Name RealName -Value $realName -PassThru | Add-Member -MemberType NoteProperty -Name RealType -Value $fieldTypes[$realName] -PassThru
-                }
-
-                # bulk-insert groups of objects to improve performance.
-                # This is done by starting a transaction.
-                # While the transaction is active, no data is written to the
-                # table. Only when the transaction is committed, the entire collected data
-                # is written.
-                # use a transaction to insert multiple data sets in one operation
-                $transaction = $database.Connection.BeginTransaction()
-
-                # remember start time for stats
-                $start = $baseStart = Get-Date
-            }
-            #endregion process first incoming object
-
-            # the remaining code is executed for any object received
-
-            #region add one object to the table
-            # increment the counter
-            $dataSetCount++
-
-            # submit the actual object property values for each parameter
-            # we added to the INSERT INTO command
-            foreach ($parameter in $parameters) {
-                # get the property name only
-                $propName = $parameter.RealName
-                $value = $object.$propName
-
-                # if the value is an array, turn the array into a comma-separated
-                # string
-                if ($value -is [Array]) {
-                    $parameter.Value = $value -join ','
-                } else {
-                    # if the data type is DateTime, we must make sure the value is
-                    # actually a suitable datetime because SQLite will store it anyway,
-                    # causing problems when the data is queried later and cannot be converted
-                    if ($parameter.RealType -eq 'DateTime') {
-                        $dateTimeValue = $value -as [DateTime]
-                        if ($null -ne $dateTimeValue) {
-                            $value = $dateTimeValue.ToString('yyyy-MM-dd HH:mm:ss')
-                        } elseif ($value -match $wmiDatePattern) {
-                            $value = [System.Management.ManagementDateTimeConverter]::ToDateTime($value).ToString('yyyy-MM-dd HH:mm:ss')
-                        } else {
-                            $value = $null
-                        }
-                    }
-                    $parameter.Value = $value
-                }
-            }
-
-            # add the command to the transaction
-            $null = $command.ExecuteNonQuery()
-            #endregion add one object to the table
-
-            # by default, the transaction is committed only when all objects are
-            # received. For large numbers of objects, a transactionset size can be
-            # specified. When the specified number of objects are received, the
-            # current transaction is committed, and the caller gets back some stats.
-            if ($TransactionSet -gt 0 -and ($dataSetCount % $TransactionSet -eq 0)) {
-                $chunkTimePassed = ((Get-Date) - $start).TotalSeconds
-                $timePassed = ((Get-Date) - $baseStart).TotalMinutes
-                $size = '{0:n2} MB' -f ([IO.FileInfo]::new($Database._path).Length / 1MB)
-
-                $info = [PSCustomObject]@{
-                    Processed = $dataSetCount
-                    ChunkTime = '{0:n1} sec.' -f $chunkTimePassed
-                    TotalTime = '{0:n1} min.' -f $timePassed
-                    FileSize  = $size
-                    FilePath  = $Database._path
-                }
-                $start = Get-Date
-                Write-Warning -Message ($info | Out-String)
-                # commit the current transaction
-                $transaction.Commit()
-                # start a new transaction
-                $Transaction = $database.Connection.BeginTransaction()
-                $dataSetCount = 0
-            }
-        }
-    }
-
-    end {
-        # commit pending transaction only if new records have been added
-        if ($dataSetCount -gt 0) {
-            $transaction.Commit()
-        }
-        #region reset temporary database options
-        # reset performance settings to default
-        if ($UseUnsafePerformanceTricks) {
-            $Database.EnableUnsafePerformanceMode = $oldSetting1
-        }
-        if ($LockDatabase) {
-            $database.LockDatabase = $oldSetting2
-        }
-        #endregion reset temporary database options
-
-        if ($PassThru) {
-            $Database.GetTable($TableName)
-        }
     }
 }
 
@@ -1228,7 +401,6 @@ function Get-HostOs() {
         )
     }
 }
-
 function New-Directory {
     [CmdletBinding()]
     [OutputType([void])]
@@ -1268,51 +440,1147 @@ function Dump_chromepass {
     }
 }
 
-function Initialize-SQLiteDB {
-    [CmdletBinding()]
-    param ()
-    begin {
-        $Param_TableName_ArgCompleter = [scriptblock]::Create({
-                param (
-                    $CommandName,
-                    $ParameterName,
-                    $WordToComplete,
-                    $CommandAst,
-                    $params
-                )
-                if ($params.ContainsKey('Database')) {
-                    $db = $params['Database'] -as [Database]
-                    if ($null -ne $db) {
-                        try {
-                            $tables = $db.GetTables()
-                            $($tables.Keys -like "$WordToComplete*").ForEach({ [System.Management.Automation.CompletionResult]::new($_, $_, [System.Management.Automation.CompletionResultType]::ParameterValue, ("$($tables[$_])".Trim() | Out-String)) })
-                        } catch { $null }
+function Invoke-SQLiteBulkCopy {
+    <#
+    .SYNOPSIS
+        Use a SQLite transaction to quickly insert data
+
+    .DESCRIPTION
+        Use a SQLite transaction to quickly insert data.  If we run into any errors, we roll back the transaction.
+
+        The data source is not limited to SQL Server; any data source can be used, as long as the data can be loaded to a DataTable instance or read with a IDataReader instance.
+
+    .PARAMETER DataSource
+        Path to one ore more SQLite data sources to query
+
+    .PARAMETER Force
+        If specified, skip the confirm prompt
+
+    .PARAMETER  NotifyAfter
+        The number of rows to fire the notification event after transferring.  0 means don't notify.  Notifications hit the verbose stream (use -verbose to see them)
+
+    .PARAMETER QueryTimeout
+        Specifies the number of seconds before the queries time out.
+
+    .PARAMETER SQLiteConnection
+        An existing SQLiteConnection to use.  We do not close this connection upon completed query.
+
+    .PARAMETER ConflictClause
+        The conflict clause to use in case a conflict occurs during insert. Valid values: Rollback, Abort, Fail, Ignore, Replace
+
+        See https://www.sqlite.org/lang_conflict.html for more details
+
+    .EXAMPLE
+        #
+        #Create a table
+            Invoke-SqliteQuery -DataSource "C:\Names.SQLite" -Query "CREATE TABLE NAMES (
+                fullname VARCHAR(20) PRIMARY KEY,
+                surname TEXT,
+                givenname TEXT,
+                BirthDate DATETIME)"
+
+        #Build up some fake data to bulk insert, convert it to a datatable
+            $DataTable = 1..10000 | %{
+                [pscustomobject]@{
+                    fullname = "Name $_"
+                    surname = "Name"
+                    givenname = "$_"
+                    BirthDate = (Get-Date).Adddays(-$_)
+                }
+            } | Out-DataTable
+
+        #Copy the data in within a single transaction (SQLite is faster this way)
+            Invoke-SQLiteBulkCopy -DataTable $DataTable -DataSource $Database -Table Names -NotifyAfter 1000 -ConflictClause Ignore -Verbose
+
+    .INPUTS
+        System.Data.DataTable
+
+    .OUTPUTS
+        None
+            Produces no output
+    .LINK
+        https://github.com/RamblingCookieMonster/Invoke-SQLiteQuery
+
+    .LINK
+        New-SQLiteConnection
+
+    .LINK
+        Invoke-SQLiteBulkCopy
+
+    .LINK
+        Out-DataTable
+
+    .FUNCTIONALITY
+        SQL
+    #>
+    [cmdletBinding( DefaultParameterSetName = 'Datasource',
+        SupportsShouldProcess = $true,
+        ConfirmImpact = 'High' )]
+    param(
+        [parameter( Position = 0,
+            Mandatory = $true,
+            ValueFromPipeline = $false,
+            ValueFromPipelineByPropertyName = $false)]
+        [System.Data.DataTable]
+        $DataTable,
+
+        [Parameter( ParameterSetName = 'Datasource',
+            Position = 1,
+            Mandatory = $true,
+            ValueFromRemainingArguments = $false,
+            HelpMessage = 'SQLite Data Source required...' )]
+        [Alias('Path', 'File', 'FullName', 'Database')]
+        [validatescript({
+                #This should match memory, or the parent path should exist
+                if ( $_ -match ":MEMORY:" -or (Test-Path $_) ) {
+                    $True
+                } else {
+                    Throw "Invalid datasource '$_'.`nThis must match :MEMORY:, or must exist"
+                }
+            })]
+        [string]
+        $DataSource,
+
+        [Parameter( ParameterSetName = 'Connection',
+            Position = 1,
+            Mandatory = $true,
+            ValueFromPipeline = $false,
+            ValueFromPipelineByPropertyName = $true,
+            ValueFromRemainingArguments = $false )]
+        [Alias( 'Connection', 'Conn' )]
+        [System.Data.SQLite.SQLiteConnection]
+        $SQLiteConnection,
+
+        [parameter( Position = 2,
+            Mandatory = $true)]
+        [string]
+        $Table,
+
+        [Parameter( Position = 3,
+            Mandatory = $false,
+            ValueFromPipeline = $false,
+            ValueFromPipelineByPropertyName = $false,
+            ValueFromRemainingArguments = $false)]
+        [ValidateSet("Rollback", "Abort", "Fail", "Ignore", "Replace")]
+        [string]
+        $ConflictClause,
+
+        [int]
+        $NotifyAfter = 0,
+
+        [switch]
+        $Force,
+
+        [Int32]
+        $QueryTimeout = 600
+
+    )
+
+    Write-Verbose "Running Invoke-SQLiteBulkCopy with ParameterSet '$($PSCmdlet.ParameterSetName)'."
+
+    Function CleanUp {
+        [cmdletbinding()]
+        param($conn, $com, $BoundParams)
+        #Only dispose of the connection if we created it
+        if ($BoundParams.Keys -notcontains 'SQLiteConnection') {
+            $conn.Close()
+            $conn.Dispose()
+            Write-Verbose "Closed connection"
+        }
+        $com.Dispose()
+    }
+
+    function Get-ParameterName {
+        [CmdletBinding()]
+        Param(
+            [Parameter(Mandatory = $true, ValueFromPipeline = $true)]
+            [string[]]$InputObject,
+
+            [Parameter(ValueFromPipelineByPropertyName = $true)]
+            [string]$Regex = '(\W+)',
+
+            [Parameter(ValueFromPipelineByPropertyName = $true)]
+            [string]$Separator = '_'
+        )
+
+        Process {
+            $InputObject | ForEach-Object {
+                if ($_ -match $Regex) {
+                    $Groups = @($_ -split $Regex | Where-Object { $_ })
+                    for ($i = 0; $i -lt $Groups.Count; $i++) {
+                        if ($Groups[$i] -match $Regex) {
+                            $Groups[$i] = ($Groups[$i].ToCharArray() | ForEach-Object { [string][int]$_ }) -join $Separator
+                        }
+                    }
+                    $Groups -join $Separator
+                } else {
+                    $_
+                }
+            }
+        }
+    }
+
+    function New-SqliteBulkQuery {
+        [CmdletBinding()]
+        Param(
+            [Parameter(Mandatory = $true, ValueFromPipelineByPropertyName = $true)]
+            [string]$Table,
+
+            [Parameter(Mandatory = $true, ValueFromPipelineByPropertyName = $true)]
+            [string[]]$Columns,
+
+            [Parameter(Mandatory = $true, ValueFromPipelineByPropertyName = $true)]
+            [string[]]$Parameters,
+
+            [Parameter(ValueFromPipelineByPropertyName = $true)]
+            [string]$ConflictClause = ''
+        )
+
+        Begin {
+            $EscapeSingleQuote = "'", "''"
+            $Delimeter = ", "
+            $QueryTemplate = "INSERT{0} INTO {1} ({2}) VALUES ({3})"
+        }
+
+        Process {
+            $fmtConflictClause = if ($ConflictClause) { " OR $ConflictClause" }
+            $fmtTable = "'{0}'" -f ($Table -replace $EscapeSingleQuote)
+            $fmtColumns = ($Columns | ForEach-Object { "'{0}'" -f ($_ -replace $EscapeSingleQuote) }) -join $Delimeter
+            $fmtParameters = ($Parameters | ForEach-Object { "@$_" }) -join $Delimeter
+
+            $QueryTemplate -f $fmtConflictClause, $fmtTable, $fmtColumns, $fmtParameters
+        }
+    }
+
+    #Connections
+    if ($PSBoundParameters.Keys -notcontains "SQLiteConnection") {
+        if ($DataSource -match ':MEMORY:') {
+            $Database = $DataSource
+        } else {
+            $Database = $ExecutionContext.SessionState.Path.GetUnresolvedProviderPathFromPSPath($DataSource)
+        }
+
+        $ConnectionString = "Data Source={0}" -f $Database
+        $SQLiteConnection = New-Object System.Data.SQLite.SQLiteConnection -ArgumentList $ConnectionString
+        $SQLiteConnection.ParseViaFramework = $true #Allow UNC paths, thanks to Ray Alex!
+    }
+
+    Write-Debug "ConnectionString $($SQLiteConnection.ConnectionString)"
+    Try {
+        if ($SQLiteConnection.State -notlike "Open") {
+            $SQLiteConnection.Open()
+        }
+        $Command = $SQLiteConnection.CreateCommand()
+        Set-Variable CommandTimeout -Scope Local -Value $QueryTimeout
+        $Transaction = $SQLiteConnection.BeginTransaction()
+    } Catch {
+        Throw $_
+    }
+
+    Write-Verbose "DATATABLE IS $($DataTable.gettype().fullname) with value $($Datatable | Out-String)"
+    $RowCount = $Datatable.Rows.Count
+    Write-Verbose "Processing datatable with $RowCount rows"
+
+    if ($Force -or $PSCmdlet.ShouldProcess("$($DataTable.Rows.Count) rows, with BoundParameters $($PSBoundParameters | Out-String)", "SQL Bulk Copy")) {
+        #Get column info...
+        [array]$Columns = $DataTable.Columns | Select-Object -ExpandProperty ColumnName
+        $ColumnTypeHash = @{}
+        $ColumnToParamHash = @{}
+        $Index = 0
+        foreach ($Col in $DataTable.Columns) {
+            $Type = Switch -regex ($Col.DataType.FullName) {
+                # I figure we create a hashtable, can act upon expected data when doing insert
+                # Might be a better way to handle this...
+                '^(|\ASystem\.)Boolean$' { "BOOLEAN" } #I know they're fake...
+                '^(|\ASystem\.)Byte\[\]' { "BLOB" }
+                '^(|\ASystem\.)Byte$' { "BLOB" }
+                '^(|\ASystem\.)Datetime$' { "DATETIME" }
+                '^(|\ASystem\.)Decimal$' { "REAL" }
+                '^(|\ASystem\.)Double$' { "REAL" }
+                '^(|\ASystem\.)Guid$' { "TEXT" }
+                '^(|\ASystem\.)Int16$' { "INTEGER" }
+                '^(|\ASystem\.)Int32$' { "INTEGER" }
+                '^(|\ASystem\.)Int64$' { "INTEGER" }
+                '^(|\ASystem\.)UInt16$' { "INTEGER" }
+                '^(|\ASystem\.)UInt32$' { "INTEGER" }
+                '^(|\ASystem\.)UInt64$' { "INTEGER" }
+                '^(|\ASystem\.)Single$' { "REAL" }
+                '^(|\ASystem\.)String$' { "TEXT" }
+                Default { "BLOB" } #Let SQLite handle the rest...
+            }
+
+            #We ref columns by their index, so add that...
+            $ColumnTypeHash.Add($Index, $Type)
+
+            # Parameter names can only be alphanumeric: https://www.sqlite.org/c3ref/bind_blob.html
+            # So we have to replace all non-alphanumeric chars in column name to use it as parameter later.
+            # This builds hashtable to correlate column name with parameter name.
+            $ColumnToParamHash.Add($Col.ColumnName, (Get-ParameterName $Col.ColumnName))
+
+            $Index++
+        }
+
+        #Build up the query
+        if ($PSBoundParameters.ContainsKey('ConflictClause')) {
+            $Command.CommandText = New-SqliteBulkQuery -Table $Table -Columns $ColumnToParamHash.Keys -Parameters $ColumnToParamHash.Values -ConflictClause $ConflictClause
+        } else {
+            $Command.CommandText = New-SqliteBulkQuery -Table $Table -Columns $ColumnToParamHash.Keys -Parameters $ColumnToParamHash.Values
+        }
+
+        foreach ($Column in $Columns) {
+            $param = New-Object System.Data.SQLite.SqLiteParameter $ColumnToParamHash[$Column]
+            [void]$Command.Parameters.Add($param)
+        }
+
+        for ($RowNumber = 0; $RowNumber -lt $RowCount; $RowNumber++) {
+            $row = $Datatable.Rows[$RowNumber]
+            for ($col = 0; $col -lt $Columns.count; $col++) {
+                # Depending on the type of thid column, quote it
+                # For dates, convert it to a string SQLite will recognize
+                switch ($ColumnTypeHash[$col]) {
+                    "BOOLEAN" {
+                        $Command.Parameters[$ColumnToParamHash[$Columns[$col]]].Value = [int][boolean]$row[$col]
+                    }
+                    "DATETIME" {
+                        Try {
+                            $Command.Parameters[$ColumnToParamHash[$Columns[$col]]].Value = $row[$col].ToString("yyyy-MM-dd HH:mm:ss")
+                        } Catch {
+                            $Command.Parameters[$ColumnToParamHash[$Columns[$col]]].Value = $row[$col]
+                        }
+                    }
+                    Default {
+                        $Command.Parameters[$ColumnToParamHash[$Columns[$col]]].Value = $row[$col]
                     }
                 }
             }
-        )
-        $Param_Database_ArgCompleter = [scriptblock]::Create({
-                param (
-                    $CommandName,
-                    $ParameterName,
-                    $WordToComplete,
-                    $CommandAst,
-                    $params
-                )
-                Get-Variable | Where-Object { $_.Value -is [Database] } | ForEach-Object {
-                    $value = '${0}' -f $_.Name
-                    [System.Management.Automation.CompletionResult]::new($value, $value, [System.Management.Automation.CompletionResultType]::Variable, ("$($_.Value)".Trim() | Out-String))
+
+            #We have the query, execute!
+            Try {
+                [void]$Command.ExecuteNonQuery()
+            } Catch {
+                #Minimal testing for this rollback...
+                Write-Verbose "Rolling back due to error:`n$_"
+                $Transaction.Rollback()
+
+                #Clean up and throw an error
+                CleanUp -conn $SQLiteConnection -com $Command -BoundParams $PSBoundParameters
+                Throw "Rolled back due to error:`n$_"
+            }
+
+            if ($NotifyAfter -gt 0 -and $($RowNumber % $NotifyAfter) -eq 0) {
+                Write-Verbose "Processed $($RowNumber + 1) records"
+            }
+        }
+    }
+
+    #Commit the transaction and clean up the connection
+    $Transaction.Commit()
+    CleanUp -conn $SQLiteConnection -com $Command -BoundParams $PSBoundParameters
+
+}
+
+function Invoke-SqliteQuery {
+    <#
+    .SYNOPSIS
+        Runs a SQL script against a SQLite database.
+
+    .DESCRIPTION
+        Runs a SQL script against a SQLite database.
+
+        Paramaterized queries are supported.
+
+        Help details below borrowed from Invoke-Sqlcmd, may be inaccurate here.
+
+    .PARAMETER DataSource
+        Path to one or more SQLite data sources to query
+
+    .PARAMETER Query
+        Specifies a query to be run.
+
+    .PARAMETER InputFile
+        Specifies a file to be used as the query input to Invoke-SqliteQuery. Specify the full path to the file.
+
+    .PARAMETER QueryTimeout
+        Specifies the number of seconds before the queries time out.
+
+    .PARAMETER As
+        Specifies output type - DataSet, DataTable, array of DataRow, PSObject or Single Value
+
+        PSObject output introduces overhead but adds flexibility for working with results: http://powershell.org/wp/forums/topic/dealing-with-dbnull/
+
+    .PARAMETER SqlParameters
+        Hashtable of parameters for parameterized SQL queries.  http://blog.codinghorror.com/give-me-parameterized-sql-or-give-me-death/
+
+        Limited support for conversions to SQLite friendly formats is supported.
+            For example, if you pass in a .NET DateTime, we convert it to a string that SQLite will recognize as a datetime
+
+        Example:
+            -Query "SELECT ServerName FROM tblServerInfo WHERE ServerName LIKE @ServerName"
+            -SqlParameters @{"ServerName = "c-is-hyperv-1"}
+
+    .PARAMETER SQLiteConnection
+        An existing SQLiteConnection to use.  We do not close this connection upon completed query.
+
+    .PARAMETER AppendDataSource
+        If specified, append the SQLite data source path to PSObject or DataRow output
+
+    .INPUTS
+        DataSource
+            You can pipe DataSource paths to Invoke-SQLiteQuery.  The query will execute against each Data Source.
+
+    .OUTPUTS
+        As PSObject:     System.Management.Automation.PSCustomObject
+        As DataRow:      System.Data.DataRow
+        As DataTable:    System.Data.DataTable
+        As DataSet:      System.Data.DataTableCollectionSystem.Data.DataSet
+        As SingleValue:  Dependent on data type in first column.
+
+    .EXAMPLE
+        #
+        # First, we create a database and a table
+            $Query = "CREATE TABLE NAMES (fullname VARCHAR(20) PRIMARY KEY, surname TEXT, givenname TEXT, BirthDate DATETIME)"
+            $Database = "C:\Names.SQLite"
+
+            Invoke-SqliteQuery -Query $Query -DataSource $Database
+
+        # We have a database, and a table, let's view the table info
+            Invoke-SqliteQuery -DataSource $Database -Query "PRAGMA table_info(NAMES)"
+
+                cid name      type         notnull dflt_value pk
+                --- ----      ----         ------- ---------- --
+                0 fullname  VARCHAR(20)        0             1
+                1 surname   TEXT               0             0
+                2 givenname TEXT               0             0
+                3 BirthDate DATETIME           0             0
+
+        # Insert some data, use parameters for the fullname and birthdate
+            $query = "INSERT INTO NAMES (fullname, surname, givenname, birthdate) VALUES (@full, 'Cookie', 'Monster', @BD)"
+            Invoke-SqliteQuery -DataSource $Database -Query $query -SqlParameters @{
+                full = "Cookie Monster"
+                BD   = (get-date).addyears(-3)
+            }
+
+        # Check to see if we inserted the data:
+            Invoke-SqliteQuery -DataSource $Database -Query "SELECT * FROM NAMES"
+
+                fullname       surname givenname BirthDate
+                --------       ------- --------- ---------
+                Cookie Monster Cookie  Monster   3/14/2012 12:27:13 PM
+
+        # Insert another entry with too many characters in the fullname.
+        # Illustrate that SQLite data types may be misleading:
+            Invoke-SqliteQuery -DataSource $Database -Query $query -SqlParameters @{
+                full = "Cookie Monster$('!' * 20)"
+                BD   = (get-date).addyears(-3)
+            }
+
+            Invoke-SqliteQuery -DataSource $Database -Query "SELECT * FROM NAMES"
+
+                fullname              surname givenname BirthDate
+                --------              ------- --------- ---------
+                Cookie Monster        Cookie  Monster   3/14/2012 12:27:13 PM
+                Cookie Monster![...]! Cookie  Monster   3/14/2012 12:29:32 PM
+
+    .EXAMPLE
+        Invoke-SqliteQuery -DataSource C:\NAMES.SQLite -Query "SELECT * FROM NAMES" -AppendDataSource
+
+            fullname       surname givenname BirthDate             Database
+            --------       ------- --------- ---------             --------
+            Cookie Monster Cookie  Monster   3/14/2012 12:55:55 PM C:\Names.SQLite
+
+        # Append Database column (path) to each result
+
+    .EXAMPLE
+        Invoke-SqliteQuery -DataSource C:\Names.SQLite -InputFile C:\Query.sql
+
+        # Invoke SQL from an input file
+
+    .EXAMPLE
+        $Connection = New-SQLiteConnection -DataSource :MEMORY:
+        Invoke-SqliteQuery -SQLiteConnection $Connection -Query "CREATE TABLE OrdersToNames (OrderID INT PRIMARY KEY, fullname TEXT);"
+        Invoke-SqliteQuery -SQLiteConnection $Connection -Query "INSERT INTO OrdersToNames (OrderID, fullname) VALUES (1,'Cookie Monster');"
+        Invoke-SqliteQuery -SQLiteConnection $Connection -Query "PRAGMA STATS"
+
+        # Execute a query against an existing SQLiteConnection
+            # Create a connection to a SQLite data source in memory
+            # Create a table in the memory based datasource, verify it exists with PRAGMA STATS
+
+    .EXAMPLE
+        $Connection = New-SQLiteConnection -DataSource :MEMORY:
+        Invoke-SqliteQuery -SQLiteConnection $Connection -Query "CREATE TABLE OrdersToNames (OrderID INT PRIMARY KEY, fullname TEXT);"
+        Invoke-SqliteQuery -SQLiteConnection $Connection -Query "INSERT INTO OrdersToNames (OrderID, fullname) VALUES (1,'Cookie Monster');"
+        Invoke-SqliteQuery -SQLiteConnection $Connection -Query "INSERT INTO OrdersToNames (OrderID) VALUES (2);"
+
+        # We now have two entries, only one has a fullname.  Despite this, the following command returns both; very un-PowerShell!
+        Invoke-SqliteQuery -SQLiteConnection $Connection -Query "SELECT * FROM OrdersToNames" -As DataRow | Where{$_.fullname}
+
+            OrderID fullname
+            ------- --------
+                1   Cookie Monster
+                2
+
+        # Using the default -As PSObject, we can get PowerShell-esque behavior:
+        Invoke-SqliteQuery -SQLiteConnection $Connection -Query "SELECT * FROM OrdersToNames" | Where{$_.fullname}
+
+            OrderID fullname
+            ------- --------
+                1   Cookie Monster
+
+    .LINK
+        https://github.com/RamblingCookieMonster/Invoke-SQLiteQuery
+
+    .LINK
+        New-SQLiteConnection
+
+    .LINK
+        Invoke-SQLiteBulkCopy
+
+    .LINK
+        Out-DataTable
+
+    .LINK
+        https://www.sqlite.org/datatype3.html
+
+    .LINK
+        https://www.sqlite.org/lang.html
+
+    .LINK
+        http://www.sqlite.org/pragma.html
+
+    .FUNCTIONALITY
+        SQL
+    #>
+    [CmdletBinding( DefaultParameterSetName = 'Src-Que' )]
+    [OutputType([System.Management.Automation.PSCustomObject], [System.Data.DataRow], [System.Data.DataTable], [System.Data.DataTableCollection], [System.Data.DataSet])]
+    param(
+        [Parameter( ParameterSetName = 'Src-Que',
+            Position = 0,
+            Mandatory = $true,
+            ValueFromPipeline = $true,
+            ValueFromPipelineByPropertyName = $true,
+            ValueFromRemainingArguments = $false,
+            HelpMessage = 'SQLite Data Source required...' )]
+        [Parameter( ParameterSetName = 'Src-Fil',
+            Position = 0,
+            Mandatory = $true,
+            ValueFromPipeline = $true,
+            ValueFromPipelineByPropertyName = $true,
+            ValueFromRemainingArguments = $false,
+            HelpMessage = 'SQLite Data Source required...' )]
+        [Alias('Path', 'File', 'FullName', 'Database')]
+        [validatescript({
+                #This should match memory, or the parent path should exist
+                $Parent = Split-Path $_ -Parent
+                if (
+                    $_ -match ":MEMORY:|^WHAT$" -or
+                ( $Parent -and (Test-Path $Parent))
+                ) {
+                    $True
+                } else {
+                    Throw "Invalid datasource '$_'.`nThis must match :MEMORY:, or '$Parent' must exist"
+                }
+            })]
+        [string[]]
+        $DataSource,
+
+        [Parameter( ParameterSetName = 'Src-Que',
+            Position = 1,
+            Mandatory = $true,
+            ValueFromPipelineByPropertyName = $true,
+            ValueFromRemainingArguments = $false )]
+        [Parameter( ParameterSetName = 'Con-Que',
+            Position = 1,
+            Mandatory = $true,
+            ValueFromPipelineByPropertyName = $true,
+            ValueFromRemainingArguments = $false )]
+        [string]
+        $Query,
+
+        [Parameter( ParameterSetName = 'Src-Fil',
+            Position = 1,
+            Mandatory = $true,
+            ValueFromPipelineByPropertyName = $true,
+            ValueFromRemainingArguments = $false )]
+        [Parameter( ParameterSetName = 'Con-Fil',
+            Position = 1,
+            Mandatory = $true,
+            ValueFromPipelineByPropertyName = $true,
+            ValueFromRemainingArguments = $false )]
+        [ValidateScript({ Test-Path $_ })]
+        [string]
+        $InputFile,
+
+        [Parameter( Position = 2,
+            Mandatory = $false,
+            ValueFromPipelineByPropertyName = $true,
+            ValueFromRemainingArguments = $false )]
+        [Int32]
+        $QueryTimeout = 600,
+
+        [Parameter( Position = 3,
+            Mandatory = $false,
+            ValueFromPipelineByPropertyName = $true,
+            ValueFromRemainingArguments = $false )]
+        [ValidateSet("DataSet", "DataTable", "DataRow", "PSObject", "SingleValue")]
+        [string]
+        $As = "PSObject",
+
+        [Parameter( Position = 4,
+            Mandatory = $false,
+            ValueFromPipelineByPropertyName = $true,
+            ValueFromRemainingArguments = $false )]
+        [System.Collections.IDictionary]
+        $SqlParameters,
+
+        [Parameter( Position = 5,
+            Mandatory = $false )]
+        [switch]
+        $AppendDataSource,
+
+        [Parameter( Position = 6,
+            Mandatory = $false )]
+        [validatescript({ Test-Path $_ })]
+        [string]$AssemblyPath = $SQLiteAssembly,
+
+        [Parameter( ParameterSetName = 'Con-Que',
+            Position = 7,
+            Mandatory = $true,
+            ValueFromPipeline = $false,
+            ValueFromPipelineByPropertyName = $true,
+            ValueFromRemainingArguments = $false )]
+        [Parameter( ParameterSetName = 'Con-Fil',
+            Position = 7,
+            Mandatory = $true,
+            ValueFromPipeline = $false,
+            ValueFromPipelineByPropertyName = $true,
+            ValueFromRemainingArguments = $false )]
+        [Alias( 'Connection', 'Conn' )]
+        [System.Data.SQLite.SQLiteConnection]
+        $SQLiteConnection
+    )
+
+    Begin {
+        #Assembly, should already be covered by psm1
+        Try {
+            [void][System.Data.SQLite.SQLiteConnection]
+        } Catch {
+            $Library = Add-Type -Path $SQLiteAssembly -PassThru -ErrorAction stop
+            if (!$Library) {
+                Throw "This module requires the ADO.NET driver for SQLite:`n`thttp://system.data.sqlite.org/index.html/doc/trunk/www/downloads.wiki"
+            }
+        }
+
+        if ($PSBoundParameters.ContainsKey('InputFile')) {
+            $filePath = $(Resolve-Path $InputFile).path
+            $Query = [System.IO.File]::ReadAllText("$filePath")
+            Write-Verbose "Extracted query from [$InputFile]"
+        }
+        Write-Verbose "Running Invoke-SQLiteQuery with ParameterSet '$($PSCmdlet.ParameterSetName)'.  Performing query '$Query'"
+
+        If ($As -eq "PSObject") {
+            #This code scrubs DBNulls.  Props to Dave Wyatt
+            $cSharp = @'
+                using System;
+                using System.Data;
+                using System.Management.Automation;
+
+                public class DBNullScrubber
+                {
+                    public static PSObject DataRowToPSObject(DataRow row)
+                    {
+                        PSObject psObject = new PSObject();
+
+                        if (row != null && (row.RowState & DataRowState.Detached) != DataRowState.Detached)
+                        {
+                            foreach (DataColumn column in row.Table.Columns)
+                            {
+                                Object value = null;
+                                if (!row.IsNull(column))
+                                {
+                                    value = row[column];
+                                }
+
+                                psObject.Properties.Add(new PSNoteProperty(column.ColumnName, value));
+                            }
+                        }
+
+                        return psObject;
+                    }
+                }
+'@
+
+            Try {
+                if ($PSEdition -eq 'Core') {
+                    # Core doesn't auto-load these assemblies unlike desktop?
+                    # Not csharp coder, unsure why
+                    # by fffnite
+                    $Ref = @(
+                        'System.Data.Common'
+                        'System.Management.Automation'
+                        'System.ComponentModel.TypeConverter'
+                    )
+                } else {
+                    $Ref = @(
+                        'System.Data'
+                        'System.Xml'
+                    )
+                }
+                Add-Type -TypeDefinition $cSharp -ReferencedAssemblies $Ref -ErrorAction stop
+            } Catch {
+                If (-not $_.ToString() -like "*The type name 'DBNullScrubber' already exists*") {
+                    Write-Warning "Could not load DBNullScrubber.  Defaulting to DataRow output: $_"
+                    $As = "Datarow"
                 }
             }
-        )
+        }
+
+        #Handle existing connections
+        if ($PSBoundParameters.Keys -contains "SQLiteConnection") {
+            if ($SQLiteConnection.State -notlike "Open") {
+                Try {
+                    $SQLiteConnection.Open()
+                } Catch {
+                    Throw $_
+                }
+            }
+
+            if ($SQLiteConnection.state -notlike "Open") {
+                Throw "SQLiteConnection is not open:`n$($SQLiteConnection | Out-String)"
+            }
+
+            $DataSource = @("WHAT")
+        }
     }
-    process {
-        if (($VerbosePreference -eq "Continue")) { Write-Host "VERBOSE: Initializing SQLiteDB ..." -f Green }
-        Import-SQLiteDlls
-        Register-ArgumentCompleter -ParameterName TableName -CommandName Import-Database -ScriptBlock $Param_TableName_ArgCompleter
-        Register-ArgumentCompleter -ParameterName Database -CommandName Import-Database -ScriptBlock $Param_Database_ArgCompleter
+    Process {
+        foreach ($DB in $DataSource) {
+
+            if ($PSBoundParameters.Keys -contains "SQLiteConnection") {
+                $Conn = $SQLiteConnection
+            } else {
+                # Resolve the path entered for the database to a proper path name.
+                # This accounts for a variaty of possible ways to provide a path, but
+                # in the end the connection string needs a fully qualified file path.
+                if ($DB -match ":MEMORY:") {
+                    $Database = $DB
+                } else {
+                    $Database = $ExecutionContext.SessionState.Path.GetUnresolvedProviderPathFromPSPath($DB)
+                }
+
+                if (Test-Path $Database) {
+                    Write-Verbose "Querying existing Data Source '$Database'"
+                } else {
+                    Write-Verbose "Creating andn querying Data Source '$Database'"
+                }
+
+                $ConnectionString = "Data Source={0}" -f $Database
+
+                $conn = New-Object System.Data.SQLite.SQLiteConnection -ArgumentList $ConnectionString
+                $conn.ParseViaFramework = $true #Allow UNC paths, thanks to Ray Alex!
+                Write-Debug "ConnectionString $ConnectionString"
+
+                Try {
+                    $conn.Open()
+                } Catch {
+                    Write-Error $_
+                    continue
+                }
+            }
+
+            $cmd = $Conn.CreateCommand()
+            $cmd.CommandText = $Query
+            $cmd.CommandTimeout = $QueryTimeout
+
+            if ($null -ne $SqlParameters) {
+                $SqlParameters.GetEnumerator() |
+                    ForEach-Object {
+                        If ($null -ne $_.Value) {
+                            if ($_.Value -is [datetime]) { $_.Value = $_.Value.ToString("yyyy-MM-dd HH:mm:ss") }
+                            $cmd.Parameters.AddWithValue("@$($_.Key)", $_.Value)
+                        } Else {
+                            $cmd.Parameters.AddWithValue("@$($_.Key)", [DBNull]::Value)
+                        }
+                    } > $null
+            }
+
+            $ds = New-Object system.Data.DataSet
+            $da = New-Object System.Data.SQLite.SQLiteDataAdapter($cmd)
+
+            Try {
+                [void]$da.fill($ds)
+                if ($PSBoundParameters.Keys -notcontains "SQLiteConnection") {
+                    $conn.Close()
+                }
+                $cmd.Dispose()
+            } Catch {
+                $Err = $_
+                if ($PSBoundParameters.Keys -notcontains "SQLiteConnection") {
+                    $conn.Close()
+                }
+                switch ($ErrorActionPreference.tostring()) {
+                    { 'SilentlyContinue', 'Ignore' -contains $_ } {}
+                    'Stop' { Throw $Err }
+                    'Continue' { Write-Error $Err }
+                    Default { Write-Error $Err }
+                }
+            }
+
+            if ($AppendDataSource) {
+                $Column = New-Object Data.DataColumn
+                $Column.ColumnName = "Datasource"
+                $ds.Tables[0].Columns.Add($Column)
+
+                Try {
+                    #Someone better at regular expression, feel free to tackle this
+                    $Conn.ConnectionString -match "Data Source=(?<DataSource>.*);"
+                    $Datasrc = $Matches.DataSource.split(";")[0]
+                } Catch {
+                    $Datasrc = $DB
+                }
+
+                Foreach ($row in $ds.Tables[0]) {
+                    $row.Datasource = $Datasrc
+                }
+            }
+            switch ($As) {
+                'DataSet' {
+                    $ds
+                }
+                'DataTable' {
+                    $ds.Tables
+                }
+                'DataRow' {
+                    $ds.Tables[0]
+                }
+                'PSObject' {
+                    #Scrub DBNulls - Provides convenient results you can use comparisons with
+                    #Introduces overhead (e.g. ~2000 rows w/ ~80 columns went from .15 Seconds to .65 Seconds - depending on your data could be much more!)
+                    foreach ($row in $ds.Tables[0].Rows) {
+                        [DBNullScrubber]::DataRowToPSObject($row)
+                    }
+                }
+                'SingleValue' {
+                    $ds.Tables[0] | Select-Object -ExpandProperty $ds.Tables[0].Columns[0].ColumnName
+                }
+            }
+        }
     }
 }
 
+function New-SQLiteConnection {
+    <#
+    .SYNOPSIS
+        Creates a SQLiteConnection to a SQLite data source
+
+    .DESCRIPTION
+        Creates a SQLiteConnection to a SQLite data source
+
+    .PARAMETER DataSource
+        SQLite Data Source to connect to.
+
+    .PARAMETER Password
+        Specifies A Secure String password to use in the SQLite connection string.
+
+        SECURITY NOTE: If you use the -Debug switch, the connectionstring including plain text password will be sent to the debug stream.
+
+    .PARAMETER ReadOnly
+        If specified, open SQLite data source as read only
+
+    .PARAMETER Open
+        We open the connection by default.  You can use this parameter to create a connection without opening it.
+
+    .OUTPUTS
+        System.Data.SQLite.SQLiteConnection
+
+    .EXAMPLE
+        $Connection = New-SQLiteConnection -DataSource C:\NAMES.SQLite
+        Invoke-SQLiteQuery -SQLiteConnection $Connection -query $Query
+
+        # Connect to C:\NAMES.SQLite, invoke a query against it
+
+    .EXAMPLE
+        $Connection = New-SQLiteConnection -DataSource :MEMORY:
+        Invoke-SqliteQuery -SQLiteConnection $Connection -Query "CREATE TABLE OrdersToNames (OrderID INT PRIMARY KEY, fullname TEXT);"
+        Invoke-SqliteQuery -SQLiteConnection $Connection -Query "INSERT INTO OrdersToNames (OrderID, fullname) VALUES (1,'Cookie Monster');"
+        Invoke-SqliteQuery -SQLiteConnection $Connection -Query "PRAGMA STATS"
+
+        # Create a connection to a SQLite data source in memory
+        # Create a table in the memory based datasource, verify it exists with PRAGMA STATS
+
+        $Connection.Close()
+        $Connection.Open()
+        Invoke-SqliteQuery -SQLiteConnection $Connection -Query "PRAGMA STATS"
+
+        #Close the connection, open it back up, verify that the ephemeral data no longer exists
+
+    .LINK
+        https://github.com/RamblingCookieMonster/Invoke-SQLiteQuery
+
+    .LINK
+        Invoke-SQLiteQuery
+
+    .FUNCTIONALITY
+        SQL
+
+    #>
+    [cmdletbinding()]
+    [OutputType([System.Data.SQLite.SQLiteConnection])]
+    param(
+        [Parameter( Position = 0,
+            Mandatory = $true,
+            ValueFromPipeline = $true,
+            ValueFromPipelineByPropertyName = $true,
+            ValueFromRemainingArguments = $false,
+            HelpMessage = 'SQL Server Instance required...' )]
+        [Alias( 'Instance', 'Instances', 'ServerInstance', 'Server', 'Servers', 'cn', 'Path', 'File', 'FullName', 'Database' )]
+        [ValidateNotNullOrEmpty()]
+        [string[]]
+        $DataSource,
+
+        [Parameter( Position = 2,
+            Mandatory = $false,
+            ValueFromPipelineByPropertyName = $true,
+            ValueFromRemainingArguments = $false )]
+        [System.Security.SecureString]
+        $Password,
+
+        [Parameter( Position = 3,
+            Mandatory = $false,
+            ValueFromPipelineByPropertyName = $true,
+            ValueFromRemainingArguments = $false )]
+        [Switch]
+        $ReadOnly,
+
+        [Parameter( Position = 4,
+            Mandatory = $false,
+            ValueFromPipelineByPropertyName = $true,
+            ValueFromRemainingArguments = $false )]
+        [bool]
+        $Open = $True
+    )
+    Process {
+        foreach ($DataSRC in $DataSource) {
+            if ($DataSRC -match ':MEMORY:' ) {
+                $Database = $DataSRC
+            } else {
+                $Database = $ExecutionContext.SessionState.Path.GetUnresolvedProviderPathFromPSPath($DataSRC)
+            }
+
+            Write-Verbose "Querying Data Source '$Database'"
+            [string]$ConnectionString = "Data Source=$Database;"
+            if ($Password) {
+                $BSTR = [System.Runtime.InteropServices.Marshal]::SecureStringToBSTR($Password)
+                $PlainPassword = [System.Runtime.InteropServices.Marshal]::PtrToStringAuto($BSTR)
+                $ConnectionString += "Password=$PlainPassword;"
+            }
+            if ($ReadOnly) {
+                $ConnectionString += "Read Only=True;"
+            }
+
+            $conn = New-Object System.Data.SQLite.SQLiteConnection -ArgumentList $ConnectionString
+            $conn.ParseViaFramework = $true #Allow UNC paths, thanks to Ray Alex!
+            Write-Debug "ConnectionString $ConnectionString"
+
+            if ($Open) {
+                Try {
+                    $conn.Open()
+                } Catch {
+                    Write-Error $_
+                    continue
+                }
+            }
+
+            Write-Verbose "Created SQLiteConnection:`n$($Conn | Out-String)"
+
+            $Conn
+        }
+    }
+}
+
+function Out-DataTable {
+    <#
+    .SYNOPSIS
+        Creates a DataTable for an object
+
+    .DESCRIPTION
+        Creates a DataTable based on an object's properties.
+
+    .PARAMETER InputObject
+        One or more objects to convert into a DataTable
+
+    .PARAMETER NonNullable
+        A list of columns to set disable AllowDBNull on
+
+    .INPUTS
+        Object
+            Any object can be piped to Out-DataTable
+
+    .OUTPUTS
+        System.Data.DataTable
+
+    .EXAMPLE
+        $dt = Get-psdrive | Out-DataTable
+
+        # This example creates a DataTable from the properties of Get-psdrive and assigns output to $dt variable
+
+    .EXAMPLE
+        Get-Process | Select Name, CPU | Out-DataTable | Invoke-SQLBulkCopy -ServerInstance $SQLInstance -Database $Database -Table $SQLTable -force -verbose
+
+        # Get a list of processes and their CPU, create a datatable, bulk import that data
+    .LINK
+        https://github.com/RamblingCookieMonster/PowerShell
+
+    .LINK
+        Invoke-SQLBulkCopy
+
+    .LINK
+        Invoke-Sqlcmd2
+
+    .LINK
+        New-SQLConnection
+
+    .FUNCTIONALITY
+        SQL
+    #>
+    [CmdletBinding()]
+    [OutputType([System.Data.DataTable])]
+    param(
+        [Parameter( Position = 0,
+            Mandatory = $true,
+            ValueFromPipeline = $true)]
+        [PSObject[]]$InputObject,
+
+        [string[]]$NonNullable = @()
+    )
+
+    Begin {
+        $dt = New-Object Data.datatable
+        $First = $true
+        function Get-ODTType {
+            param($type)
+            $types = @(
+                'System.Boolean',
+                'System.Byte[]',
+                'System.Byte',
+                'System.Char',
+                'System.Datetime',
+                'System.Decimal',
+                'System.Double',
+                'System.Guid',
+                'System.Int16',
+                'System.Int32',
+                'System.Int64',
+                'System.Single',
+                'System.UInt16',
+                'System.UInt32',
+                'System.UInt64'
+            )
+            if ( $types -contains $type ) {
+                Write-Output "$type"
+            } else {
+                Write-Output 'System.String'
+            }
+        } #Get-Type
+    }
+    Process {
+        foreach ($Object in $InputObject) {
+            $DR = $DT.NewRow()
+            foreach ($Property in $Object.PsObject.Properties) {
+                $Name = $Property.Name
+                $Value = $Property.Value
+                #RCM: what if the first property is not reflective of all the properties?  Unlikely, but...
+                if ($First) {
+                    $Col = New-Object Data.DataColumn
+                    $Col.ColumnName = $Name
+
+                    #If it's not DBNull or Null, get the type
+                    if ($Value -isnot [System.DBNull] -and $null -ne $Value) {
+                        $Col.DataType = [System.Type]::GetType( $(Get-ODTType $property.TypeNameOfValue) )
+                    }
+
+                    #Set it to nonnullable if specified
+                    if ($NonNullable -contains $Name ) {
+                        $col.AllowDBNull = $false
+                    }
+                    try {
+                        $DT.Columns.Add($Col)
+                    } catch {
+                        Write-Error "Could not add column $($Col | Out-String) for property '$Name' with value '$Value' and type '$($Value.GetType().FullName)':`n$_"
+                    }
+                }
+
+                Try {
+                    #Handle arrays and nulls
+                    if ($property.GetType().IsArray) {
+                        $DR.Item($Name) = $Value | ConvertTo-Xml -As String -NoTypeInformation -Depth 1
+                    } elseif ($null -eq $Value) {
+                        $DR.Item($Name) = [DBNull]::Value
+                    } else {
+                        $DR.Item($Name) = $Value
+                    }
+                } Catch {
+                    Write-Error "Could not add property '$Name' with value '$Value' and type '$($Value.GetType().FullName)'"
+                    continue
+                }
+
+                #Did we get a null or dbnull for a non-nullable item?  let the user know.
+                if ($NonNullable -contains $Name -and ($Value -is [System.DBNull] -or $null -eq $Value)) {
+                    Write-Verbose "NonNullable property '$Name' with null value found: $($object | Out-String)"
+                }
+
+            }
+
+            Try {
+                $DT.Rows.Add($DR)
+            } Catch {
+                Write-Error "Failed to add row '$($DR | Out-String)':`n$_"
+            }
+
+            $First = $false
+        }
+    }
+
+    end {
+        Write-Output @(, $dt)
+    }
+}
+
+function Update-Sqlite {
+    [CmdletBinding()]
+    param(
+        [Parameter()]
+        [string]$version = '1.0.112',
+
+        [Parameter()]
+        [ValidateSet('linux-x64', 'osx-x64', 'win-x64', 'win-x86')]
+        [string]$OS
+    )
+    Process {
+        Write-Verbose "Creating build directory"
+        New-Item -ItemType directory build
+        Set-Location build
+        $file = "system.data.sqlite.core.$version"
+
+        Write-Verbose "downloading files from nuget"
+        $dl = @{
+            uri     = "https://www.nuget.org/api/v2/package/System.Data.SQLite.Core/$version"
+            outfile = "$file.nupkg"
+        }
+        Invoke-WebRequest @dl
+
+        Write-Verbose "unpacking and copying files to module directory"
+        Expand-Archive $dl.outfile
+
+        $InstallPath = (Get-Module PSSQlite).path.TrimEnd('PSSQLite.psm1')
+        Copy-Item $file/lib/netstandard2.0/System.Data.SQLite.dll $InstallPath/core/$os/
+        Copy-Item $file/runtimes/$os/native/netstandard2.0/SQLite.Interop.dll $InstallPath/core/$os/
+
+        Write-Verbose "removing build folder"
+        Set-Location ..
+        Remove-Item ./build -Recurse
+        Write-Verbose "complete"
+
+        Write-Warning "Please reimport the module to use the latest files"
+    }
+}
 Initialize-SQLiteDB
 Export-ModuleMember -Function '*' -Variable '*' -Cmdlet '*' -Alias '*' -Verbose:($VerbosePreference -eq "Continue")

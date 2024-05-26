@@ -6,7 +6,7 @@
     )
     process {
         if ([Vault]::GetConnection().IsValid) {
-            if ($Force.IsPresent -or $PSCmdlet.ShouldProcess("Personal Vault", "Remove-PSPersonalVault")) {
+            if ($Force.IsPresent -or $PSCmdlet.ShouldProcess("Vault", "Remove ArgonCage vault")) {
                 [Vault]::ClearDb()
             }
         } else { [Vault]::Write_connectionWarning() }

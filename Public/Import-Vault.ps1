@@ -1,15 +1,15 @@
 ﻿function Import-Vault {
     [CmdletBinding()]
-    [Alias('Load-Vault')]
+    [Alias('LoadVault')]
     param (
         [Parameter(Mandatory = $true)]
         [ValidateNotNullOrEmpty()]
         [securestring] $RecoveryWord
     )
     process {
-        if ([Vault]::GetConnection().IsValid) {
-            if ([Vault]::ValidateRecoveryWord($RecoveryWord)) {
-                $res = Import-Clixml -Path ([Vault]::GetConnectionFile())
+        if ([ArgonCage]::vault.GetConnection().IsValid) {
+            if ([ArgonCage]::vault.validateRecoveryWord($RecoveryWord)) {
+                $res = Import-Clixml -Path ([ArgonCage]::vault.GetConnectionFile())
                 return [PSCustomObject]@{
                     UserName = $res.UserName
                     Password = ([pscredential]::new("P", $res.Password)).GetNetworkCredential().Password
@@ -17,6 +17,6 @@
             } else {
                 Write-Warning "Recovery word is incorrect. Please pass the valid recovery word and try again."
             }
-        } else { [Vault]::Write_connectionWarning() }
+        } else { [ArgonCage]::vault.write_connectionWarning() }
     }
 }

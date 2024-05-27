@@ -10,15 +10,15 @@
         [switch] $Force
     )
     process {
-        $personalVault = [Vault]::new()
-        $personalVault.UserName = if ([string]::IsNullOrEmpty($Credential.UserName)) { [Vault]::GetUser() } else { $Credential.UserName }
+        $personalVault = [ArgonCage]::vault
+        $personalVault.UserName = if ([string]::IsNullOrEmpty($Credential.UserName)) { [ArgonCage]::vault.GetUser() } else { $Credential.UserName }
         $personalVault.Password = $Credential.Password
         $personalVault.Key = $RecoveryWord
-        if (!(Test-Path ([Vault]::GetConnectionFile()))) { $personalVault | Export-Clixml -Path ([Vault]::GetConnectionFile()) }
+        if (!(Test-Path ([ArgonCage]::vault.GetConnectionFile()))) { $personalVault | Export-Clixml -Path ([ArgonCage]::vault.GetConnectionFile()) }
         if ($Force.IsPresent) {
-            if ([Vault]::GetConnection().IsValid) {
-                $personalVault | Export-Clixml -Path ([Vault]::GetConnectionFile()) -Force
-            } else { [Vault]::Write_connectionWarning() }
+            if ([ArgonCage]::vault.GetConnection().IsValid) {
+                $personalVault | Export-Clixml -Path ([ArgonCage]::vault.GetConnectionFile()) -Force
+            } else { [ArgonCage]::vault.write_connectionWarning() }
         }
     }
 }

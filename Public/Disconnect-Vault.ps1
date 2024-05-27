@@ -4,10 +4,10 @@
         [switch] $Force
     )
     process {
-        if ([Vault]::GetConnection().IsValid) {
+        if ([ArgonCage]::vault.GetConnection().IsValid) {
             if ($Force.IsPresent -or $PSCmdlet.ShouldProcess("Connection", "Disconnect Vault")) {
-                [Vault]::ClearConnection()
+                [ArgonCage]::vault.ClearConnection()
             }
-        } else { [Vault]::Write_connectionWarning() }
+        } else { [ArgonCage]::vault.write_connectionWarning() }
     }
 }

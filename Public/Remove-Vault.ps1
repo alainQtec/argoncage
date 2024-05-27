@@ -5,10 +5,10 @@
         [switch] $Force
     )
     process {
-        if ([Vault]::GetConnection().IsValid) {
+        if ([ArgonCage]::vault.GetConnection().IsValid) {
             if ($Force.IsPresent -or $PSCmdlet.ShouldProcess("Vault", "Remove ArgonCage vault")) {
-                [Vault]::ClearDb()
+                [ArgonCage]::vault.ClearDb()
             }
-        } else { [Vault]::Write_connectionWarning() }
+        } else { [ArgonCage]::vault.write_connectionWarning() }
     }
 }

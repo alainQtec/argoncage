@@ -17,19 +17,19 @@
     process {
         # [bool]$_NameExists = (Get-Secret -Name $name -WarningAction 'SilentlyContinue')
         # check if the credentials are valid.
-        if ([Vault]::GetConnection().IsValid) {
+        if ([ArgonCage]::vault.GetConnection().IsValid) {
             if ($AsPlainText.IsPresent) {
                 if (($PSBoundParameters.ContainsKey('Name')) -and ($PSBoundParameters.ContainsKey('Id'))) {
                     $res = (Select-ValueFromDB -name $Name -id $Id).Value
                     if (($null -eq $res) -or ([string]::IsNullOrEmpty($res))) {
                         Write-Warning "Couldn't find the value for given Name '$Name' and Id '$Id'; Pass the correct value and try again."
-                    } else { return [Vault]::Decrypt($res, $Key) }
+                    } else { return [ArgonCage]::vault.Decrypt($res, $Key) }
                 }
                 if (!($PSBoundParameters.ContainsKey('Name')) -and ($PSBoundParameters.ContainsKey('Id'))) {
                     $res = (Select-ValueFromDB -id $Id).Value
                     if (($null -eq $res) -or ([string]::IsNullOrEmpty($res))) {
                         Write-Warning "Couldn't find the value for given Id '$Id'; Pass the correct value and try again."
-                    } else { return [Vault]::Decrypt($res, $Key) }
+                    } else { return [ArgonCage]::vault.Decrypt($res, $Key) }
                 }
                 if (($PSBoundParameters.ContainsKey('Name')) -and !($PSBoundParameters.ContainsKey('Id'))) {
                     $res = (Select-ValueFromDB -name $Name).Value
@@ -38,7 +38,7 @@
                     } else {
                         $result = @()
                         $res | ForEach-Object {
-                            $result += [Vault]::Decrypt($_, $Key)
+                            $result += [ArgonCage]::vault.Decrypt($_, $Key)
                         }
                         return $result
                     }
@@ -49,7 +49,7 @@
                     $r = [PSCustomObject]@{
                         Id        = $_.Id
                         Name      = $_.Name
-                        Value     = [Vault]::Decrypt($_.Value, $Key)
+                        Value     = [ArgonCage]::vault.Decrypt($_.Value, $Key)
                         Metadata  = $_.Metadata
                         AddedOn   = if ($null -ne $_.AddedOn) { Get-Date $_.AddedOn } else { $_.AddedOn }
                         UpdatedOn = if ($null -ne $_.UpdatedOn) { Get-Date $_.UpdatedOn } else { $_.UpdatedOn }
@@ -91,6 +91,6 @@
                 }
                 if ([bool] ($result.Value)) { return $result }
             }
-        } else { [Vault]::Write_connectionWarning() }
+        } else { [ArgonCage]::vault.write_connectionWarning() }
     }
 }

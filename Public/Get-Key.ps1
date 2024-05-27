@@ -6,20 +6,20 @@
         [switch] $Force
     )
     process {
-        if ([Vault]::GetConnection().IsValid) {
-            if ([IO.File]::Exists([Vault]::GetKeyFile())) {
-                $res = Import-Clixml ([Vault]::GetKeyFile())
+        if ([ArgonCage]::vault.GetConnection().IsValid) {
+            if ([IO.File]::Exists([ArgonCage]::vault.GetKeyFile())) {
+                $res = Import-Clixml ([ArgonCage]::vault.GetKeyFile())
                 $key = [pscredential]::new("key", $res)
                 $key = $key.GetNetworkCredential().Password
             }
-            if (![IO.File]::Exists([Vault]::GetKeyFile())) {
-                $key = [vault]::GenerateKey(); [Vault]::SaveKey($key, $false)
+            if (![IO.File]::Exists([ArgonCage]::vault.GetKeyFile())) {
+                $key = [ArgonCage]::vault.GenerateKey(); [ArgonCage]::vault.SaveKey($key, $false)
             }
             if ($Force.IsPresent) {
-                [Vault]::ArchiveKeyFile()
-                $key = [vault]::GenerateKey(); [Vault]::SaveKey($key, $true)
+                [ArgonCage]::vault.ArchiveKeyFile()
+                $key = [ArgonCage]::vault.GenerateKey(); [ArgonCage]::vault.SaveKey($key, $true)
             }
             return $key
-        } else { [Vault]::Write_connectionWarning() }
+        } else { [ArgonCage]::vault.write_connectionWarning() }
     }
 }

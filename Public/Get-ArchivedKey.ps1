@@ -8,8 +8,8 @@
         [datetime] $DateModified
     )
     process {
-        if ([Vault]::GetConnection().IsValid) {
-            $archivePath = Join-Path -Path (Split-Path -Path ([Vault]::GetKeyFile()) -Parent) -ChildPath "archive"
+        if ([ArgonCage]::vault.GetConnection().IsValid) {
+            $archivePath = Join-Path -Path (Split-Path -Path ([ArgonCage]::vault.GetKeyFile()) -Parent) -ChildPath "archive"
             if (Test-Path $archivePath) {
                 $results = @()
                 $archivedFiles = Get-ChildItem -Path $archivePath | Select-Object FullName, LastWriteTime
@@ -27,6 +27,6 @@
                 }
                 return $results
             }
-        } else { [Vault]::Write_connectionWarning() }
+        } else { [ArgonCage]::vault.write_connectionWarning() }
     }
 }

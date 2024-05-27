@@ -8,8 +8,8 @@
         [pscredential] $Credential
     )
     process {
-        $personalVault = [Vault]::new()
-        $personalVault.UserName = if ([string]::IsNullOrEmpty($Credential.UserName)) { [Vault]::GetUser() } else { $Credential.UserName }
+        $personalVault = [ArgonCage]::vault
+        $personalVault.UserName = if ([string]::IsNullOrEmpty($Credential.UserName)) { [ArgonCage]::vault.GetUser() } else { $Credential.UserName }
         $personalVault.Password = $Credential.Password
         # Return the Vault object so that it can be consumed and verified by other cmdlets
         $VAULT_USER = $personalVault.UserName; [ValidateNotNullOrEmpty()][string]$VAULT_USER = $VAULT_USER

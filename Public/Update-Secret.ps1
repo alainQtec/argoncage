@@ -18,19 +18,19 @@
         [switch] $Force
     )
     process {
-        if ([Vault]::GetConnection().IsValid) {
-            $res = ([Vault]::GetHackedPasswords($value)).Count
+        if ([ArgonCage]::vault.GetConnection().IsValid) {
+            $res = ([ArgonCage]::vault.GetHackedPasswords($value)).Count
             $IsHacked = $res -gt 0
             if ($IsHacked) {
                 Write-Host "WARNING: Secret '$value' was hacked $($res) time(s); Consider changing it ASAP!" -f Red
             }
             if ($Force -or $PSCmdlet.ShouldProcess($Value, "Update-Secret")) {
-                $encryptedValue = [Vault]::Encrypt($Value, $Key)
-                Invoke-SqliteQuery -DataSource ([Vault]::GetDbPath()) -Query "UPDATE _ SET Value = '$encryptedValue', UpdatedOn = (@D) WHERE Name = '$Name' AND Id = '$Id'" -SqlParameters @{
+                $encryptedValue = [ArgonCage]::vault.Encrypt($Value, $Key)
+                Invoke-SqliteQuery -DataSource ([ArgonCage]::vault.File) -Query "UPDATE _ SET Value = '$encryptedValue', UpdatedOn = (@D) WHERE Name = '$Name' AND Id = '$Id'" -SqlParameters @{
                     D = Get-Date
                 }
-                [Vault]::ClearHistory($MyInvocation.MyCommand.Name)
+                [ArgonCage]::vault.ClearHistory($MyInvocation.MyCommand.Name)
             }
-        } else { [Vault]::Write_connectionWarning() }
+        } else { [ArgonCage]::vault.write_connectionWarning() }
     }
 }

@@ -16,23 +16,23 @@
         [switch]$Force
     )
     process {
-        if ([Vault]::GetConnection().IsValid) {
+        if ([ArgonCage]::vault.GetConnection().IsValid) {
             if ($Force -or $PSCmdlet.ShouldProcess($Name, "Remove-Secret")) {
                 if ($PSCmdlet.ParameterSetName -eq "Id") {
-                    Invoke-SqliteQuery -DataSource ([Vault]::GetDbPath()) -Query "DELETE FROM _ WHERE Id = '$Id'"
+                    Invoke-SqliteQuery -DataSource ([ArgonCage]::vault.File) -Query "DELETE FROM _ WHERE Id = '$Id'"
                 }
                 if ($PSCmdlet.ParameterSetName -eq "Name") {
                     $res = Get-Secret -Name $Name
                     if ($res.Count -eq 1) {
-                        Invoke-SqliteQuery -DataSource ([Vault]::GetDbPath()) -Query "DELETE FROM _ WHERE Name = '$Name'"
+                        Invoke-SqliteQuery -DataSource ([ArgonCage]::vault.File) -Query "DELETE FROM _ WHERE Name = '$Name'"
                     } else {
                         Write-Warning "More than (1) values found for given Name '$Name'; Pass Id to remove the respective value from the vault."
                     }
                 }
                 if ($PSCmdlet.ParameterSetName -eq "Both") {
-                    Invoke-SqliteQuery -DataSource ([Vault]::GetDbPath()) -Query "DELETE FROM _ WHERE Name = '$Name' AND Id = '$Id'"
+                    Invoke-SqliteQuery -DataSource ([ArgonCage]::vault.File) -Query "DELETE FROM _ WHERE Name = '$Name' AND Id = '$Id'"
                 }
             }
-        } else { [Vault]::Write_connectionWarning() }
+        } else { [ArgonCage]::vault.write_connectionWarning() }
     }
 }

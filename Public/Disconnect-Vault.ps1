@@ -8,6 +8,6 @@
             if ($Force.IsPresent -or $PSCmdlet.ShouldProcess("Connection", "Disconnect Vault")) {
                 [ArgonCage]::vault.ClearConnection()
             }
-        } else { [ArgonCage]::vault.write_connectionWarning() }
+        } else { Write-Warning -Message [Vault].MSG.CONNECTION_WARNING }
     }
 }

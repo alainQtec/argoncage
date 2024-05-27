@@ -9,6 +9,6 @@
             if ($Force.IsPresent -or $PSCmdlet.ShouldProcess("Vault", "Remove ArgonCage vault")) {
                 [ArgonCage]::vault.ClearDb()
             }
-        } else { [ArgonCage]::vault.write_connectionWarning() }
+        } else { Write-Warning -Message [Vault].MSG.CONNECTION_WARNING }
     }
 }

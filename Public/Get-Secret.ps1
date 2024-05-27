@@ -91,6 +91,6 @@
                 }
                 if ([bool] ($result.Value)) { return $result }
             }
-        } else { [ArgonCage]::vault.write_connectionWarning() }
+        } else { Write-Warning -Message [Vault].MSG.CONNECTION_WARNING }
     }
 }

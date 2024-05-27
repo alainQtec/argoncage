@@ -1,8 +1,4 @@
-﻿enum EncryptionScope {
-    User    # The encrypted data can be decrypted with the same user on any machine.
-    Machine # The encrypted data can only be decrypted with the same user on the same machine it was encrypted on.
-}
-enum CryptoAlgorithm {
+﻿enum CryptoAlgorithm {
     AesGCM # AES-GCM (Galois/Counter Mode). A strong encryption on its own that doesn't necessarily with its built-in authentication functions. Its a mode of operation for AES that provides both confidentiality and authenticity for the encrypted data. GCM provides faster encryption and decryption compared to CBC mode and is widely used for secure communication, especially in VPN and TLS/SSL apps.
     ChaCha20 # ChaCha20 + SHA256 in this case. I would prefer ChaCha20Poly1305 but the Poly1305 class is still not working/usable. But no wories, ChaCha20 is like the salsa of the cryptography world, it's got the moves to keep your data secure and grooving to its own beat! :) Get it? [ref] to the dance-like steps performed in the algorithm's mixing process? Nevermind ... Its a symmetric key encryption algorithm, based on salsa20 algorithm. ChaCha20 provides the encryption, while Poly1305 (or SHA256 in this case) provides the authentication. This combination provides both confidentiality and authenticity for the encrypted data.
     RsaAesHMAC # RSA + AES + HMAC: This combination uses RSA for key exchange, AES for encryption, and HMAC (hash-based message authentication code) for authentication. This provides a secure mechanism for exchanging keys and encrypting data, as well as a way to verify the authenticity of the data. ie: By combining RSA and AES, one can take advantage of both algorithms' strengths: RSA is used to securely exchange the AES key, while AES is be used for the actual encryption and decryption of the data. This way, RSA provides security for key exchange, and AES provides fast encryption and decryption for the data.
@@ -38,7 +34,7 @@ class CryptoBase {
     [ValidateNotNull()][byte[]]hidden $_bytes
     [ValidateNotNull()][securestring]hidden $_Password
     [ValidateNotNull()][CryptoAlgorithm]hidden $_Algorithm
-    static [ValidateNotNull()][EncryptionScope] $EncryptionScope
+    static [ValidateSet('User', 'Machine')][string] $EncryptionScope
 
     CryptoBase() {}
 
@@ -436,8 +432,8 @@ class Shuffl3r {
 #  Todo: Find a working/cross-platform way to protect bytes (Like DPAPI for windows but better) then
 #  add static [byte[]] Encrypt([byte[]]$Bytes, [SecureString]$Password, [byte[]]$Salt, [byte[]]$associatedData, [bool]$Protect, [string]$Compression, [int]$iterations)
 class AesGCM : CryptoBase {
+    static hidden [ValidateSet('User', 'Machine')][string] $Scope = "User"
     AesGCM() { }
-    static hidden [EncryptionScope] $Scope = [EncryptionScope]::User
     static [byte[]] Encrypt([byte[]]$bytes) {
         return [AesGCM]::Encrypt($bytes, [AesGCM]::GetPassword());
     }
@@ -478,7 +474,7 @@ class AesGCM : CryptoBase {
             $aes = $null; Set-Variable -Name aes -Scope Local -Visibility Private -Option Private -Value $([ScriptBlock]::Create("[Security.Cryptography.AesGcm]::new([convert]::FromBase64String('$Key'))").Invoke());
             for ($i = 1; $i -lt $iterations + 1; $i++) {
                 # Write-Host "$(Show-Stack) [+] Encryption [$i/$iterations] ... Done" -f Yellow
-                # if ($Protect) { $_bytes = (xconvert)::ToProtected($_bytes, $Salt, [EncryptionScope]::User) }
+                # if ($Protect) { $_bytes = (xconvert)::ToProtected($_bytes, $Salt, "User") }
                 # Generate a random IV for each iteration:
                 [byte[]]$IV = $null; Set-Variable -Name IV -Scope Local -Visibility Private -Option Private -Value ([System.Security.Cryptography.Rfc2898DeriveBytes]::new((xconvert)::ToString($password), $salt, 1, [System.Security.Cryptography.HashAlgorithmName]::SHA1).GetBytes($IV_SIZE));
                 $tag = [byte[]]::new($TAG_SIZE);
@@ -568,7 +564,7 @@ class AesGCM : CryptoBase {
             $aes = [ScriptBlock]::Create("[Security.Cryptography.AesGcm]::new([convert]::FromBase64String('$Key'))").Invoke()
             for ($i = 1; $i -lt $iterations + 1; $i++) {
                 # Write-Host "$(Show-Stack) [+] Decryption [$i/$iterations] ... Done" -f Yellow
-                # if ($UnProtect) { $_bytes = (xconvert)::ToUnProtected($_bytes, $Salt, [EncryptionScope]::User) }
+                # if ($UnProtect) { $_bytes = (xconvert)::ToUnProtected($_bytes, $Salt, "User") }
                 # Split the real encrypted bytes from nonce & tags then decrypt them:
                 ($b, $n1) = [Shuffl3r]::Split($_bytes, $Password, $TAG_SIZE);
                 ($b, $n2) = [Shuffl3r]::Split($b, $Password, $IV_SIZE);

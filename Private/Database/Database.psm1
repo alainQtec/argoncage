@@ -1110,15 +1110,15 @@ function Select-ValueFromDB {
     process {
         $BoundParams = $PSCmdlet.MyInvocation.BoundParameters
         if ($BoundParams.ContainsKey('name') -and $BoundParams.ContainsKey('id')) {
-            return (Invoke-SqliteQuery -DataSource ([Vault]::GetDbPath()) -Query "SELECT Value FROM _ WHERE Name = '$name' AND Id = '$id'")
+            return (Invoke-SqliteQuery -DataSource ([ArgonCage]::vault.File) -Query "SELECT Value FROM _ WHERE Name = '$name' AND Id = '$id'")
         }
         if (!$BoundParams.ContainsKey('name') -and $BoundParams.ContainsKey('id')) {
-            return (Invoke-SqliteQuery -DataSource ([Vault]::GetDbPath()) -Query "SELECT Value FROM _ WHERE Id = '$id'")
+            return (Invoke-SqliteQuery -DataSource ([ArgonCage]::vault.File) -Query "SELECT Value FROM _ WHERE Id = '$id'")
         }
         if ($BoundParams.ContainsKey('name') -and !$BoundParams.ContainsKey('id')) {
-            return (Invoke-SqliteQuery -DataSource ([Vault]::GetDbPath()) -Query "SELECT Value FROM _ WHERE Name = '$name'")
+            return (Invoke-SqliteQuery -DataSource ([ArgonCage]::vault.File) -Query "SELECT Value FROM _ WHERE Name = '$name'")
         }
-        return (Invoke-SqliteQuery -DataSource ([Vault]::GetDbPath()) -Query "SELECT * FROM _")
+        return (Invoke-SqliteQuery -DataSource ([ArgonCage]::vault.File) -Query "SELECT * FROM _")
     }
 }
 

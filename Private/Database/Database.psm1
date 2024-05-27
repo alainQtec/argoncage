@@ -851,10 +851,6 @@ function Invoke-SqliteQuery {
 
     .LINK
         New-SQLiteConnection
-
-    .LINK
-        Invoke-SQLiteBulkCopy
-
     .LINK
         Out-DataTable
 

@@ -18,11 +18,6 @@ if ($dataFile.Exists) {
     Write-Warning 'FileNotFound: Unable to find the LocalizedData file argoncage.strings.psd1.'
 }
 #region    Classes
-enum EncryptionScope {
-    User    # The encrypted data can be decrypted with the same user on any machine.
-    Machine # The encrypted data can only be decrypted with the same user on the same machine it was encrypted on.
-}
-
 #region    ArgonCage
 #     A simple cli tool that uses custom encryption combos to save secrets.
 # .DESCRIPTION
@@ -30,7 +25,9 @@ enum EncryptionScope {
 #     It is designed to be memory-hard, making it extremely resistant to GPU/ASIC cracking attacks.
 #     The goal is to achieve Military-Grade Encryption without leaving the cli.
 # .NOTES
-#     Information or caveats about the function e.g. 'This function is not supported in Linux'
+#     EncryptionScope:
+#       User    -> The encrypted data can be decrypted with the same user on any machine.
+#       Machine -> The encrypted data can only be decrypted with the same user on the same machine it was encrypted on.
 # .LINK
 #     https://github.com/alainQtec/argoncage
 # .EXAMPLE
@@ -44,7 +41,7 @@ class ArgonCage {
     static [ValidateNotNull()][PsObject] $Tmp
     Static [ValidateNotNull()][IO.DirectoryInfo] $DataPath = (Get-DataPath 'ArgonCage' 'Data')
     static [System.Collections.ObjectModel.Collection[PsObject]] $banners = @()
-    static [ValidateNotNull()][EncryptionScope] $EncryptionScope = [EncryptionScope]::User
+    static [ValidateSet('User', 'Machine')][string] $EncryptionScope = "User"
     static hidden [bool]$UseVerbose = [bool]$((Get-Variable verbosePreference -ValueOnly) -eq "continue")
 
     ArgonCage() {
@@ -102,11 +99,10 @@ class ArgonCage {
             }
         }
     }
-    static [Vault] LoadVault() {
+    static [Vault] GetVault() {
         return [ArgonCage]::vault
     }
-    static [Vault] LoadVault([string]$VaultFile) {
-        # [ArgonCage]::vault
+    static [Vault] GetVault([string]$VaultFile) {
         # Loads the vault from the specified file.
         return [ArgonCage]::vault
     }
@@ -125,7 +121,7 @@ class ArgonCage {
         if ($null -eq $this.Config) { $this.SetConfigs() };
         $og_EncryptionScope = [ArgonCage]::EncryptionScope;
         try {
-            $this::EncryptionScope = [EncryptionScope]::Machine
+            $this::EncryptionScope = "Machine"
             Push-Stack -class "ArgonCage"; [void]$this.Config.Edit([ArgonCage]::Tmp)
         } finally {
             $this::EncryptionScope = $og_EncryptionScope;
@@ -136,7 +132,7 @@ class ArgonCage {
         if (!$this.Config.remote.IsAbsoluteUri) { $this.SetConfigs() }
         if (!$this.Config.remote.IsAbsoluteUri) { throw [System.InvalidOperationException]::new('Could not resolve remote uri') }
         $og_EncryptionScope = [ArgonCage]::EncryptionScope; try {
-            $this::EncryptionScope = [EncryptionScope]::Machine
+            $this::EncryptionScope = "Machine"
             # if ($this.Config.Remote.LastWriteTime -gt $this.Config.LastWriteTime) {
             # }
             # Imports remote configs into current ones, then uploads the updated version to github gist
@@ -177,7 +173,7 @@ class ArgonCage {
         }
         if ([string]::IsNullOrWhiteSpace([IO.File]::ReadAllText($this.Config.File).Trim())) {
             $og_EncryptionScope = [ArgonCage]::EncryptionScope; try {
-                $this::EncryptionScope = [EncryptionScope]::Machine
+                $this::EncryptionScope = "Machine"
                 $this.Config.Save([ArgonCage]::Tmp);
             } finally {
                 $this::EncryptionScope = $og_EncryptionScope;
@@ -223,7 +219,7 @@ class ArgonCage {
             if ($null -eq $this.vars.SessionKeys) {
                 $_scope = [scriptblock]::Create("return [ArgonCage]::EncryptionScope").Invoke();
                 $scope = $(if ([string]::IsNullOrWhiteSpace("$_scope")) { 'Machine' -as 'EncryptionScope' } else { $_scope })
-                [ValidateNotNullOrEmpty()][EncryptionScope]$scope = $scope
+                [ValidateNotNullOrEmpty()][string]$scope = $scope
                 $this.SaveSessionKey($Name, $(if ($scope -eq "User") {
                             Write-Verbose "Save Sessionkey $Name ..."
                             $(CryptoBase)::GetPassword(("{0} {1}" -f $Options.caller, $Options.Prompt))
@@ -680,29 +676,20 @@ class NameCompleter : IArgumentCompleter {
     }
 }
 class Vault {
-    [string] $UserName
-    [securestring] $Password
-    [string] $Name = "ArgonCage"
-    [string] $ConnectionFilePath = ([ArgonCage]::vault.GetConnectionFile())
-    hidden [securestring] $Key
-    hidden [Vault] $curentsession = [ArgonCage]::LoadVault()
-    # [VaultCache] $Cache
-    Vault() {
-        # $this.UserName = _getUser
-        # $this.Password = _generateKey
-        # $this.Key = _getBytes($this.Password)
-    }
-    static [Vault] Create([string]$Name) {
-        [Vault]$vault = [Vault]::new()
+    [ValidateNotNullOrWhiteSpace()][string] $Name = "ArgonCage"
+    [ValidateNotNullOrWhiteSpace()][string] $UserName = [System.Environment]::UserName
+    [ValidateNotNullOrEmpty()][securestring] $Password
+    [ValidateNotNullOrEmpty()][string] $ConnectionFile
+    [ValidateNotNullOrEmpty()][uri]$Remote
+    hidden [ValidateNotNullOrEmpty()][securestring] $Key
+    hidden [Vault] $curentsession
+    Vault([string]$Name) {
         if ([string]::IsNullOrWhiteSpace($Name)) { throw [System.ArgumentException]::new($Name) }
-        @('Name', 'Remote', 'Cache').ForEach({ Add-Member -InputObject $vault -Type NoteProperty -Name $_ -Value $null })
-        $vault.Name = $Name
-        if ([string]::IsNullOrWhiteSpace([ArgonCage]::DataPath)) {
-            [ArgonCage]::DataPath = [IO.Path]::Combine((Get-DataPath 'ArgonCage' 'Data'), 'secrets')
-        }
-        $vault.PsObject.Properties.Add([psscriptproperty]::new('File', {
-                    # [IO.FileInfo]::new([IO.Path]::Combine([ArgonCage]::DataPath, $vault.Name))
-                    return [IO.FileInfo]::new([IO.Path]::Combine([ArgonCage]::DataPath.FullName, ".$($vault.Name)_$([ArgonCage]::vault.GetUser().ToLower())"))
+        $this.curentsession = [ArgonCage]::GetVault()
+        $this.ConnectionFile = [IO.Path]::Combine([IO.Path]::GetDirectoryName($this.curentsession.GetKeyFile()), "connection.clixml")
+        $this.Name = $Name
+        $this.PsObject.Properties.Add([psscriptproperty]::new('File', {
+                    return [IO.FileInfo]::new([IO.Path]::Combine([ArgonCage]::DataPath.FullName, ".$($this.Name)_$($this.UserName.ToLower())"))
                 }, {
                     param($value)
                     if ($value -is [IO.FileInfo]) {
@@ -714,8 +701,8 @@ class Vault {
                 }
             )
         )
-        $vault.PsObject.Properties.Add([psscriptproperty]::new('Size', {
-                    if ([IO.File]::Exists($vault.File.FullName)) {
+        $this.PsObject.Properties.Add([psscriptproperty]::new('Size', {
+                    if ([IO.File]::Exists($this.File.FullName)) {
                         $this.File = Get-Item $this.File.FullName
                         return $this.File.Length
                     }
@@ -723,17 +710,27 @@ class Vault {
                 }, { throw "Cannot set Size property" }
             )
         )
-        $vault.PsObject.Properties.Add([psscriptproperty]::new('Cache', {
-                    if ($null -eq [ArgonCage].Cache) {
-                        [ArgonCage] | Add-Member -Name Cache -Force -MemberType ScriptProperty -Value { return [ArgonCage]::Create_VaultCache() }.GetNewClosure() -SecondValue { throw [System.InvalidOperationException]::new("Cannot change Cache") }
+        $this.PsObject.Properties.Add([psscriptproperty]::new('Cache', {
+                    if ($null -eq [Vault].Cache) {
+                        [Vault] | Add-Member -Name Cache -Force -MemberType ScriptProperty -Value { return [ArgonCage]::Create_VaultCache() }.GetNewClosure() -SecondValue { throw [System.InvalidOperationException]::new("Cannot change Cache") }
                     }
-                    return [ArgonCage].Cache
+                    return [Vault].Cache
                 }, { throw [System.InvalidOperationException]::new("Cannot set Cache") }
             )
         )
         if ($null -eq [ArgonCage]::Tmp.vars) { [ArgonCage]::Set_variables() }else {
-            $vault.Remote = [ArgonCage]::GetVaultRawUri($vault.Name, [ArgonCage]::Tmp.vars.sessionConfig.Remote)
+            $this.Remote = [ArgonCage]::GetVaultRawUri($this.Name, [ArgonCage]::Tmp.vars.sessionConfig.Remote)
         }
+        [Vault].PsObject.properties.Add([psscriptproperty]::new('MSG', {
+                    return [PSCustomObject]@{
+                        CONNECTION_WARNING = "You must create a connection to the vault to manage the secrets. Check your connection object and pass the right credential."
+                    }
+                }, { return "MSG is read-only" }
+            )
+        )
+    }
+    static [Vault] Create([string]$Name) {
+        [Vault]$vault = [Vault]::new($Name)
         return $vault
     }
     static [Vault] Create([string]$FilePath, [uri]$RemoteUri) {
@@ -768,9 +765,6 @@ class Vault {
             throw "Cannot get the value as plain text; Use the right key to get the secret value as plain text."
         }
     }
-    [string] GetUser() {
-        return [System.Environment]::UserName
-    }
     [void] ClearHistory([string]$functionName) {
         $path = (Get-PSReadLineOption).HistorySavePath
         if (!([string]::IsNullOrEmpty($path)) -and (Test-Path -Path $path)) {
@@ -782,18 +776,17 @@ class Vault {
         Remove-Item -Path ([IO.Path]::GetDirectoryName($this.File.FullName)) -Recurse -Force
     }
     [void] ClearConnection() {
-        Remove-Item -Path ($this.curentsession.GetConnectionFile()) -Force
+        $this.ConnectionFile | Remove-Item -Force -ErrorAction Ignore
         [System.Environment]::SetEnvironmentVariable("ARGONCAGE_U", "", [System.EnvironmentVariableTarget]::Process)
         [System.Environment]::SetEnvironmentVariable("ARGONCAGE_P", "", [System.EnvironmentVariableTarget]::Process)
     }
-    static [string] CreateDb() {
-        $__dBPath = [IO.Path]::Combine([ArgonCage]::DataPath.FullName, ".cos_$([ArgonCage]::vault.GetUser().ToLower())")
-        return [ArgonCage]::vault.CreateDb($__dBPath)
+    static [string] Create_db() {
+        return [ArgonCage]::vault.Create_db([ArgonCage]::vault.File.FullName)
     }
-    static [string] CreateDb([string]$Path) {
-        $pathExists = Test-Path $path
-        $file = Join-Path -Path $path -ChildPath "_.db"
-        $fileExists = Test-Path $file
+    static [string] Create_db([string]$Path) {
+        $pathExists = [IO.File]::Exists($path)
+        $file = [IO.Path]::Combine($path, "_.db")
+        $fileExists = [IO.File]::Exists($file)
         # Metadata section is required so that we know what we are storing.
         $query = "CREATE TABLE _ (
         Id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -834,14 +827,8 @@ class Vault {
         }
         return $file
     }
-    [void] Write_connectionWarning() {
-        Write-Warning "You must create a connection to the vault to manage the secrets. Check your connection object and pass the right credential."
-    }
     [string] GetKeyFile() {
         return [IO.Path]::Combine([IO.Path]::GetDirectoryName($this.File), "private.key")
-    }
-    [string] GetConnectionFile() {
-        return [IO.Path]::Combine([IO.Path]::GetDirectoryName($this.curentsession.GetKeyFile()), "connection.clixml")
     }
     [void] ArchiveKeyFile() {
         $vssn = $this.curentsession
@@ -934,8 +921,8 @@ class Vault {
             $connection.Session.Password = $_password | ConvertTo-SecureString -ErrorAction SilentlyContinue
         }
         if (($null -ne $connection.Session.UserName) -and ($null -ne $connection.Session.Password)) {
-            if (Test-Path -Path ([ArgonCage]::vault.GetConnectionFile())) {
-                $properties = Import-Clixml -Path ([ArgonCage]::vault.GetConnectionFile())
+            if (Test-Path -Path ([ArgonCage]::vault.ConnectionFile)) {
+                $properties = Import-Clixml -Path ([ArgonCage]::vault.ConnectionFile)
                 $prop = [pscredential]::new($properties.UserName, $properties.Password)
                 $conn = [pscredential]::new($connection.Session.UserName, $connection.Session.Password)
                 if (($prop.UserName -eq $conn.UserName) -and ($prop.GetNetworkCredential().Password -eq $conn.GetNetworkCredential().Password)) {
@@ -946,7 +933,7 @@ class Vault {
         return $connection
     }
     static [bool] ValidateRecoveryWord([securestring]$recoveryWord) {
-        $_res = Import-Clixml -Path ([ArgonCage]::vault.GetConnectionFile())
+        $_res = Import-Clixml -Path ([ArgonCage]::vault.ConnectionFile)
         $_key = [pscredential]::new("Key", $_res.Key)
         $recKey = [pscredential]::new("Key", $recoveryWord)
         return ($recKey.GetNetworkCredential().Password -eq $_key.GetNetworkCredential().Password)

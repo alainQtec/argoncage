@@ -36,8 +36,8 @@ Once you've registered, connect to the vault.
 
 ```PowerShell
 PS /> Connect-Vault
-UserName                     Password Name      ConnectionFilePath
---------                     -------- ----      ------------------
+UserName                     Password Name      ConnectionFile
+--------                     -------- ----      --------------
 alain    System.Security.SecureString ArgonCage /home/alain/.cos_alain/connection.clixml
 ```
 

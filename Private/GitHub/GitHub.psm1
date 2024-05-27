@@ -1,13 +1,8 @@
-﻿enum EncryptionScope {
-    User    # The encrypted data can be decrypted with the same user on any machine.
-    Machine # The encrypted data can only be decrypted with the same user on the same machine it was encrypted on.
-}
-
-class GitHub {
+﻿class GitHub {
     static $webSession
     static [string] $UserName
     static hidden [bool] $IsInteractive = $false
-    static hidden [EncryptionScope] $EncryptionScope = "Machine"
+    static hidden [ValidateSet('User', 'Machine')][string] $EncryptionScope = "Machine"
     static hidden [string] $TokenFile = (Get-GitHubTokenPath)
 
     GitHub() {}

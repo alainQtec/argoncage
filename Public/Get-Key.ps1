@@ -20,6 +20,6 @@
                 $key = [ArgonCage]::vault.GenerateKey(); [ArgonCage]::vault.SaveKey($key, $true)
             }
             return $key
-        } else { [ArgonCage]::vault.write_connectionWarning() }
+        } else { Write-Warning -Message [Vault].MSG.CONNECTION_WARNING }
     }
 }

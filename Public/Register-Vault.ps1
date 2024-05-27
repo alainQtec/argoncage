@@ -10,15 +10,15 @@
         [switch] $Force
     )
     process {
-        $personalVault = [ArgonCage]::vault
-        $personalVault.UserName = if ([string]::IsNullOrEmpty($Credential.UserName)) { [ArgonCage]::vault.GetUser() } else { $Credential.UserName }
-        $personalVault.Password = $Credential.Password
-        $personalVault.Key = $RecoveryWord
-        if (!(Test-Path ([ArgonCage]::vault.GetConnectionFile()))) { $personalVault | Export-Clixml -Path ([ArgonCage]::vault.GetConnectionFile()) }
+        $vaultSession = [ArgonCage]::GetVault()
+        $vaultSession.UserName = if ([string]::IsNullOrEmpty($Credential.UserName)) { [ArgonCage]::vault.UserName } else { $Credential.UserName }
+        $vaultSession.Password = $Credential.Password
+        $vaultSession.Key = $RecoveryWord
+        if (!(Test-Path ([ArgonCage]::vault.ConnectionFile))) { $vaultSession | Export-Clixml -Path ($vaultSession.ConnectionFile) }
         if ($Force.IsPresent) {
             if ([ArgonCage]::vault.GetConnection().IsValid) {
-                $personalVault | Export-Clixml -Path ([ArgonCage]::vault.GetConnectionFile()) -Force
-            } else { [ArgonCage]::vault.write_connectionWarning() }
+                $vaultSession | Export-Clixml -Path ([ArgonCage]::vault.ConnectionFile) -Force
+            } else { Write-Warning -Message [Vault].MSG.CONNECTION_WARNING }
         }
     }
 }

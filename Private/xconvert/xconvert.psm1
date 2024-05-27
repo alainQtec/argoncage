@@ -2,18 +2,7 @@
     [CmdletBinding()]
     param ()
     begin {
-        enum EncryptionScope {
-            User    # The encrypted data can be decrypted with the same user on any machine.
-            Machine # The encrypted data can only be decrypted with the same user on the same machine it was encrypted on.
-        }
-        enum Compression {
-            Gzip
-            Deflate
-            ZLib
-            # Zstd # Todo: Add Zstandard. (The one from facebook. or maybe zstd-sharp idk. I just can't find a way to make it work in powershell! no dll nothing!)
-        }
-
-        # A Custom ObjectConverter
+        # A Custom typeConverter class
         class xconvert : System.ComponentModel.TypeConverter {
             xconvert() {}
             static [string] Base32ToHex([string]$base32String) {
@@ -453,9 +442,7 @@
                 return [convert]::ToBase64String([xconvert]::ToCompressed([System.Text.Encoding]::UTF8.GetBytes($Plaintext)));
             }
             static [byte[]] ToCompressed([byte[]]$Bytes, [string]$Compression) {
-                if (("$Compression" -as 'Compression') -isnot 'Compression') {
-                    Throw [System.InvalidCastException]::new("Compression type '$Compression' is unknown! Valid values: $([Enum]::GetNames([compression]) -join ', ')");
-                }
+                [ValidateSet('Gzip', 'Deflate', 'ZLib')][string]$Compression = $Compression
                 $outstream = [System.IO.MemoryStream]::new()
                 $Comstream = switch ($Compression) {
                     "Gzip" { New-Object System.IO.Compression.GzipStream($outstream, [System.IO.Compression.CompressionLevel]::Optimal) }
@@ -474,9 +461,7 @@
                 return [System.Text.Encoding]::UTF8.GetString([xconvert]::ToDecompressed([convert]::FromBase64String($Base64Text)));
             }
             static [byte[]] ToDeCompressed([byte[]]$Bytes, [string]$Compression) {
-                if (("$Compression" -as 'Compression') -isnot 'Compression') {
-                    Throw [System.InvalidCastException]::new("Compression type '$Compression' is unknown! Valid values: $([Enum]::GetNames([compression]) -join ', ')");
-                }
+                [ValidateSet('Gzip', 'Deflate', 'ZLib')][string]$Compression = $Compression
                 $inpStream = [System.IO.MemoryStream]::new($Bytes)
                 $ComStream = switch ($Compression) {
                     "Gzip" { New-Object System.IO.Compression.GzipStream($inpStream, [System.IO.Compression.CompressionMode]::Decompress); }

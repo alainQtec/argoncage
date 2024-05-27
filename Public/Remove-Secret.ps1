@@ -33,6 +33,6 @@
                     Invoke-SqliteQuery -DataSource ([ArgonCage]::vault.File) -Query "DELETE FROM _ WHERE Name = '$Name' AND Id = '$Id'"
                 }
             }
-        } else { [ArgonCage]::vault.write_connectionWarning() }
+        } else { Write-Warning -Message [Vault].MSG.CONNECTION_WARNING }
     }
 }

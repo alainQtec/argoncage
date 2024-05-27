@@ -40,9 +40,9 @@ enum EncryptionScope {
 class ArgonCage {
     [ValidateNotNullOrEmpty()][Object] $Config
     [ValidateNotNullOrEmpty()][version] $version
-    static hidden [ValidateNotNull()][Vault] $vault
-    static hidden [ValidateNotNull()][PsObject] $Tmp
-    Static hidden [ValidateNotNull()][IO.DirectoryInfo] $DataPath = (Get-DataPath 'ArgonCage' 'Data')
+    static [ValidateNotNull()][Vault] $vault
+    static [ValidateNotNull()][PsObject] $Tmp
+    Static [ValidateNotNull()][IO.DirectoryInfo] $DataPath = (Get-DataPath 'ArgonCage' 'Data')
     static [System.Collections.ObjectModel.Collection[PsObject]] $banners = @()
     static [ValidateNotNull()][EncryptionScope] $EncryptionScope = [EncryptionScope]::User
     static hidden [bool]$UseVerbose = [bool]$((Get-Variable verbosePreference -ValueOnly) -eq "continue")
@@ -101,6 +101,14 @@ class ArgonCage {
                 [ArgonCage]::Tmp.vars.Users[$username] = $password
             }
         }
+    }
+    static [Vault] LoadVault() {
+        return [ArgonCage]::vault
+    }
+    static [Vault] LoadVault([string]$VaultFile) {
+        # [ArgonCage]::vault
+        # Loads the vault from the specified file.
+        return [ArgonCage]::vault
     }
     static [void] RegisterUser([string]$username, [securestring]$password) {
         [ValidateNotNullOrEmpty()][string]$username = $username
@@ -327,12 +335,6 @@ class ArgonCage {
         } else {
             [ArgonCage]::Read_Cache()
         }
-    }
-    static [Vault] Create_Vault([string]$Name) {
-        return [Vault]::Create($Name)
-    }
-    static [Object] Create_Vault([string]$FilePath, [uri]$RemoteUri) {
-        return [Vault]::Create($FilePath, $RemoteUri)
     }
     static [Object] Create_VaultCache() {
         $cache = New-Object System.Object;
@@ -644,13 +646,13 @@ class IdCompleter : IArgumentCompleter {
         [IDictionary] $FakeBoundParameters
     ) {
         $results = [List[CompletionResult]]::new()
-        $Ids = Invoke-SqliteQuery -DataSource ([Vault]::GetDbPath()) -Query "SELECT * FROM _"
+        $Ids = Invoke-SqliteQuery -DataSource ([ArgonCage]::vault.File) -Query "SELECT * FROM _"
         foreach ($value in $Ids.Id) {
             if ($value -like "*$WordToComplete*") {
                 $results.Add($value)
             }
         }
-        if ([Vault]::GetConnection().IsValid) {
+        if ([ArgonCage]::vault.GetConnection().IsValid) {
             return $results
         }
         return $null
@@ -665,13 +667,13 @@ class NameCompleter : IArgumentCompleter {
         [IDictionary] $FakeBoundParameters
     ) {
         $results = [List[CompletionResult]]::new()
-        $names = Invoke-SqliteQuery -DataSource ([Vault]::GetDbPath()) -Query "SELECT * FROM _"
+        $names = Invoke-SqliteQuery -DataSource ([ArgonCage]::vault.File) -Query "SELECT * FROM _"
         foreach ($value in $names.Name) {
             if ($value -like "*$WordToComplete*") {
                 $results.Add($value)
             }
         }
-        if ([Vault]::GetConnection().IsValid) {
+        if ([ArgonCage]::vault.GetConnection().IsValid) {
             return $results
         }
         return $null
@@ -681,8 +683,10 @@ class Vault {
     [string] $UserName
     [securestring] $Password
     [string] $Name = "ArgonCage"
+    [string] $ConnectionFilePath = ([ArgonCage]::vault.GetConnectionFile())
     hidden [securestring] $Key
-    [string] $ConnectionFilePath = ([Vault]::GetConnectionFile())
+    hidden [Vault] $curentsession = [ArgonCage]::LoadVault()
+    # [VaultCache] $Cache
     Vault() {
         # $this.UserName = _getUser
         # $this.Password = _generateKey
@@ -697,7 +701,8 @@ class Vault {
             [ArgonCage]::DataPath = [IO.Path]::Combine((Get-DataPath 'ArgonCage' 'Data'), 'secrets')
         }
         $vault.PsObject.Properties.Add([psscriptproperty]::new('File', {
-                    return [IO.FileInfo]::new([IO.Path]::Combine([ArgonCage]::DataPath, $vault.Name))
+                    # [IO.FileInfo]::new([IO.Path]::Combine([ArgonCage]::DataPath, $vault.Name))
+                    return [IO.FileInfo]::new([IO.Path]::Combine([ArgonCage]::DataPath.FullName, ".$($vault.Name)_$([ArgonCage]::vault.GetUser().ToLower())"))
                 }, {
                     param($value)
                     if ($value -is [IO.FileInfo]) {
@@ -749,13 +754,13 @@ class Vault {
         }
         return $vault
     }
-    static [string] GenerateKey() {
+    [string] GenerateKey() {
         return (CryptoBase)::GeneratePassword()
     }
-    static [string] Encrypt([string]$plainText, [string]$key) {
+    [string] Encrypt([string]$plainText, [string]$key) {
         return $plainText | ConvertTo-SecureString -AsPlainText -Force | ConvertFrom-SecureString -Key ([System.Text.Encoding]::UTF8.GetBytes($key))
     }
-    static [string] Decrypt([string]$encryptedText, [string]$key) {
+    [string] Decrypt([string]$encryptedText, [string]$key) {
         try {
             $cred = [pscredential]::new("x", ($encryptedText | ConvertTo-SecureString -Key ([System.Text.Encoding]::UTF8.GetBytes($key)) -ErrorAction SilentlyContinue))
             return $cred.GetNetworkCredential().Password
@@ -763,27 +768,27 @@ class Vault {
             throw "Cannot get the value as plain text; Use the right key to get the secret value as plain text."
         }
     }
-    static [string] GetUser() {
+    [string] GetUser() {
         return [System.Environment]::UserName
     }
-    static [void] ClearHistory([string]$functionName) {
+    [void] ClearHistory([string]$functionName) {
         $path = (Get-PSReadLineOption).HistorySavePath
         if (!([string]::IsNullOrEmpty($path)) -and (Test-Path -Path $path)) {
             $contents = Get-Content -Path $path
             if ($contents -notmatch $functionName) { $contents -notmatch $functionName | Set-Content -Path $path -Encoding UTF8 }
         }
     }
-    static [void] ClearDb() {
-        Remove-Item -Path (Split-Path -Path ([Vault]::GetDbPath()) -Parent) -Recurse -Force
+    [void] ClearDb() {
+        Remove-Item -Path ([IO.Path]::GetDirectoryName($this.File.FullName)) -Recurse -Force
     }
-    static [void] ClearConnection() {
-        Remove-Item -Path ([Vault]::GetConnectionFile()) -Force
+    [void] ClearConnection() {
+        Remove-Item -Path ($this.curentsession.GetConnectionFile()) -Force
         [System.Environment]::SetEnvironmentVariable("ARGONCAGE_U", "", [System.EnvironmentVariableTarget]::Process)
         [System.Environment]::SetEnvironmentVariable("ARGONCAGE_P", "", [System.EnvironmentVariableTarget]::Process)
     }
     static [string] CreateDb() {
-        $__dBPath = [IO.Path]::Combine((Get-Variable Home -ValueOnly), ".cos_$([Vault]::GetUser().ToLower())")
-        return [Vault]::CreateDb($__dBPath)
+        $__dBPath = [IO.Path]::Combine([ArgonCage]::DataPath.FullName, ".cos_$([ArgonCage]::vault.GetUser().ToLower())")
+        return [ArgonCage]::vault.CreateDb($__dBPath)
     }
     static [string] CreateDb([string]$Path) {
         $pathExists = Test-Path $path
@@ -817,62 +822,54 @@ class Vault {
                     } | Out-DataTable
                 }
                 Invoke-SQLiteBulkCopy -DataTable $dataTable -DataSource $file -Table _ -ConflictClause Ignore -Force
-                [Vault]::Hide($file)
+                [ArgonCage]::vault.Hide($file)
             }
         } else {
             if (!$pathExists) { $null = New-Item -Path $path -ItemType Directory }
             if (!$fileExists) {
                 $null = New-Item -Path $file -ItemType File
                 Invoke-SqliteQuery -DataSource $file -Query $query
-                [Vault]::Hide($file)
+                [ArgonCage]::vault.Hide($file)
             }
         }
         return $file
     }
-    static [string] GetDbPath() {
-        $__dBPath = [IO.Path]::Combine((Get-Variable Home -ValueOnly), ".cos_$([Vault]::GetUser().ToLower())")
-        if ([Io.File]::Exists($__dBPath)) {
-            return $__dBPath
-        }
-        return [Vault]::CreateDb()
-    }
-    static hidden [void] Write_connectionWarning() {
+    [void] Write_connectionWarning() {
         Write-Warning "You must create a connection to the vault to manage the secrets. Check your connection object and pass the right credential."
     }
-    static [string] GetKeyFile() {
-        $path = Split-Path -Path ([Vault]::GetDbPath()) -Parent
-        return [IO.Path]::Combine($path, "private.key")
+    [string] GetKeyFile() {
+        return [IO.Path]::Combine([IO.Path]::GetDirectoryName($this.File), "private.key")
     }
-    static [string] GetConnectionFile() {
-        $path = Split-Path -Path ([Vault]::GetKeyFile()) -Parent
-        return (Join-Path -Path $path -ChildPath "connection.clixml")
+    [string] GetConnectionFile() {
+        return [IO.Path]::Combine([IO.Path]::GetDirectoryName($this.curentsession.GetKeyFile()), "connection.clixml")
     }
-    static [void] ArchiveKeyFile() {
-        [Vault]::ArchiveKeyFile([Vault]::GetKeyFile())
+    [void] ArchiveKeyFile() {
+        $vssn = $this.curentsession
+        $vssn.ArchiveKeyFile($vssn.GetKeyFile())
     }
-    static [void] ArchiveKeyFile([string]$keyFile) {
-        $path = Split-Path -Path ([Vault]::GetKeyFile()) -Parent
+    [void] ArchiveKeyFile([string]$keyFile) {
+        $vssn = $this.curentsession
+        $path = Split-Path -Path ($vssn.GetKeyFile()) -Parent
         $file = $keyFile.Replace("private", "private_$(Get-Date -Format ddMMyyyy-HH_mm_ss)")
         $archivePath = Join-Path -Path $path -ChildPath "archive"
         if (!(Test-Path $archivePath)) { $null = New-Item -Path $archivePath -ItemType Directory }
-        [Vault]::Unhide([Vault]::GetKeyFile())
-        Rename-Item -Path ([Vault]::GetKeyFile()) -NewName $file
+        $vssn.Unhide($vssn.GetKeyFile())
+        Rename-Item -Path ($vssn.GetKeyFile()) -NewName $file
         Move-Item -Path $file -Destination "$archivePath" -Force
     }
-    static [void] SaveKey([string]$key, [bool]$force) {
-        $file = [Vault]::GetKeyFile()
-        $fileExists = [IO.File]::Exists([Vault]::GetKeyFile())
+    [void] SaveKey([string]$key, [bool]$force) {
+        $vssn = $this.curentsession
+        $file = $vssn.GetKeyFile()
+        $fileExists = [IO.File]::Exists($vssn.GetKeyFile())
         if ($fileExists -and !$force) { Write-Warning "Key file already exists; Use Force parameter to update the file." }
         if ($fileExists -and $force) {
-            [Vault]::Unhide($file)
-            $encryptedKey = [pscredential]::new("key", ($key | ConvertTo-SecureString -AsPlainText -Force))
-            $encryptedKey.Password | Export-Clixml -Path $file -Force
-            [Vault]::Hide($file)
+            $vssn.Unhide($file)
+            (xconvert)::ToSecurestring($key) | Export-Clixml -Path $file -Force
+            $vssn.Hide($file)
         }
         if (!$fileExists) {
-            $encryptedKey = [pscredential]::new("key", ($key | ConvertTo-SecureString -AsPlainText -Force))
-            $encryptedKey.Password | Export-Clixml -Path $file -Force
-            [Vault]::Hide($file)
+            (xconvert)::ToSecurestring($key) | Export-Clixml -Path $file -Force
+            $vssn.Hide($file)
         }
     }
     static [void] Hide([string]$filePath) {
@@ -927,7 +924,7 @@ class Vault {
     }
     static [PsObject] GetConnection() {
         $connection = [PSCustomObject]@{
-            Session = [Vault]::new()
+            Session = [ArgonCage]::vault
             IsValid = $false
         }
         $_userName = [System.Environment]::GetEnvironmentVariable("ARGONCAGE_U")
@@ -937,8 +934,8 @@ class Vault {
             $connection.Session.Password = $_password | ConvertTo-SecureString -ErrorAction SilentlyContinue
         }
         if (($null -ne $connection.Session.UserName) -and ($null -ne $connection.Session.Password)) {
-            if (Test-Path -Path ([Vault]::GetConnectionFile())) {
-                $properties = Import-Clixml -Path ([Vault]::GetConnectionFile())
+            if (Test-Path -Path ([ArgonCage]::vault.GetConnectionFile())) {
+                $properties = Import-Clixml -Path ([ArgonCage]::vault.GetConnectionFile())
                 $prop = [pscredential]::new($properties.UserName, $properties.Password)
                 $conn = [pscredential]::new($connection.Session.UserName, $connection.Session.Password)
                 if (($prop.UserName -eq $conn.UserName) -and ($prop.GetNetworkCredential().Password -eq $conn.GetNetworkCredential().Password)) {
@@ -949,7 +946,7 @@ class Vault {
         return $connection
     }
     static [bool] ValidateRecoveryWord([securestring]$recoveryWord) {
-        $_res = Import-Clixml -Path ([Vault]::GetConnectionFile())
+        $_res = Import-Clixml -Path ([ArgonCage]::vault.GetConnectionFile())
         $_key = [pscredential]::new("Key", $_res.Key)
         $recKey = [pscredential]::new("Key", $recoveryWord)
         return ($recKey.GetNetworkCredential().Password -eq $_key.GetNetworkCredential().Password)

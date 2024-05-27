@@ -31,6 +31,6 @@
                 }
                 [ArgonCage]::vault.ClearHistory($MyInvocation.MyCommand.Name)
             }
-        } else { [ArgonCage]::vault.write_connectionWarning() }
+        } else { Write-Warning -Message [Vault].MSG.CONNECTION_WARNING }
     }
 }

@@ -28,7 +28,7 @@
             }
             $encryptedValue = [ArgonCage]::vault.Encrypt($Value, $Key)
             # create the database and save the KV pair
-            $null = [ArgonCage]::vault.CreateDb()
+            $null = [ArgonCage]::vault.Create_db()
             $SqlParameters = @{
                 N = $Name
                 V = $encryptedValue
@@ -39,6 +39,6 @@
             Invoke-SqliteQuery -DataSource ([ArgonCage]::vault.File) -Query "INSERT INTO _ (Name, Value, Metadata, AddedOn, UpdatedOn) VALUES (@N, @V, @M, @D, @U)" -SqlParameters $SqlParameters
             # cleaning up
             [ArgonCage]::vault.ClearHistory($MyInvocation.MyCommand.Name)
-        } else { [ArgonCage]::vault.write_connectionWarning() }
+        } else { Write-Warning -Message [Vault].MSG.CONNECTION_WARNING }
     }
 }

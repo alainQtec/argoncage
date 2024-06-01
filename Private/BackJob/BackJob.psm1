@@ -175,12 +175,12 @@ class TaskMan {
         return [TaskMan]::RetryCommand($ScriptBlock, $Message, 3)
     }
     static [PSCustomObject] RetryCommand([ScriptBlock]$ScriptBlock, [string]$Message, [Int]$MaxAttempts) {
-        return [TaskMan]::RetryCommand($ScriptBlock, $null, [System.Threading.CancellationToken]::None, $MaxAttempts, "$Message", 1000)
+        return [TaskMan]::RetryCommand($ScriptBlock, $null, [System.Threading.CancellationToken]::None, $MaxAttempts, "$Message", 1000, $null)
     }
     static [PSCustomObject] RetryCommand([ScriptBlock]$ScriptBlock, [Object[]]$ArgumentList, [string]$Message) {
-        return [TaskMan]::RetryCommand($ScriptBlock, $ArgumentList, [System.Threading.CancellationToken]::None, 3, "$Message", 1000)
+        return [TaskMan]::RetryCommand($ScriptBlock, $ArgumentList, [System.Threading.CancellationToken]::None, 3, "$Message", 1000, $null)
     }
-    static [PSCustomObject] RetryCommand([ScriptBlock]$ScriptBlock, [Object[]]$ArgumentList, [System.Threading.CancellationToken]$CancellationToken, [Int]$MaxAttempts, [String]$Message, [Int]$Timeout) {
+    static [PSCustomObject] RetryCommand([ScriptBlock]$ScriptBlock, [Object[]]$ArgumentList, [System.Threading.CancellationToken]$CancellationToken, [Int]$MaxAttempts, [String]$Message, [Int]$Timeout, [ScriptBlock]$validationScript) {
         [ValidateNotNullOrEmpty()][scriptblock]$ScriptBlock = $ScriptBlock
         if ([string]::IsNullOrWhiteSpace((Show-Stack))) { Push-Stack 'TaskMan' }
         $IsSuccess = $false; $fxn = Show-Stack; $AttemptStartTime = $null;
@@ -200,10 +200,11 @@ class TaskMan {
                 $AttemptStartTime = Get-Date
                 if ($null -ne $ArgumentList) {
                     $Output = Invoke-Command -ScriptBlock $ScriptBlock -ArgumentList $ArgumentList
+                    $IsSuccess = [bool]$?
                 } else {
                     $Output = Invoke-Command -ScriptBlock $ScriptBlock
+                    $IsSuccess = [bool]$?
                 }
-                $IsSuccess = [bool]$?
             } catch {
                 $IsSuccess = $false; $ErrorRecord = $_
                 " Errored after $([math]::Round(($(Get-Date) - $AttemptStartTime).TotalSeconds, 2)) seconds" | Set-AttemptMSg
@@ -212,6 +213,7 @@ class TaskMan {
                 $Result.Output = $Output
                 $Result.IsSuccess = $IsSuccess
                 $Result.ErrorRecord = $ErrorRecord
+                if ($null -ne $validationScript) { $Result = Invoke-Command -ScriptBlock $validationScript -ArgumentList $Result }
                 $job_state = $(if ($Result.IsSuccess) { "Completed" } else { "Failed" })
                 $Result.SetJobState([scriptblock]::Create("return '$job_state'"))
                 if ($Retries -eq 0 -or $Result.IsSuccess) {
@@ -277,17 +279,6 @@ class ProgressUtil {
             }
         }
         [Console]::Write("] {0,3:##0}%", $percent);
-    }
-}
-
-class CommandOptions {
-    [Int]$MaxAttempts
-    [Int]$Timeout
-    [System.Threading.CancellationToken]$CancellationToken
-    CommandOptions() {
-        $this.MaxAttempts = 3
-        $this.Timeout = 1000
-        $this.CancellationToken = [System.Threading.CancellationToken]::None
     }
 }
 
@@ -426,22 +417,29 @@ function Invoke-RetriableCommand {
         [string]$Message,
 
         [Parameter(Mandatory = $false, Position = 3)]
+        [Alias('vs')][ValidateNotNullOrEmpty()]
+        [scriptblock]$ValidateScript,
+
+        [Parameter(Mandatory = $false, Position = 4)]
         [Alias('o')]
-        [CommandOptions]$Options
+        [PSCustomObject]$Options
     )
 
     begin {
-        $cmdOptions = $null
-        $result = $null
+        $result = $null;
     }
 
     process {
-        if (!$PSCmdlet.MyInvocation.BoundParameters.ContainsKey('Options')) {
-            $cmdOptions = [CommandOptions]::new()
-        } else {
-            $cmdOptions = $Options
-        }
-        $result = [TaskMan]::RetryCommand($ScriptBlock, $ArgumentList, $cmdOptions.CancellationToken, $cmdOptions.MaxAttempts, "$Message", $cmdOptions.Timeout)
+        $cmdOptions = $(if (!$PSCmdlet.MyInvocation.BoundParameters.ContainsKey('Options')) {
+                [PSCustomObject]@{
+                    MaxAttempts       = 3
+                    Timeout           = 1000
+                    CancellationToken = [System.Threading.CancellationToken]::None
+                    ValidateScript    = $null
+                }
+            } else { $Options })
+        if ($PSCmdlet.MyInvocation.BoundParameters.ContainsKey('ValidateScript')) { $cmdOptions.ValidateScript = $ValidateScript }
+        $result = [TaskMan]::RetryCommand($ScriptBlock, $ArgumentList, $cmdOptions.CancellationToken, $cmdOptions.MaxAttempts, "$Message", $cmdOptions.Timeout, $cmdOptions.ValidateScript)
     }
 
     end {

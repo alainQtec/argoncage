@@ -485,7 +485,8 @@ function CheckConnection {
         }
         $results = $null; $re = @{ true = @{ m = ''; c = 'Green' }; false = @{ m = ' Failed'; c = 'Red' } }
         $tscript = [scriptblock]::Create({
-                # return conection state as Boolean
+                # .SYNOPSIS
+                # Returns conection state as a boolean
                 $cs = $null; ; if (![bool]('System.Net.NetworkInformation.Ping' -as 'type')) { Add-Type -AssemblyName System.Net.NetworkInformation };
                 try {
                     [System.Net.NetworkInformation.PingReply]$PingReply = [System.Net.NetworkInformation.Ping]::new().Send("google.com");
@@ -502,11 +503,10 @@ function CheckConnection {
     }
 
     process {
-        $cc = Show-Stack;
         $tscrSRC = $tscript.Ast.Extent.Text.Replace("google.com", $HostName, $true, [CultureInfo]::CurrentCulture)
         $tscript = [scriptblock]::Create("$tscrSRC")
-        if (!(Resolve-PingDependencies)) { ('{0} Could not resolve ping dependencies' -f $cc) | Write-Host -f Red }
-        $results = Wait-Task -m "$cc $Message" -s $tscript
+        if (!(Resolve-PingDependencies)) { Write-Host "$(Show-Stack) Could not resolve ping dependencies" -f Red }
+        $results = Wait-Task -m "$Message" -s $tscript
         if ($IsOnline.IsPresent) {
             $results.Output = $results.Output -as [bool]
         }
@@ -524,24 +524,24 @@ function CheckConnection {
 
 function Resolve-HostNameProperty {
     # .SYNOPSIS
-    # Batch-resolves IP addresses to host names
+    #   Batch-resolves IP addresses to host names
     # .DESCRIPTION
-    # Takes *any* object and resolves IP addresses in *any* of its properties
+    #   Takes *any* object and resolves IP addresses in *any* of its properties
     # .PARAMETER Property
-    # List of properties to resolve. Can be one property name or a comma-separated list
+    #   List of properties to resolve. Can be one property name or a comma-separated list
     # .PARAMETER ThrottleLimit
-    # Number of parallel threads. Defaults to 80.
+    #   Number of parallel threads. Defaults to 80.
     # .PARAMETER InputObject
-    # The object with the properties to resolve
+    #   The object with the properties to resolve
     # .PARAMETER PassThru
-    # When specified, no resolution takes place, and the objects are passed through unchanged
-    # This can be useful if you want to use this command inside a pipeline and resolve based on
-    # some user-submitted parameter.
+    #   When specified, no resolution takes place, and the objects are passed through unchanged
+    #   This can be useful if you want to use this command inside a pipeline and resolve based on
+    #   some user-submitted parameter.
     # .EXAMPLE
-    # 1..255 | ForEach-Object { [PSCustomObject]@{IP1 = "192.168.2.$_"; IP2 = "40.112.72.$_" } } | Resolve-HostNameProperty -Property IP1, IP2
-    # Creates dummy objects with properties IP1 and IP2 containing dummy IP addresses.
-    # Next,properties IP1 and IP2 of all of these objects are resolved.
-    # This typically would take many minutes. Thanks to caching and multithreading, it takes only a few seconds.
+    #   1..255 | ForEach-Object { [PSCustomObject]@{IP1 = "192.168.2.$_"; IP2 = "40.112.72.$_" } } | Resolve-HostNameProperty -Property IP1, IP2
+    #   Creates dummy objects with properties IP1 and IP2 containing dummy IP addresses.
+    #   Next,properties IP1 and IP2 of all of these objects are resolved.
+    #   This typically would take many minutes. Thanks to caching and multithreading, it takes only a few seconds.
     [CmdletBinding()]
     param(
         [Parameter(Mandatory = $true, ValueFromPipeline = $true)]
@@ -564,8 +564,7 @@ function Resolve-HostNameProperty {
             $pool = [RunspaceFactory]::CreateRunspacePool(1, $ThrottleLimit, $state, $Host)
             $pool.Open()
 
-            # thread-safe dictionary to cache resolved IP addresses and not resolve repeating
-            # IP addresses again:
+            # thread-safe dictionary to cache resolved IP addresses and not resolve repeating IP addresses again:
             $cache = [System.Collections.Concurrent.ConcurrentDictionary[string, string]]::new()
 
             # list of background threads:
@@ -573,34 +572,27 @@ function Resolve-HostNameProperty {
 
             # code to be executed inside a background thread:
             $ScriptBlock = {
-                # takes object, list of properties to resolve, and reference to
-                # DNS cache dictionary:
+                # .SYNOPSIS
+                #  Takes object, list of properties to resolve, and reference to
+                #  DNS cache dictionary:
                 param($object, $property, $lookup)
-
-                # check each property:
                 foreach ($name in $property) {
                     # read property content as string:
                     $value = $object.$name.ToString()
-
                     # if it is not empty...
                     if ([string]::IsNullOrEmpty($value) -eq $false) {
-                        # if the content is new...
                         if ($lookup.ContainsKey($value) -eq $false) {
+                            # if the content is new...
                             # ...try and resolve the new content first:
                             $lookup[$value] = try { [System.Net.Dns]::GetHostEntry($value).HostName } catch { $value }
                         }
-                        # if the content can be resolved...
                         if ($value -ne $lookup[$value]) {
-                            # "overwrite" the original property by a NoteProperty. This way, even objects with
-                            # read-only properties can be updated without having to clone the object or change
-                            # its type:
+                            # if the content can be resolved...
                             $object | Add-Member -MemberType NoteProperty -Name $name -Value $lookup[$value] -Force
                         }
                     }
                 }
-
-                # return object with attached note properties for every resolved property:
-                $object
+                return $object
             }
 
             # function checks threads in the background to see if there are any
@@ -641,12 +633,10 @@ function Resolve-HostNameProperty {
     process {
         # take any number of objects via the pipeline OR the parameter -InputObject:
         foreach ($object in $InputObject) {
-            # if user specified -PassThru, simply pass the object through:
             if ($PassThru.IsPresent) {
                 $object
-            }
-            # else, do the object manipulation (resolving) in a background thread:
-            else {
+            } else {
+                # Do object manipulation (resolving) in a background thread:
                 # create a new background thread, add the prepared scriptblock, and submit the
                 # arguments to it:
                 $p = [PowerShell]::Create().AddScript($ScriptBlock).AddArgument($_).AddArgument($Property).AddArgument($cache)
@@ -681,79 +671,76 @@ function Resolve-HostNameProperty {
 }
 
 function Get-NetStat {
-    <#
-            .SYNOPSIS
-            Implements part of the functionality found in netstat.exe on Windows
-            based on .NET Core so it runs cross-platform
+    # .SYNOPSIS
+    #   Implements part of the functionality found in netstat.exe on Windows
+    #   based on .NET Core so it runs cross-platform
 
-            .DESCRIPTION
-            returns list of connections and ports
+    # .DESCRIPTION
+    #   returns list of connections and ports
 
-            .PARAMETER LocalPort
-            Lists all connections with the specified local port
+    # .PARAMETER LocalPort
+    #   Lists all connections with the specified local port
 
-            .PARAMETER RemotePort
-            Lists all connections with the specified remote port
+    # .PARAMETER RemotePort
+    #   Lists all connections with the specified remote port
 
-            .PARAMETER State
-            Describe parameter -State.
+    # .PARAMETER State
+    #   Describe parameter -State.
 
-            .PARAMETER PidName
-            Lists all connections with the specified state
+    # .PARAMETER PidName
+    #   Lists all connections with the specified state
 
-            .PARAMETER ProcessId
-            Lists all connections with the specified process id
+    # .PARAMETER ProcessId
+    #   Lists all connections with the specified process id
 
-            .PARAMETER TCP
-            Limit to TCP connections only
+    # .PARAMETER TCP
+    #   Limit to TCP connections only
 
-            .PARAMETER UDP
-            Limit to UDP connections only
+    # .PARAMETER UDP
+    #   Limit to UDP connections only
 
-            .PARAMETER Resolve
-            Resolve ip addresses to host names
+    # .PARAMETER Resolve
+    #   Resolve ip addresses to host names
 
-            .PARAMETER IncludeOrigin
-            Reports remote ip address owner information
+    # .PARAMETER IncludeOrigin
+    #   Reports remote ip address owner information
 
-            .EXAMPLE
-            Get-NetStat
-            Lists all connections and ports
+    # .EXAMPLE
+    #   Get-NetStat
+    #   Lists all connections and ports
 
-            .EXAMPLE
-            Get-NetStat -Resolve -IncludeOrigin
-            Lists all connections and ports, resolves IP addresses, and includes owner information for remote ip addresses.
+    # .EXAMPLE
+    #   Get-NetStat -Resolve -IncludeOrigin
+    #   Lists all connections and ports, resolves IP addresses, and includes owner information for remote ip addresses.
 
-            .EXAMPLE
-            Get-NetStat -TCP
-            Lists TCP connections and ports
+    # .EXAMPLE
+    #   Get-NetStat -TCP
+    #   Lists TCP connections and ports
 
-            .EXAMPLE
-            Get-NetStat -LocalPort 5985
-            Checks local port 5985 (PowerShell Remoting) to see whether it is accepting incoming requests
+    # .EXAMPLE
+    #   Get-NetStat -LocalPort 5985
+    #   Checks local port 5985 (PowerShell Remoting) to see whether it is accepting incoming requests
 
-            .EXAMPLE
-            (Get-NetStat -LocalPort 5985).State -eq [NetStat+State]::Listening
-            Check whether PowerShell Remoting port 5985 is in state "Listening"
+    # .EXAMPLE
+    #   (Get-NetStat -LocalPort 5985).State -eq [NetStat+State]::Listening
+    #   Check whether PowerShell Remoting port 5985 is in state "Listening"
 
-            .EXAMPLE
-            Get-NetStat -State Listening
-            List all ports in state "Listening"
+    # .EXAMPLE
+    #   Get-NetStat -State Listening
+    #   List all ports in state "Listening"
 
-            .EXAMPLE
-            Get-NetStat -State Established -Resolve
-            List all established connections, and resolve local and remote IP addresses to host names
+    # .EXAMPLE
+    #   Get-NetStat -State Established -Resolve
+    #   List all established connections, and resolve local and remote IP addresses to host names
 
-            .EXAMPLE
-            Get-NetStat -PidName chrome -Resolve
-            List all connections used by the "chrome" browser, and resolve IP addresses
+    # .EXAMPLE
+    #   Get-NetStat -PidName chrome -Resolve
+    #   List all connections used by the "chrome" browser, and resolve IP addresses
 
-            .NOTES
-            When -Resolve is specified, both LocalIP and RemoteIP is resolved. DNS resolution typically is slow
-            (especially for non-responding systems). That's why multithreading is used with support for up to
-            80 parallel name resolutions.
-    #>
-
+    # .NOTES
+    #   When -Resolve is specified, both LocalIP and RemoteIP is resolved. DNS resolution typically is slow
+    #   (especially for non-responding systems). Thats why multithreading is used with support for up to
+    #   80 parallel name resolutions.
     [CmdletBinding(DefaultParameterSetName = 'TCP')]
     param(
         [Parameter(Mandatory = $false)]

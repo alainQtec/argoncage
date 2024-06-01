@@ -157,6 +157,7 @@ class TaskMan {
         }
     )
     static [System.Management.Automation.PsObject[]] RunInParallel([System.Management.Automation.Job[]]$jobs) {
+        #TODO: replace Start-ThreadJob with New-Task
         $threadjobs = $jobs | ForEach-Object { Start-ThreadJob -ScriptBlock ([ScriptBlock]::Create($_.Command)) }
         $results = $threadjobs | Receive-Job -Wait
         return $results
@@ -203,7 +204,6 @@ class TaskMan {
                     $Output = Invoke-Command -ScriptBlock $ScriptBlock
                 }
                 $IsSuccess = [bool]$?
-                if ($Output -is [bool]) { $IsSuccess = $Output }
             } catch {
                 $IsSuccess = $false; $ErrorRecord = $_
                 " Errored after $([math]::Round(($(Get-Date) - $AttemptStartTime).TotalSeconds, 2)) seconds" | Set-AttemptMSg
@@ -212,8 +212,10 @@ class TaskMan {
                 $Result.Output = $Output
                 $Result.IsSuccess = $IsSuccess
                 $Result.ErrorRecord = $ErrorRecord
+                $job_state = $(if ($Result.IsSuccess) { "Completed" } else { "Failed" })
+                $Result.SetJobState([scriptblock]::Create("return '$job_state'"))
                 if ($Retries -eq 0 -or $Result.IsSuccess) {
-                    Write-Host " E.T = $([math]::Round(($(Get-Date) - $CommandStartTime).TotalSeconds, 2)) seconds"
+                    Write-Debug " E.T = $([math]::Round(($(Get-Date) - $CommandStartTime).TotalSeconds, 2)) seconds"
                 } elseif (!$cancellationToken.IsCancellationRequested -and $Retries -ne 0) {
                     Start-Sleep -Milliseconds $Timeout
                 }
@@ -226,7 +228,7 @@ class TaskMan {
         [TaskMan]::WriteLog($null, $IsSuccess)
     }
     static [void] WriteLog([string]$Message, [bool]$IsSuccess) {
-        $re = @{ true = @{ m = "Success "; c = "Cyan" }; false = @{ m = "Failed "; c = "Red" } }
+        $re = @{ true = @{ m = "Complete "; c = "Cyan" }; false = @{ m = "Errored "; c = "Red" } }
         if (![string]::IsNullOrWhiteSpace($Message)) { $re["$IsSuccess"].m = $Message }
         $re = $re["$IsSuccess"]
         Write-Host $re.m -f $re.c -NoNewline:$IsSuccess
@@ -406,10 +408,9 @@ function Invoke-RetriableCommand {
     # .LINK
     #     https://github.com/alainQtec/argoncage/blob/main/Private/TaskMan/TaskMan.psm1
     # .EXAMPLE
-    #     Retry-Command { (CheckConnection -host "github.com" -msg "Testing Connection").Output }
+    #     Invoke-RetriableCommand { (CheckConnection -host "github.com" -msg "Testing Connection" -IsOnline).Output }
     #     Tries to connect to github 3 times
     [CmdletBinding()]
-    [Alias('Retry-Command')]
     [OutputType([psobject])]
     param (
         [Parameter(Mandatory = $true, Position = 0)]
@@ -550,20 +551,33 @@ function New-TaskResult {
             ErrorRecord = $null
             Output      = [System.Management.Automation.PSDataCollection[psobject]]::new()
         }
+        $result.PsObject.Methods.Add([psscriptmethod]::new('SetJobState', {
+                    # .EXAMPLE
+                    #   $result.SetJobState()
+                    # .EXAMPLE
+                    #   $result.SetJobState({ return 'StateSTR' })
+                    param (
+                        [Parameter(Mandatory = $false, Position = 0)]
+                        [scriptblock]$get_state
+                    )
+                    if ($null -eq $get_state) {
+                        $job_state = $(if ($this.IsSuccess) { "Completed" } else { "Failed" })
+                        $get_state = [scriptblock]::Create("return '$job_state'")
+                    }
+                    $this.PsObject.Properties.Add([psscriptproperty]::new('State', $get_state, { throw [System.InvalidOperationException]::new("Cannot set State") }))
+                }
+            )
+        )
     }
 
     process {
         $HasErrorRecord = $PSCmdlet.MyInvocation.BoundParameters.ContainsKey('ErrorRecord')
         if ($PSCmdlet.ParameterSetName -eq 'output') {
             if ($null -eq $Output) { $Output = New-Object psobject }
-            [void]$result.Output.Add($Output)
-            $job_state = $(if ($result.IsSuccess) { "Completed" } else { "Failed" })
-            $get_state = [scriptblock]::Create("return '$job_state'")
-            $result.PsObject.Properties.Add([psscriptproperty]::new('State', $get_state, { throw [System.InvalidOperationException]::new("Cannot set State") }))
+            [void]$result.Output.Add($Output); $result.SetJobState()
         } else {
             $result.Command = $job.Command
-            $get_state = [scriptblock]::Create("return '$($job.JobStateInfo.State.ToString())'")
-            $result.PsObject.Properties.Add([psscriptproperty]::new('State', $get_state, { throw [System.InvalidOperationException]::new("Cannot set State") }))
+            $result.SetJobState([scriptblock]::Create("return '$($job.JobStateInfo.State.ToString())'"))
             $JobRes = $job.ChildJobs | Receive-Job -Wait
             if ($JobRes -is [bool]) { $result.IsSuccess = $JobRes }
             [void]$result.Output.Add($JobRes)
@@ -583,10 +597,16 @@ function New-Task {
     [Alias('Create-Task')]
     param (
         [Parameter(Mandatory = $true, Position = 0)]
-        [scriptblock]$ScriptBlock,
+        [scriptblock][ValidateNotNullOrEmpty()]
+        $ScriptBlock,
 
         [Parameter(Mandatory = $false, Position = 1)]
-        [Object[]]$ArgumentList
+        [Object[]]
+        $ArgumentList,
+
+        [Parameter(Mandatory = $false, Position = 2)]
+        [ValidateNotNullOrEmpty()][System.Management.Automation.Runspaces.Runspace]
+        $Runspace = (Get-Variable ExecutionContext -ValueOnly).Host.Runspace
     )
     begin {
         $_result = $null
@@ -608,10 +628,15 @@ function New-Task {
                 return [System.Threading.Tasks.Task]::Factory.StartNew($Action)
             }
         ).AddArgument($_Action)
-        $runspace = [System.Management.Automation.Runspaces.RunspaceFactory]::CreateRunspace()
-        $runspace.Open(); $powershell.Runspace = $runspace
+        if (!$PSCmdlet.MyInvocation.BoundParameters.ContainsKey('Runspace')) {
+            $Runspace = [System.Management.Automation.Runspaces.RunspaceFactory]::CreateRunspace()
+        } else {
+            Write-Debug "[New-Task] Using LocalRunspace ..."
+        }
+        if ($Runspace.RunspaceStateInfo.State -ne 'Opened') { $Runspace.Open() }
+        $powershell.Runspace = $Runspace
         [ValidateNotNull()][System.Action]$_Action = $_Action;
-        Write-Host "Run In Background .." -ForegroundColor DarkBlue
+        Write-Host "[New-Task] Runing in background ..." -ForegroundColor DarkBlue
 
         $threads = New-Object System.Collections.ArrayList;
         $result = [PSCustomObject]@{

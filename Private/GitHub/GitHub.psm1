@@ -36,7 +36,7 @@
                 return Invoke-RestMethod -Uri $UriObj -WebSession (Get-GitHubSession) -Method Post -Body $JSONBODY -Verbose:$false
             }
         )
-        return $(Retry-Command -s $CreateGist -args @($url, ($body | ConvertTo-Json)) -m "CreateGist").Output
+        return $(Invoke-RetriableCommand -s $CreateGist -args @($url, ($body | ConvertTo-Json)) -m "CreateGist").Output
     }
     static [PsObject] UpdateGist($gist, [string]$NewContent) {
         return ''
@@ -51,7 +51,7 @@
     }
     static [bool] IsConnected() {
         $cs = $null;
-        $cs = Retry-Command -s { (CheckConnection -host "github.com" -msg "[Github] Testing Connection").Output }
+        $cs = Invoke-RetriableCommand -s { (CheckConnection -host "github.com" -msg "[Github] Testing Connection" -IsOnline).Output }
         return $cs.Output
     }
 }
@@ -205,69 +205,76 @@ function Set-GitHubUsername ($Name) {
 
 function New-GistObject {
     param (
-        [Parameter(Mandatory = $false)]
+        [Parameter(Mandatory = $false, Position = 0)]
         [validateNotNullOrEmpty()]
         [string]$Name
     )
-    begin {
-
-        # [psobject] Post() {
-        #         $gisfiles = @()
-        #         $this.Files.Foreach({
-        #                 $gisfiles += @{
-        #                     $_.Name = @{
-        #                         content = $_.Content
-        #                     }
-        #                 }
-        #             }
-        #         )
-        #         $data = @{
-        #             files       = $gisfiles
-        #             description = $this.Description
-        #             public      = $this.IsPublic
-        #         } | ConvertTo-Json
-
-        #         Write-Verbose ($data | Out-String)
-        #         Write-Verbose "[PROCESS] Posting to https://api.github.com/gists"
-        #         $invokeParams = @{
-        #             Method      = 'Post'
-        #             Uri         = "https://api.github.com/gists"
-        #             WebSession  = [GitHub]::webSession
-        #             Body        = $data
-        #             ContentType = 'application/json'
-        #         }
-        #         [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
-        #         $r = Invoke-RestMethod @invokeParams
-        #         $r = $r | Select-Object @{Name = "Url"; Expression = { $_.html_url } }, Description, Public, @{Name = "Created"; Expression = { $_.created_at -as [datetime] } }
-        #         return $r
-        #     }
-        #     [void] AddFile([psobject]$file) {
-        #         $this.Files += $file
-        #     }
-        #     [string] ShowInfo() {
-        #         $info = "Gist ID: $($this.Id)"
-        #         $info += "`nDescription: $($this.Description)"
-        #         $info += "`nFiles:"
-        #         foreach ($file in $this.Files.Values) {
-        #             $info += "`n  - $($file.ShowFileInfo())"
-        #         }
-        #         return $info
-        #     }
-    }
-    end {
-        return [PSCustomObject]@{
+    process {
+        $go = [PSCustomObject]@{
             Name      = $(if (![string]::IsNullOrWhiteSpace($Name)) { $Name } else { '' })
             language  = ''
             type      = ''
             owner     = ''
             raw_url   = ''
-            IsPublic  = ''
+            IsPublic  = [bool]0
             truncated = ''
             Id        = ''
             size      = ''
-            files     = ''
+            files     = [System.Management.Automation.PSDataCollection[psobject]]::new()
             content   = ''
         }
+        $go.PsObject.Methods.Add(
+            [psscriptmethod]::new('AddFile', {
+                    $this.Files += $file
+                }
+            )
+        )
+        $go.PsObject.Methods.Add(
+            [psscriptmethod]::new('Post', {
+                    $gisfiles = @()
+                    $this.Files.Foreach({
+                            $gisfiles += @{
+                                $_.Name = @{
+                                    content = $_.Content
+                                }
+                            }
+                        }
+                    )
+                    $data = @{
+                        files       = $gisfiles
+                        description = $this.Description
+                        public      = $this.IsPublic
+                    } | ConvertTo-Json
+                    Write-Verbose ($data | Out-String)
+                    Write-Verbose "[PROCESS] Posting to https://api.github.com/gists"
+                    $invokeParams = @{
+                        Method      = 'Post'
+                        Uri         = "https://api.github.com/gists"
+                        WebSession  = [GitHub]::webSession
+                        Body        = $data
+                        ContentType = 'application/json'
+                    }
+                    [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
+                    $r = Invoke-RestMethod @invokeParams
+                    $r = $r | Select-Object @{Name = "Url"; Expression = { $_.html_url } }, Description, Public, @{Name = "Created"; Expression = { $_.created_at -as [datetime] } }
+                    return $r
+                }
+            )
+        )
+        $go.PsObject.Methods.Add([psscriptmethod]::new('ShowInfo', {
+                    $info = "Gist ID: $($this.Id)"
+                    $info += "`nDescription: $($this.Description)"
+                    $info += "`nFiles:"
+                    foreach ($file in $this.Files.Values) {
+                        $info += "`n  - $($file.ShowFileInfo())"
+                    }
+                    return $info
+                }
+            )
+        )
+    }
+    end {
+        return $go
     }
 }
 
@@ -316,7 +323,7 @@ function Get-GistChildItems {
         if ([string]::IsNullOrWhiteSpace($GistId) -or $GistId -eq '*') {
             $result = Get-Gists -UserName $UserName -SecureToken $t
         } else {
-            $result = $(Retry-Command -s $FetchGistId -args @($GistId) -m "Get-GistChildItems > GitHub.FetchGist()  ").Output.files
+            $result = $(Invoke-RetriableCommand -s $FetchGistId -args @($GistId) -m "Get-GistChildItems > GitHub.FetchGist()  ").Output.files
         }
         [PsObject[]]$_files = @(); [string[]]$filenames = ($result | Get-Member -MemberType NoteProperty).Name
         $filenames.Foreach({

@@ -43,7 +43,7 @@ function Import-SQLiteDlls {
         if (![IO.File]::Exists($SQLiteAssembly)) {
             Throw [System.DllNotFoundException]::new("Platform SQLite dll not found", [System.IO.FileNotFoundException]::New("Could not find file $SQLiteAssembly"))
         }
-        if ($UseVerbose) { Write-Host "VERBOSE: Load Interop assembly ..." -f Blue }
+        if ($UseVerbose) { Write-Host "VERBOSE: Loading Interop assembly ..." -f Blue }
         $Lib = Add-Type -Path $SQLiteAssembly -PassThru -ErrorAction stop
         if (!$Lib) {
             Throw "This module requires the ADO.NET driver for SQLite:`n`thttp://system.data.sqlite.org/index.html/doc/trunk/www/downloads.wiki"

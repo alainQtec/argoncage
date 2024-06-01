@@ -51,7 +51,14 @@
     }
     static [bool] IsConnected() {
         $cs = $null;
-        $cs = Invoke-RetriableCommand -s { (CheckConnection -host "github.com" -msg "[Github] Testing Connection" -IsOnline).Output }
+        # script will get executed on each result of the retry
+        $_vs = [scriptblock]::Create({
+                param($result)
+                $result.IsSuccess = $result.Output.Output -and $result.Output.IsSuccess;
+                return $result
+            }
+        )
+        $cs = (Invoke-RetriableCommand -s { CheckConnection -host "github.com" -msg "[Github] Testing Connection" -IsOnline } -vs $_vs).Output
         return $cs.Output
     }
 }

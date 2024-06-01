@@ -271,7 +271,7 @@ class ArgonCage {
                 UseWhatIf     = [bool]$((Get-Variable WhatIfPreference -ValueOnly) -eq $true)
                 SessionId     = [string]::Empty
                 UseVerbose    = [bool]$((Get-Variable verbosePreference -ValueOnly) -eq "continue")
-                OfflineMode   = !((Retry-Command { (CheckConnection -host "github.com" -msg "[ArgonCage] Check if offline").Output }).Output)
+                OfflineMode   = !((Invoke-RetriableCommand { (CheckConnection -host "github.com" -msg "[ArgonCage] Check if offline" -IsOffline).Output }).Output)
                 CachedCreds   = $null
                 SessionConfig = $Config
                 OgWindowTitle = $(Get-Variable executionContext).Value.Host.UI.RawUI.WindowTitle
@@ -508,7 +508,7 @@ class ArgonCage {
             ProgressBarLength = $Progress_Msg.Length - 7
             ProgressMessage   = $Progress_Msg
         }
-        $resfile = Retry-Command -s { (Start-FileDownload -l $remote -o $OutFile).Output }
+        $resfile = Invoke-RetriableCommand -s { (Start-FileDownload -l $remote -o $OutFile).Output }
         Set-DownloadOptions @{
             ProgressBarLength = $og_PbLength
             ProgressMessage   = $og_pbMsg
@@ -676,59 +676,15 @@ class NameCompleter : IArgumentCompleter {
     }
 }
 class Vault {
-    [ValidateNotNullOrWhiteSpace()][string] $Name = "ArgonCage"
+    [ValidateNotNullOrWhiteSpace()][string] $Name
     [ValidateNotNullOrWhiteSpace()][string] $UserName = [System.Environment]::UserName
     [ValidateNotNullOrEmpty()][securestring] $Password
-    [ValidateNotNullOrEmpty()][string] $ConnectionFile
     [ValidateNotNullOrEmpty()][uri]$Remote
     hidden [ValidateNotNullOrEmpty()][securestring] $Key
     hidden [Vault] $curentsession
-    Vault([string]$Name) {
-        if ([string]::IsNullOrWhiteSpace($Name)) { throw [System.ArgumentException]::new($Name) }
-        $this.curentsession = [ArgonCage]::GetVault()
-        $this.ConnectionFile = [IO.Path]::Combine([IO.Path]::GetDirectoryName($this.curentsession.GetKeyFile()), "connection.clixml")
-        $this.Name = $Name
-        $this.PsObject.Properties.Add([psscriptproperty]::new('File', {
-                    return [IO.FileInfo]::new([IO.Path]::Combine([ArgonCage]::DataPath.FullName, ".$($this.Name)_$($this.UserName.ToLower())"))
-                }, {
-                    param($value)
-                    if ($value -is [IO.FileInfo]) {
-                        [ArgonCage]::DataPath = $value.Directory.FullName
-                        $this.Name = $value.Name
-                    } else {
-                        throw "Invalid value assigned to File property"
-                    }
-                }
-            )
-        )
-        $this.PsObject.Properties.Add([psscriptproperty]::new('Size', {
-                    if ([IO.File]::Exists($this.File.FullName)) {
-                        $this.File = Get-Item $this.File.FullName
-                        return $this.File.Length
-                    }
-                    return 0
-                }, { throw "Cannot set Size property" }
-            )
-        )
-        $this.PsObject.Properties.Add([psscriptproperty]::new('Cache', {
-                    if ($null -eq [Vault].Cache) {
-                        [Vault] | Add-Member -Name Cache -Force -MemberType ScriptProperty -Value { return [ArgonCage]::Create_VaultCache() }.GetNewClosure() -SecondValue { throw [System.InvalidOperationException]::new("Cannot change Cache") }
-                    }
-                    return [Vault].Cache
-                }, { throw [System.InvalidOperationException]::new("Cannot set Cache") }
-            )
-        )
-        if ($null -eq [ArgonCage]::Tmp.vars) { [ArgonCage]::Set_variables() }else {
-            $this.Remote = [ArgonCage]::GetVaultRawUri($this.Name, [ArgonCage]::Tmp.vars.sessionConfig.Remote)
-        }
-        [Vault].PsObject.properties.Add([psscriptproperty]::new('MSG', {
-                    return [PSCustomObject]@{
-                        CONNECTION_WARNING = "You must create a connection to the vault to manage the secrets. Check your connection object and pass the right credential."
-                    }
-                }, { return "MSG is read-only" }
-            )
-        )
-    }
+
+    Vault() { $this._init_("ArgonCage") }
+    Vault([string]$Name) { $this._init_($Name) }
     static [Vault] Create([string]$Name) {
         [Vault]$vault = [Vault]::new($Name)
         return $vault
@@ -937,6 +893,59 @@ class Vault {
         $_key = [pscredential]::new("Key", $_res.Key)
         $recKey = [pscredential]::new("Key", $recoveryWord)
         return ($recKey.GetNetworkCredential().Password -eq $_key.GetNetworkCredential().Password)
+    }
+    hidden [void] _init_([string]$Name) {
+        if ([string]::IsNullOrWhiteSpace($Name)) { throw [System.ArgumentException]::new($Name) }else { $this.Name = $Name }
+        $this.PsObject.Properties.Add([psscriptproperty]::new('Curentsession', {
+                    return [ArgonCage]::GetVault() -as [Vault]
+                }, { throw "Curentsession is a read-only" }
+            )
+        )
+        $this.PsObject.Properties.Add([psscriptproperty]::new('ConnectionFile', {
+                    return [IO.Path]::Combine([IO.Path]::GetDirectoryName($this.curentsession.GetKeyFile()), "connection.clixml")
+                }, { throw "ConnectionFile is a read-only" }
+            )
+        )
+        $this.PsObject.Properties.Add([psscriptproperty]::new('File', {
+                    return [IO.FileInfo]::new([IO.Path]::Combine([ArgonCage]::DataPath.FullName, ".$($this.Name)_$($this.UserName.ToLower())"))
+                }, {
+                    param($value)
+                    if ($value -is [IO.FileInfo]) {
+                        [ArgonCage]::DataPath = $value.Directory.FullName
+                        $this.Name = $value.Name
+                    } else {
+                        throw "Invalid value assigned to File property"
+                    }
+                }
+            )
+        )
+        $this.PsObject.Properties.Add([psscriptproperty]::new('Size', {
+                    if ([IO.File]::Exists($this.File.FullName)) {
+                        $this.File = Get-Item $this.File.FullName
+                        return $this.File.Length
+                    }
+                    return 0
+                }, { throw "Cannot set Size property" }
+            )
+        )
+        $this.PsObject.Properties.Add([psscriptproperty]::new('Cache', {
+                    if ($null -eq [Vault].Cache) {
+                        [Vault] | Add-Member -Name Cache -Force -MemberType ScriptProperty -Value { return [ArgonCage]::Create_VaultCache() }.GetNewClosure() -SecondValue { throw [System.InvalidOperationException]::new("Cannot change Cache") }
+                    }
+                    return [Vault].Cache
+                }, { throw [System.InvalidOperationException]::new("Cannot set Cache") }
+            )
+        )
+        if ($null -eq [ArgonCage]::Tmp.vars) { [ArgonCage]::Set_variables() }else {
+            $this.Remote = [ArgonCage]::GetVaultRawUri($this.Name, [ArgonCage]::Tmp.vars.sessionConfig.Remote)
+        }
+        [Vault].PsObject.properties.Add([psscriptproperty]::new('MSG', {
+                    return [PSCustomObject]@{
+                        CONNECTION_WARNING = "You must create a connection to the vault to manage the secrets. Check your connection object and pass the right credential."
+                    }
+                }, { return "MSG is read-only" }
+            )
+        )
     }
 }
 #endregion Classes

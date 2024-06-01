@@ -271,9 +271,7 @@ class NetworkManager {
     static [void] UploadFile ([string]$SourcePath, [string]$DestinationURL) {
         Invoke-RestMethod -Uri $DestinationURL -Method Post -InFile $SourcePath
     }
-    static [bool] Resolve_Ping_Dependencies () {
-        # Prevent: error: System.PlatformNotSupportedException : The system's ping utility could not be found.
-        # https://github.com/dotnet/runtime/issues/28572
+    static [bool] TryResolvePingUtility () {
         $result = [bool](Get-Command ping -ea SilentlyContinue)
         if ($result) { return $result }
         $HostOS = Get-HostOs
@@ -418,6 +416,21 @@ function Get-DownloadOption {
     }
 }
 
+function Resolve-PingDependencies {
+    # .SYNOPSIS
+    #     Prevents error: System.PlatformNotSupportedException : The system's ping utility could not be found.
+    # .DESCRIPTION
+    #     Installs ping utility if not installed
+    # .LINK
+    #     https://github.com/dotnet/runtime/issues/28572
+    [CmdletBinding()]
+    [OutputType([bool])]
+    param ()
+    process {
+        return [NetworkManager]::TryResolvePingUtility()
+    }
+}
+
 function Block-AllOutboundConnections {
     [CmdletBinding()]
     [OutputType([void])]
@@ -457,14 +470,23 @@ function CheckConnection {
         [Parameter(Mandatory = $false, Position = 1)]
         [ValidateNotNullOrEmpty()]
         [Alias('msg')]
-        [string]$Message = "Testing Connection"
+        [string]$Message = "Testing Connection",
+
+        [Parameter(Mandatory = $true, ParameterSetName = 'IsOnline')]
+        [switch]$IsOnline,
+
+        [Parameter(Mandatory = $true, ParameterSetName = 'IsOffline')]
+        [switch]$IsOffline
     )
 
     begin {
-        $results = $null;
+        if ($IsOnline.IsPresent -and $IsOffline.IsPresent) {
+            Throw [System.Management.Automation.ParameterBindingException]::new('Can not use IsOnline and IsOffline SwitchParameters at the same time!')
+        }
+        $results = $null; $re = @{ true = @{ m = ''; c = 'Green' }; false = @{ m = ' Failed'; c = 'Red' } }
         $tscript = [scriptblock]::Create({
-                $cs = $null; $re = @{ true = @{ m = ' Success'; c = 'Green' }; false = @{ m = ' Failed'; c = 'Red' } }
-                if (![bool]('System.Net.NetworkInformation.Ping' -as 'type')) { Add-Type -AssemblyName System.Net.NetworkInformation };
+                # return conection state as Boolean
+                $cs = $null; ; if (![bool]('System.Net.NetworkInformation.Ping' -as 'type')) { Add-Type -AssemblyName System.Net.NetworkInformation };
                 try {
                     [System.Net.NetworkInformation.PingReply]$PingReply = [System.Net.NetworkInformation.Ping]::new().Send("google.com");
                     $cs = $PingReply.Status -eq [System.Net.NetworkInformation.IPStatus]::Success
@@ -474,8 +496,6 @@ function CheckConnection {
                     $cs = $false;
                     Write-Error $_
                 }
-                $re = $re[$cs.ToString()]
-                Write-Host $re.m -f $re.c
                 return $cs
             }
         )
@@ -485,10 +505,16 @@ function CheckConnection {
         $cc = Show-Stack;
         $tscrSRC = $tscript.Ast.Extent.Text.Replace("google.com", $HostName, $true, [CultureInfo]::CurrentCulture)
         $tscript = [scriptblock]::Create("$tscrSRC")
-        if (![NetworkManager]::resolve_ping_dependencies()) {
-            ('{0} Could not resolve ping dependencies' -f $cc) | Write-Host -f Red
+        if (!(Resolve-PingDependencies)) { ('{0} Could not resolve ping dependencies' -f $cc) | Write-Host -f Red }
+        $results = Wait-Task -m "$cc $Message" -s $tscript
+        if ($IsOnline.IsPresent) {
+            $results.Output = $results.Output -as [bool]
         }
-        $results = Wait-Task -m $Message -s $tscript
+        if ($IsOffline.IsPresent) {
+            $results.Output = !$results.Output
+        }
+        $re = $re[$results.Output.ToString()]
+        Write-Host $re.m -f $re.c
     }
 
     end {

@@ -103,140 +103,6 @@ class CliArt {
     }
 }
 
-# A small process managment class
-class TaskMan {
-    static [scriptblock] $WaitScript = [scriptBlock]::Create({
-            param (
-                [Parameter(Mandatory = $true, Position = 0)]
-                [ValidateNotNullOrEmpty()]
-                [string]$progressMsg,
-
-                [Parameter(Mandatory = $true, Position = 1)]
-                [ValidateNotNull()]
-                [int]$JobId
-            )
-            [System.Management.Automation.Job]$Job = Get-Job -Id $JobId
-            [Console]::CursorVisible = $false;
-            [ProgressUtil]::frames = [ProgressUtil]::_twirl[0]
-            [int]$length = [ProgressUtil]::frames.Length;
-            $originalY = [Console]::CursorTop
-            while ($Job.JobStateInfo.State -notin ('Completed', 'failed')) {
-                for ($i = 0; $i -lt $length; $i++) {
-                    [ProgressUtil]::frames | ForEach-Object { [Console]::Write("$progressMsg $($_[$i])") }
-                    [System.Threading.Thread]::Sleep(50)
-                    [Console]::Write(("`b" * ($length + $progressMsg.Length)))
-                    [Console]::CursorTop = $originalY
-                }
-            }
-            # i.e: Gives an illusion of loading animation.
-            [void][cli]::Write("`b$progressMsg ... ", [ConsoleColor]::Blue)
-            [System.Management.Automation.Runspaces.RemotingErrorRecord[]]$Errors = $Job.ChildJobs.Where({
-                    $null -ne $_.Error
-                }
-            ).Error;
-            $LogMsg = ''; $_Success = ($null -eq $Errors); $attMSg = Get-AttemptMSg; $TaskResult = $null
-            if (![string]::IsNullOrWhiteSpace($attMSg)) { $LogMsg += $attMSg } else { $LogMsg += "Done." }
-            if ($Job.JobStateInfo.State -eq "Failed" -or $Errors.Count -gt 0) {
-                $errormessages = ""; $errStackTrace = ""
-                if ($null -ne $Errors) {
-                    $errormessages = $Errors.Exception.Message -join "`n"
-                    $errStackTrace = $Errors.ScriptStackTrace
-                    if ($null -ne $Errors.Exception.InnerException) {
-                        $errStackTrace += "`n`t"
-                        $errStackTrace += $Errors.Exception.InnerException.StackTrace
-                    }
-                }
-                $TaskResult = New-TaskResult -Job $Job -ErrorRecord $Errors
-                $_Success = $false; $LogMsg += " Completed with errors.`n`t$errormessages`n`t$errStackTrace"
-            } else {
-                $TaskResult = New-TaskResult -Job $Job
-            }
-            [TaskMan]::WriteLog($LogMsg, $_Success)
-            [Console]::CursorVisible = $true; Set-AttemptMSg ' '
-            return $TaskResult
-        }
-    )
-    static [System.Management.Automation.PsObject[]] RunInParallel([System.Management.Automation.Job[]]$jobs) {
-        #TODO: replace Start-ThreadJob with New-Task
-        $threadjobs = $jobs | ForEach-Object { Start-ThreadJob -ScriptBlock ([ScriptBlock]::Create($_.Command)) }
-        $results = $threadjobs | Receive-Job -Wait
-        return $results
-    }
-    static [PSCustomObject] WaitTask([string]$progressMsg, [scriptblock]$scriptBlock) {
-        return [TaskMan]::WaitTask($progressMsg, $(Start-Job -ScriptBlock $scriptBlock).Id)
-    }
-    static [PSCustomObject] WaitTask([string]$progressMsg, [string]$JobId) {
-        return (Get-WaitScript).Invoke($progressMsg, $JobId)
-    }
-    static [PSCustomObject] RetryCommand([ScriptBlock]$ScriptBlock) {
-        return [TaskMan]::RetryCommand($ScriptBlock, "")
-    }
-    static [PSCustomObject] RetryCommand([ScriptBlock]$ScriptBlock, [string]$Message) {
-        return [TaskMan]::RetryCommand($ScriptBlock, $Message, 3)
-    }
-    static [PSCustomObject] RetryCommand([ScriptBlock]$ScriptBlock, [string]$Message, [Int]$MaxAttempts) {
-        return [TaskMan]::RetryCommand($ScriptBlock, $null, [System.Threading.CancellationToken]::None, $MaxAttempts, "$Message", 1000, $null)
-    }
-    static [PSCustomObject] RetryCommand([ScriptBlock]$ScriptBlock, [Object[]]$ArgumentList, [string]$Message) {
-        return [TaskMan]::RetryCommand($ScriptBlock, $ArgumentList, [System.Threading.CancellationToken]::None, 3, "$Message", 1000, $null)
-    }
-    static [PSCustomObject] RetryCommand([ScriptBlock]$ScriptBlock, [Object[]]$ArgumentList, [System.Threading.CancellationToken]$CancellationToken, [Int]$MaxAttempts, [String]$Message, [Int]$Timeout, [ScriptBlock]$validationScript) {
-        [ValidateNotNullOrEmpty()][scriptblock]$ScriptBlock = $ScriptBlock
-        if ([string]::IsNullOrWhiteSpace((Show-Stack))) { Push-Stack 'TaskMan' }
-        $IsSuccess = $false; $fxn = Show-Stack; $AttemptStartTime = $null;
-        $Output = [string]::Empty; $ErrorRecord = $null; $Attempts = 1
-        if ([string]::IsNullOrWhiteSpace($Message)) { $Message = "Invoke Command" }
-        $Result = New-TaskResult -Output $Output -IsSuccess $IsSuccess
-        $CommandStartTime = Get-Date
-        while (($Attempts -le $MaxAttempts) -and !$Result.IsSuccess) {
-            $Retries = $MaxAttempts - $Attempts
-            if ($cancellationToken.IsCancellationRequested) {
-                [TaskMan]::WriteLog("$fxn CancellationRequested when $Retries retries were left.", $false)
-                throw
-            }
-            try {
-                " Attempt # $Attempts/$MaxAttempts" | Set-AttemptMSg
-                Write-Debug "$fxn $Message$([ProgressUtil]::AttemptMSg) "
-                $AttemptStartTime = Get-Date
-                if ($null -ne $ArgumentList) {
-                    $Output = Invoke-Command -ScriptBlock $ScriptBlock -ArgumentList $ArgumentList
-                    $IsSuccess = [bool]$?
-                } else {
-                    $Output = Invoke-Command -ScriptBlock $ScriptBlock
-                    $IsSuccess = [bool]$?
-                }
-            } catch {
-                $IsSuccess = $false; $ErrorRecord = $_
-                " Errored after $([math]::Round(($(Get-Date) - $AttemptStartTime).TotalSeconds, 2)) seconds" | Set-AttemptMSg
-                Write-Debug "$fxn $([ProgressUtil]::AttemptMSg)"
-            } finally {
-                $Result.Output = $Output
-                $Result.IsSuccess = $IsSuccess
-                $Result.ErrorRecord = $ErrorRecord
-                if ($null -ne $validationScript) { $Result = Invoke-Command -ScriptBlock $validationScript -ArgumentList $Result }
-                $job_state = $(if ($Result.IsSuccess) { "Completed" } else { "Failed" })
-                $Result.SetJobState([scriptblock]::Create("return '$job_state'"))
-                if ($Retries -eq 0 -or $Result.IsSuccess) {
-                    Write-Debug " E.T = $([math]::Round(($(Get-Date) - $CommandStartTime).TotalSeconds, 2)) seconds"
-                } elseif (!$cancellationToken.IsCancellationRequested -and $Retries -ne 0) {
-                    Start-Sleep -Milliseconds $Timeout
-                }
-                $Attempts++
-            }
-        }
-        return $Result
-    }
-    static [void] WriteLog([bool]$IsSuccess) {
-        [TaskMan]::WriteLog($null, $IsSuccess)
-    }
-    static [void] WriteLog([string]$Message, [bool]$IsSuccess) {
-        $re = @{ true = @{ m = "Complete "; c = "Cyan" }; false = @{ m = "Errored "; c = "Red" } }
-        if (![string]::IsNullOrWhiteSpace($Message)) { $re["$IsSuccess"].m = $Message }
-        $re = $re["$IsSuccess"]
-        Write-Host $re.m -f $re.c -NoNewline:$IsSuccess
-    }
-}
-
 # .SYNOPSIS
 # A simple progress utility class
 # .EXAMPLE
@@ -247,7 +113,7 @@ class TaskMan {
 #     [System.Threading.Thread]::Sleep(50)
 # }
 # (Get-Variable host).Value.UI.RawUI.ForegroundColor = $OgForeground
-# [TaskMan]::WaitTask("Waiting", { Start-Sleep -Seconds 3 })
+# Wait-Task "Waiting" { Start-Sleep -Seconds 3 }
 #
 class ProgressUtil {
     static hidden [string] $_block = '■';
@@ -417,8 +283,8 @@ function Invoke-RetriableCommand {
         [string]$Message,
 
         [Parameter(Mandatory = $false, Position = 3)]
-        [Alias('vs')][ValidateNotNullOrEmpty()]
-        [scriptblock]$ValidateScript,
+        [Alias('cs')][ValidateNotNullOrEmpty()]
+        [scriptblock]$CleanupScript,
 
         [Parameter(Mandatory = $false, Position = 4)]
         [Alias('o')]
@@ -426,7 +292,36 @@ function Invoke-RetriableCommand {
     )
 
     begin {
-        $result = $null;
+        function WriteLog {
+            [CmdletBinding()]
+            param (
+                [Parameter(Mandatory = $false, Position = 0, ValueFromPipeline = $true)]
+                [string]$m = '',
+                [Parameter(Mandatory = $false, Position = 1)]
+                [switch]$s
+            )
+            # DynamicParam {
+            #     if ($args.GetType().Name -eq 'syste.object[]') {
+            #         $ageAttribute = [System.Management.Automation.ParameterAttribute]::new()
+            #         $ageAttribute.Position = 3
+            #         $ageAttribute.Mandatory = $true
+            #         $ageAttribute.HelpMessage = "This product is only available for customers 21 years of age and older. Please enter your age:"
+            #         $attributeCollection = [System.Collections.ObjectModel.Collection[System.Attribute]]::New()
+            #         $attributeCollection.Add($ageAttribute)
+            #         $ageParam = [System.Management.Automation.RuntimeDefinedParameter]::new('age', [Int16], $attributeCollection)
+            #         $paramDictionary = [System.Management.Automation.RuntimeDefinedParameterDictionary]::New()
+            #         $paramDictionary.Add('age', $ageParam)
+            #         return $paramDictionary
+            #     }
+            # }
+            process {
+                $args.GetType().Name | Write-Host -f Green
+                $re = @{ true = @{ m = "Complete "; c = "Cyan" }; false = @{ m = "Errored "; c = "Red" } }
+                if (![string]::IsNullOrWhiteSpace($m)) { $re["$s"].m = $m }
+                $re = $re["$s"]
+                Write-Host $re.m -f $re.c -NoNewline:$s
+            }
+        }
     }
 
     process {
@@ -435,15 +330,60 @@ function Invoke-RetriableCommand {
                     MaxAttempts       = 3
                     Timeout           = 1000
                     CancellationToken = [System.Threading.CancellationToken]::None
-                    ValidateScript    = $null
+                    CleanupScript     = $null
                 }
-            } else { $Options })
-        if ($PSCmdlet.MyInvocation.BoundParameters.ContainsKey('ValidateScript')) { $cmdOptions.ValidateScript = $ValidateScript }
-        $result = [TaskMan]::RetryCommand($ScriptBlock, $ArgumentList, $cmdOptions.CancellationToken, $cmdOptions.MaxAttempts, "$Message", $cmdOptions.Timeout, $cmdOptions.ValidateScript)
-    }
-
-    end {
-        return $result
+            } else { $Options }
+        )
+        if ($PSCmdlet.MyInvocation.BoundParameters.ContainsKey('CleanupScript')) { $cmdOptions.CleanupScript = $CleanupScript }
+        [System.Threading.CancellationToken]$CancellationToken = $cmdOptions.CancellationToken
+        [Int]$MaxAttempts = $cmdOptions.MaxAttempts
+        [String]$Message = "$Message"; if ([string]::IsNullOrWhiteSpace($Message)) { $Message = "Invoke Command" }
+        [Int]$Timeout = $cmdOptions.Timeout
+        [ScriptBlock]$CleanupScript = $cmdOptions.CleanupScript
+        [string]$Output = [string]::Empty; $bgTask = BackgroundTask -Output $Output ; $bgTask.IsSuccess = $IsSuccess
+        [ValidateNotNullOrEmpty()][scriptblock]$ScriptBlock = $ScriptBlock
+        if ([string]::IsNullOrWhiteSpace((Show-Stack))) { Push-Stack 'TaskMan' }
+        $IsSuccess = $false; $fxn = Show-Stack; $AttemptStartTime = $null;
+        $ErrorRecord = $null;
+        [int]$Attempts = 1
+        $CommandStartTime = Get-Date
+        while (($Attempts -le $MaxAttempts) -and !$bgTask.IsSuccess) {
+            $Retries = $MaxAttempts - $Attempts
+            if ($cancellationToken.IsCancellationRequested) {
+                WriteLog "$fxn CancellationRequested when $Retries retries were left."
+                throw
+            }
+            try {
+                " Attempt # $Attempts/$MaxAttempts" | Set-AttemptMSg
+                Write-Debug "$fxn $Message$([ProgressUtil]::AttemptMSg) "
+                $AttemptStartTime = Get-Date
+                if ($null -ne $ArgumentList) {
+                    $Output = Invoke-Command -ScriptBlock $ScriptBlock -ArgumentList $ArgumentList
+                    $IsSuccess = [bool]$?
+                } else {
+                    $Output = Invoke-Command -ScriptBlock $ScriptBlock
+                    $IsSuccess = [bool]$?
+                }
+            } catch {
+                $IsSuccess = $false; $ErrorRecord = $_
+                " Errored after $([math]::Round(($(Get-Date) - $AttemptStartTime).TotalSeconds, 2)) seconds" | Set-AttemptMSg
+                Write-Debug "$fxn $([ProgressUtil]::AttemptMSg)"
+            } finally {
+                $bgTask.Output = $Output
+                $bgTask.IsSuccess = $IsSuccess
+                $bgTask.ErrorRecord = $ErrorRecord
+                if ($null -ne $CleanupScript) { $bgTask = $CleanupScript.Invoke($bgTask) }
+                $job_state = $(if ($bgTask.IsSuccess) { "Completed" } else { "Failed" })
+                $bgTask.SetJobState([scriptblock]::Create("return '$job_state'"))
+                if ($Retries -eq 0 -or $bgTask.IsSuccess) {
+                    Write-Debug " E.T = $([math]::Round(($(Get-Date) - $CommandStartTime).TotalSeconds, 2)) seconds"
+                } elseif (!$cancellationToken.IsCancellationRequested -and $Retries -ne 0) {
+                    Start-Sleep -Milliseconds $Timeout
+                }
+                $Attempts++
+            }
+        }
+        return $bgTask
     }
 }
 
@@ -460,28 +400,6 @@ function Set-AttemptMSg {
         [string]$Message
     )
     [ProgressUtil]::AttemptMSg = $Message
-}
-
-function Get-WaitScript {
-    [CmdletBinding()]
-    [OutputType([scriptblock])]
-    param ()
-    end {
-        return [TaskMan]::WaitScript
-    }
-}
-
-function Set-WaitScript {
-    [CmdletBinding()]
-    [OutputType([void])]
-    param (
-        [Parameter(Mandatory = $true, Position = 0)]
-        [ValidateNotNullOrEmpty()]
-        [scriptblock]$script
-    )
-    process {
-        [TaskMan]::WaitScript = $script
-    }
 }
 
 function Wait-Task {
@@ -503,32 +421,76 @@ function Wait-Task {
         [System.Threading.Tasks.Task[]]$Task
     )
     begin {
-        $result = $null
+        $TaskResult = $null
         # $Tasks = @()
     }
     process {
         if ($PSCmdlet.ParameterSetName -eq 'scriptBlock') {
-            $result = [TaskMan]::WaitTask($progressMsg, $scriptBlock)
+            [int]$JobId = $(Start-Job -ScriptBlock $scriptBlock).Id
         } else {
             throw [System.NotSupportedException]::new("Sorry, ParameterSetName is not yet supported")
         }
         # $Tasks += $Task
         # While (![System.Threading.Tasks.Task]::WaitAll($Tasks, 200)) {}
         # $Tasks.ForEach( { $_.GetAwaiter().GetResult() })
+
+        [System.Management.Automation.Job]$Job = Get-Job -Id $JobId
+        [Console]::CursorVisible = $false;
+        [ProgressUtil]::frames = [ProgressUtil]::_twirl[0]
+        [int]$length = [ProgressUtil]::frames.Length;
+        $originalY = [Console]::CursorTop
+        while ($Job.JobStateInfo.State -notin ('Completed', 'failed')) {
+            for ($i = 0; $i -lt $length; $i++) {
+                [ProgressUtil]::frames | ForEach-Object { [Console]::Write("$progressMsg $($_[$i])") }
+                [System.Threading.Thread]::Sleep(50)
+                [Console]::Write(("`b" * ($length + $progressMsg.Length)))
+                [Console]::CursorTop = $originalY
+            }
+        }
+        # i.e: Gives an illusion of loading animation.
+        [void][cli]::Write("`b$progressMsg", [ConsoleColor]::Blue)
+        [System.Management.Automation.Runspaces.RemotingErrorRecord[]]$Errors = $Job.ChildJobs.Where({
+                $null -ne $_.Error
+            }
+        ).Error;
+        $LogMsg = ''; $_Success = ($null -eq $Errors); $attMSg = Get-AttemptMSg;
+        if (![string]::IsNullOrWhiteSpace($attMSg)) { $LogMsg += $attMSg } else { $LogMsg += "... " }
+        if ($Job.JobStateInfo.State -eq "Failed" -or $Errors.Count -gt 0) {
+            $errormessages = ""; $errStackTrace = ""
+            if ($null -ne $Errors) {
+                $errormessages = $Errors.Exception.Message -join "`n"
+                $errStackTrace = $Errors.ScriptStackTrace
+                if ($null -ne $Errors.Exception.InnerException) {
+                    $errStackTrace += "`n`t"
+                    $errStackTrace += $Errors.Exception.InnerException.StackTrace
+                }
+            }
+            $TaskResult = $Job | BackgroundTask -e $Errors # BackgroundTask -Job $Job -ErrorRecord $Errors
+            $_Success = $false; $LogMsg += " Completed with errors.`n`t$errormessages`n`t$errStackTrace"
+        } else {
+            $TaskResult = $Job | BackgroundTask
+        }
+        WriteLog $LogMsg -s:$_Success
+        [Console]::CursorVisible = $true; Set-AttemptMSg ' '
     }
     end {
-        return $result
+        return $TaskResult
     }
 }
 
-function New-TaskResult {
-    [OutputType([PSCustomObject])]
+function BackgroundTask {
+    # .EXAMPLE
+    #     Start-Job -ScriptBlock { start-sleep -seconds 2; return 100 } | BackgroundTask
+    #     Explanation of the function or its result. You can include multiple examples with additional .EXAMPLE lines
+    # .OUTPUTS
+    #     BackgroundTask.TaskResult
+    [CmdletBinding(DefaultParameterSetName = 'Job')]
     param (
         [Parameter(Mandatory = $true, Position = 0, ParameterSetName = 'output')]
         [AllowNull()][Alias('o')]
         [object]$Output,
 
-        [Parameter(Mandatory = $true, Position = 0, ParameterSetName = 'Job')]
+        [Parameter(Mandatory = $true, Position = 0, ParameterSetName = 'Job', ValueFromPipeline = $true)]
         [ValidateNotNullOrEmpty()][Alias('J')]
         [System.Management.Automation.Job]$Job,
 
@@ -538,54 +500,63 @@ function New-TaskResult {
 
         [Parameter(Mandatory = $false, Position = 2, ParameterSetName = '__AllparameterSets')]
         [ValidateNotNullOrEmpty()][Alias('e')]
-        [object]$ErrorRecord
+        [System.Management.Automation.ErrorRecord]$ErrorRecord
     )
 
     begin {
-        $result = [PSCustomObject]@{
-            IsSuccess   = $IsSuccess
-            JobName     = ''
-            Command     = ''
-            ErrorRecord = $null
-            Output      = [System.Management.Automation.PSDataCollection[psobject]]::new()
+        class TaskCommands : System.Collections.Generic.List[String] {
+            TaskCommands() {}
+            [string] ToString() {
+                if ($this.Count -eq 0) { return [string]::Empty }else { return '...' }
+            }
         }
-        $result.PsObject.Methods.Add([psscriptmethod]::new('SetJobState', {
-                    # .EXAMPLE
-                    #   $result.SetJobState()
-                    # .EXAMPLE
-                    #   $result.SetJobState({ return 'StateSTR' })
-                    param (
-                        [Parameter(Mandatory = $false, Position = 0)]
-                        [scriptblock]$get_state
-                    )
-                    if ($null -eq $get_state) {
-                        $job_state = $(if ($this.IsSuccess) { "Completed" } else { "Failed" })
-                        $get_state = [scriptblock]::Create("return '$job_state'")
-                    }
-                    $this.PsObject.Properties.Add([psscriptproperty]::new('State', $get_state, { throw [System.InvalidOperationException]::new("Cannot set State") }))
+        class TaskResult {
+            [bool]$IsSuccess
+            [string]$JobName
+            [array]$ErrorRecord
+            hidden [TaskCommands]$Commands
+            [System.Management.Automation.PSDataCollection[psobject]]$Output
+            TaskResult() {
+                $this.IsSuccess = $false
+                $this.JobName = [string]::Empty
+                $this.ErrorRecord = @()
+                $this.Commands = [TaskCommands]::new()
+                $this.Output = [System.Management.Automation.PSDataCollection[psobject]]::new()
+            }
+            [void] SetJobState() { $this.SetJobState($null) }
+            [void] SetJobState([scriptblock]$get_state) {
+                # .EXAMPLE
+                #   $result.SetJobState()
+                # .EXAMPLE
+                #   $result.SetJobState({ return 'StateSTR' })
+                if ($null -eq $get_state) {
+                    $job_state = $(if ($this.IsSuccess) { "Completed" } else { "Failed" })
+                    $get_state = [scriptblock]::Create("return '$job_state'")
                 }
-            )
-        )
+                $this.PsObject.Properties.Add([psscriptproperty]::new('State', $get_state, { throw [System.InvalidOperationException]::new("Cannot set State") }))
+            }
+        }
+        $tresult = [TaskResult]::new()
     }
 
     process {
         $HasErrorRecord = $PSCmdlet.MyInvocation.BoundParameters.ContainsKey('ErrorRecord')
         if ($PSCmdlet.ParameterSetName -eq 'output') {
             if ($null -eq $Output) { $Output = New-Object psobject }
-            [void]$result.Output.Add($Output); $result.SetJobState()
+            [void]$tresult.Output.Add($Output); $tresult.SetJobState()
         } else {
-            $result.Command = $job.Command
-            $result.SetJobState([scriptblock]::Create("return '$($job.JobStateInfo.State.ToString())'"))
+            $tresult.Commands.Add($Job.Command) | Out-Null
+            $tresult.SetJobState([scriptblock]::Create("return '$($job.JobStateInfo.State.ToString())'"))
             $JobRes = $job.ChildJobs | Receive-Job -Wait
-            if ($JobRes -is [bool]) { $result.IsSuccess = $JobRes }
-            [void]$result.Output.Add($JobRes)
+            if ($JobRes -is [bool]) { $tresult.IsSuccess = $JobRes }
+            $tresult.Output.Add($JobRes) | Out-Null
         }
-        $result.IsSuccess = !$HasErrorRecord -and $($result.State -eq "Completed")
-        if ($HasErrorRecord) { $result.ErrorRecord = $ErrorRecord }
+        $tresult.IsSuccess = !$HasErrorRecord -and $($tresult.State -eq "Completed")
+        if ($HasErrorRecord) { $tresult.ErrorRecord = $ErrorRecord }
     }
 
     end {
-        return $result
+        return $tresult
     }
 }
 
@@ -617,7 +588,7 @@ function New-Task {
                 { Invoke-Command -ScriptBlock $ScriptBlock } -as [System.Action]
             }
         )
-        $powershell.AddScript({
+        $powershell = $powershell.AddScript({
                 param (
                     [Parameter(Mandatory = $true)]
                     [ValidateNotNull()]
@@ -630,27 +601,27 @@ function New-Task {
             $Runspace = [System.Management.Automation.Runspaces.RunspaceFactory]::CreateRunspace()
         } else {
             Write-Debug "[New-Task] Using LocalRunspace ..."
+            $Runspace = [System.Management.Automation.Runspaces.Runspace]::DefaultRunspace
         }
         if ($Runspace.RunspaceStateInfo.State -ne 'Opened') { $Runspace.Open() }
         $powershell.Runspace = $Runspace
         [ValidateNotNull()][System.Action]$_Action = $_Action;
         Write-Host "[New-Task] Runing in background ..." -ForegroundColor DarkBlue
-
         $threads = New-Object System.Collections.ArrayList;
         $result = [PSCustomObject]@{
-            PowerShell = $PowerShell
-            returnVal  = $PowerShell.BeginInvoke()
+            Task   = $null
+            Shell  = $PowerShell
+            Result = $PowerShell.BeginInvoke()
         }
         $threads.Add($result) | Out-Null;
-        $completed = $false;
+        $completed = $false; $_r = @{ true = 'Completed'; false = 'Still open' }
         while ($completed -eq $false) {
             $completed = $true;
             foreach ($thread in $threads) {
-                $endInvoke = $thread.PowerShell.EndInvoke($thread.returnVal);
-                $endInvoke;
-                $threadHandle = $thread.returnVal.AsyncWaitHandle.Handle;
-                $threadIsCompleted = $thread.returnVal.IsCompleted;
-                Write-Host "$threadHandle is $threadIsCompleted";
+                $result.Task = $thread.Shell.EndInvoke($thread.Result);
+                $threadHandle = $thread.Result.AsyncWaitHandle.Handle;
+                $threadIsCompleted = $thread.Result.IsCompleted;
+                ("[New-Task] ThreadHandle {0} is {1}" -f $threadHandle, $_r["$threadIsCompleted"]) | Write-Host -f Blue
                 if ($threadIsCompleted -eq $false) {
                     $completed = $false;
                 }
@@ -659,7 +630,7 @@ function New-Task {
             Start-Sleep -Milliseconds 500;
         }
         foreach ($thread in $threads) {
-            $thread.PowerShell.Dispose();
+            $thread.Shell.Dispose();
         }
         $_result = $result
     }

@@ -460,6 +460,8 @@ function Unblock-AllOutboundConnections {
 }
 
 function CheckConnection {
+    # .EXAMPLE
+    #     CheckConnection -host "github.com" -msg "[ProgramName] Check if offline" -IsOffline
     [CmdletBinding()]
     param (
         [Parameter(Mandatory = $true, Position = 0)]

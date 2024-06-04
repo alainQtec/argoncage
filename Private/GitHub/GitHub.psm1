@@ -50,16 +50,16 @@
         return $(try { [void][Convert]::FromBase64String($base64); $true } catch { $false })
     }
     static [bool] IsConnected() {
-        $cs = $null;
-        # script will get executed on each result of the retry
-        $_vs = [scriptblock]::Create({
+        $cr = $null;
+        # Clean up script to get executed on connection result each retry
+        $cs = [scriptblock]::Create({
                 param($result)
                 $result.IsSuccess = $result.Output.Output -and $result.Output.IsSuccess;
                 return $result
             }
         )
-        $cs = (Invoke-RetriableCommand -s { CheckConnection -host "github.com" -msg "[Github] Testing Connection" -IsOnline } -vs $_vs).Output
-        return $cs.Output
+        $cr = (Invoke-RetriableCommand -s { CheckConnection -host "github.com" -msg "[Github] Testing Connection" -IsOnline } -cs $cs).Output
+        return $cr.Output
     }
 }
 
@@ -205,6 +205,18 @@ function New-GitHubSession () {
     }
 }
 
+function Test-GithubConnection () {
+    # .SYNOPSIS
+    #    Tests if we can connect to github.
+    [CmdletBinding()][OutputType([bool])]
+    param ([switch]$CheckAPI)
+    process {
+        #TODO: Will also be used to test the gitHub API. (using the token from Get-GitHubToken)
+        # For now, we just need to know if we can connect
+        # Will be able to check if we can connect to the API; ie: READ, WRITE, ADMIN
+        return [GitHub]::IsConnected()
+    }
+}
 function Set-GitHubUsername ($Name) {
     [ValidateNotNullOrWhiteSpace()][string]$Name = $Name
     [GitHub]::UserName = $Name
@@ -393,7 +405,7 @@ function New-GistFile {
         }
     }
     process {
-        if (!([GitHub]::IsConnected())) {
+        if (!(Test-GithubConnection)) {
             throw [System.Net.NetworkInformation.PingException]::new("PingException, PLease check your connection!");
         }
         if ($PSCmdlet.ParameterSetName -eq 'ByUri') {

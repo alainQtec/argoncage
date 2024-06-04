@@ -271,7 +271,7 @@ class ArgonCage {
                 UseWhatIf     = [bool]$((Get-Variable WhatIfPreference -ValueOnly) -eq $true)
                 SessionId     = [string]::Empty
                 UseVerbose    = [bool]$((Get-Variable verbosePreference -ValueOnly) -eq "continue")
-                OfflineMode   = (Invoke-RetriableCommand { (CheckConnection -host "github.com" -msg "[ArgonCage] Check if offline" -IsOffline).IsSuccess } -vs { param($r) $r.IsSuccess = $r.Output.Output -and $r.Output.IsSuccess; return $r } ).Output
+                OfflineMode   = (Invoke-RetriableCommand { CheckConnection -host "github.com" -msg "[ArgonCage] Check if offline" -IsOffline } -cs { param($r) $r.IsSuccess = $r.Output.Output -and $r.Output.IsSuccess; return $r } ).Output.Output
                 CachedCreds   = $null
                 SessionConfig = $Config
                 OgWindowTitle = $(Get-Variable executionContext).Value.Host.UI.RawUI.WindowTitle

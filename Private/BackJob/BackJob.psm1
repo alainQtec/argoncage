@@ -473,10 +473,10 @@ function Wait-Task {
                     $errStackTrace += $Errors.Exception.InnerException.StackTrace
                 }
             }
-            $TaskResult = $Job | BackgroundTask -e $Errors # BackgroundTask -Job $Job -ErrorRecord $Errors
+            $TaskResult = BackgroundTask($Job, $Errors);
             $_Success = $false; $LogMsg += " Completed with errors.`n`t$errormessages`n`t$errStackTrace"
         } else {
-            $TaskResult = $Job | BackgroundTask
+            $TaskResult = BackgroundTask($Job)
         }
         WriteLog $LogMsg -s:$_Success
         [Console]::CursorVisible = $true; Set-AttemptMSg ' '
@@ -494,16 +494,16 @@ function BackgroundTask {
     #     BackgroundTask.TaskResult
     [CmdletBinding()]
     param (
-        [Parameter(Mandatory = $true, Position = 0)]
+        [Parameter(Mandatory = $true, Position = 0, ValueFromPipeline = $true)]
         [AllowNull()][Alias('o')]
         $InputObject,
 
         [Parameter(Mandatory = $false, Position = 1)]
-        [Alias('s')]
+        [Alias('s')][ValidateNotNullOrEmpty()]
         [bool]$IsSuccess = 0,
 
         [Parameter(Mandatory = $false, Position = 2)]
-        [Alias('e')]
+        [Alias('e')][ValidateNotNullOrEmpty()]
         [System.Management.Automation.ErrorRecord]$ErrorRecord
     )
 
@@ -534,36 +534,51 @@ function BackgroundTask {
                 # .EXAMPLE
                 #   $result.SetJobState({ return 'StateSTR' })
                 if ($null -eq $get_state) {
-                    $job_state = $(if ($this.IsSuccess) { "Completed" } else { "Failed" })
-                    $get_state = [scriptblock]::Create("return '$job_state'")
+                    $get_state = [scriptblock]::Create({
+                            return $(switch ($true) {
+                                    $(![string]::IsNullOrWhiteSpace($this.JobName)) {
+                                        $(Get-Job -Name $this.JobName).State.ToString();
+                                        break;
+                                    }
+                                    $($this.IsSuccess) {
+                                        "Completed";
+                                        break;
+                                    }
+                                    Default {
+                                        "Failed"
+                                    }
+                                }
+                            )
+                        }
+                    )
                 }
                 $this.PsObject.Properties.Add([psscriptproperty]::new('State', $get_state, { throw [System.InvalidOperationException]::new("Cannot set State") }))
             }
         }
+        $_BoundParams = [hashtable]$PSCmdlet.MyInvocation.BoundParameters
+        if ($InputObject -is [array] -and (!$IsSuccess.IsPresent -and !$ErrorRecord)) {
+            $_BoundParams.IsSuccess = $InputObject.Where({ $_ -is [bool] });
+            $_BoundParams.ErrorRecord = $InputObject.Where({ $_ -is [System.Management.Automation.ErrorRecord] });
+            $_BoundParams.InputObject = $InputObject[0]
+        }
         $tresult = [TaskResult]::new()
-        # $r.Value.GetType().Name -eq 'Object[]'
-        # $r.Value.ForEach({ $_.GetType().Name }) -join ',' -eq 'PSRemotingJob,Int32,ErrorRecord'
     }
 
     process {
-        $_BoundParams = $PSCmdlet.MyInvocation.BoundParameters
-        $_Input_Object = [PSCustomObject]@{
-            IsJob      = $($InputObject.GetType().FullName -in @('System.Management.Automation.PSRemotingJob', 'System.Management.Automation.Job'))
-            Value      = $(if ($null -eq $InputObject) { New-Object PSObject }else { $InputObject })
-            HasError   = $null -ne $ErrorRecord -or $_BoundParams.ContainsKey('ErrorRecord')
-            ErrorValue = $ErrorRecord
-        }
-        if (!$_Input_Object.IsJob) {
-            [void]$tresult.Output.Add($_Input_Object.Value); $tresult.SetJobState()
+        if ($null -eq $InputObject) { $InputObject = New-Object PSObject }
+        if ($InputObject -is [job]) {
+            $tresult.JobName = $InputObject.Name
+            $tresult.Commands.Add($InputObject.Command) | Out-Null
+            $_output = $InputObject.ChildJobs | Receive-Job -Wait -ErrorAction SilentlyContinue -ErrorVariable Err
+            $_BoundParams.ErrorRecord = $Err; $tresult.IsSuccess = $null -eq $Err
+            if ($_output -is [bool]) { $tresult.IsSuccess = $_output }
+            $tresult.Output.Add($_output) | Out-Null
         } else {
-            $tresult.Commands.Add($_Input_Object.Value.Command) | Out-Null
-            $tresult.SetJobState([scriptblock]::Create("return '$($_Input_Object.Value.JobStateInfo.State.ToString())'"))
-            $JobRes = $_Input_Object.Value.ChildJobs | Receive-Job -Wait
-            if ($JobRes -is [bool]) { $tresult.IsSuccess = $JobRes }
-            $tresult.Output.Add($JobRes) | Out-Null
+            [void]$tresult.Output.Add($InputObject);
         }
-        $tresult.IsSuccess = !$_Input_Object.HasError -and $($tresult.State -eq "Completed")
-        if ($_Input_Object.HasError) { $tresult.ErrorRecord = $_Input_Object.ErrorValue }
+        $_HasErrors = $null -ne $_BoundParams.ErrorRecord -or $PSCmdlet.MyInvocation.BoundParameters.ContainsKey('ErrorRecord')
+        if ($_HasErrors) { $tresult.ErrorRecord = $_BoundParams.ErrorRecord }; $tresult.SetJobState()
+        $tresult.IsSuccess = !$_HasErrors -and $($tresult.State -ne "Failed")
     }
 
     end {

@@ -220,6 +220,28 @@ function New-CliArt {
     }
 }
 
+# function New-DynamicParam {
+#     param ([string]$Name, [int]$position, [type]$type)
+#     process {
+#         $_params = [System.Management.Automation.RuntimeDefinedParameterDictionary]::New()
+#         $_params.Add($Name, [System.Management.Automation.RuntimeDefinedParameter]::new(
+#                 $Name, $type, @((
+#                         New-Object System.Management.Automation.ParameterAttribute -Property @{
+#                             Position          = $position
+#                             Mandatory         = $false
+#                             ValueFromPipeline = $false
+#                             ParameterSetName  = $PSCmdlet.ParameterSetName
+#                             HelpMessage       = "hlp msg"
+#                         }
+#                     ),
+#                     [System.Management.Automation.ValidateNotNullOrEmptyAttribute]::new()
+#                 )
+#             )
+#         )
+#         return $_params
+#     }
+# }
+
 function Write-AnimatedHost {
     [CmdletBinding()]
     [OutputType([void])]
@@ -300,20 +322,6 @@ function Invoke-RetriableCommand {
                 [Parameter(Mandatory = $false, Position = 1)]
                 [switch]$s
             )
-            # DynamicParam {
-            #     if ($args.GetType().Name -eq 'syste.object[]') {
-            #         $ageAttribute = [System.Management.Automation.ParameterAttribute]::new()
-            #         $ageAttribute.Position = 3
-            #         $ageAttribute.Mandatory = $true
-            #         $ageAttribute.HelpMessage = "This product is only available for customers 21 years of age and older. Please enter your age:"
-            #         $attributeCollection = [System.Collections.ObjectModel.Collection[System.Attribute]]::New()
-            #         $attributeCollection.Add($ageAttribute)
-            #         $ageParam = [System.Management.Automation.RuntimeDefinedParameter]::new('age', [Int16], $attributeCollection)
-            #         $paramDictionary = [System.Management.Automation.RuntimeDefinedParameterDictionary]::New()
-            #         $paramDictionary.Add('age', $ageParam)
-            #         return $paramDictionary
-            #     }
-            # }
             process {
                 $args.GetType().Name | Write-Host -f Green
                 $re = @{ true = @{ m = "Complete "; c = "Cyan" }; false = @{ m = "Errored "; c = "Red" } }
@@ -484,22 +492,18 @@ function BackgroundTask {
     #     Explanation of the function or its result. You can include multiple examples with additional .EXAMPLE lines
     # .OUTPUTS
     #     BackgroundTask.TaskResult
-    [CmdletBinding(DefaultParameterSetName = 'Job')]
+    [CmdletBinding()]
     param (
-        [Parameter(Mandatory = $true, Position = 0, ParameterSetName = 'output')]
+        [Parameter(Mandatory = $true, Position = 0)]
         [AllowNull()][Alias('o')]
-        [object]$Output,
+        $InputObject,
 
-        [Parameter(Mandatory = $true, Position = 0, ParameterSetName = 'Job', ValueFromPipeline = $true)]
-        [ValidateNotNullOrEmpty()][Alias('J')]
-        [System.Management.Automation.Job]$Job,
-
-        [Parameter(Mandatory = $false, Position = 1, ParameterSetName = 'output')]
+        [Parameter(Mandatory = $false, Position = 1)]
         [Alias('s')]
         [bool]$IsSuccess = 0,
 
-        [Parameter(Mandatory = $false, Position = 2, ParameterSetName = '__AllparameterSets')]
-        [ValidateNotNullOrEmpty()][Alias('e')]
+        [Parameter(Mandatory = $false, Position = 2)]
+        [Alias('e')]
         [System.Management.Automation.ErrorRecord]$ErrorRecord
     )
 
@@ -537,22 +541,29 @@ function BackgroundTask {
             }
         }
         $tresult = [TaskResult]::new()
+        # $r.Value.GetType().Name -eq 'Object[]'
+        # $r.Value.ForEach({ $_.GetType().Name }) -join ',' -eq 'PSRemotingJob,Int32,ErrorRecord'
     }
 
     process {
-        $HasErrorRecord = $PSCmdlet.MyInvocation.BoundParameters.ContainsKey('ErrorRecord')
-        if ($PSCmdlet.ParameterSetName -eq 'output') {
-            if ($null -eq $Output) { $Output = New-Object psobject }
-            [void]$tresult.Output.Add($Output); $tresult.SetJobState()
+        $_BoundParams = $PSCmdlet.MyInvocation.BoundParameters
+        $_Input_Object = [PSCustomObject]@{
+            IsJob      = $($InputObject.GetType().FullName -in @('System.Management.Automation.PSRemotingJob', 'System.Management.Automation.Job'))
+            Value      = $(if ($null -eq $InputObject) { New-Object PSObject }else { $InputObject })
+            HasError   = $null -ne $ErrorRecord -or $_BoundParams.ContainsKey('ErrorRecord')
+            ErrorValue = $ErrorRecord
+        }
+        if (!$_Input_Object.IsJob) {
+            [void]$tresult.Output.Add($_Input_Object.Value); $tresult.SetJobState()
         } else {
-            $tresult.Commands.Add($Job.Command) | Out-Null
-            $tresult.SetJobState([scriptblock]::Create("return '$($job.JobStateInfo.State.ToString())'"))
-            $JobRes = $job.ChildJobs | Receive-Job -Wait
+            $tresult.Commands.Add($_Input_Object.Value.Command) | Out-Null
+            $tresult.SetJobState([scriptblock]::Create("return '$($_Input_Object.Value.JobStateInfo.State.ToString())'"))
+            $JobRes = $_Input_Object.Value.ChildJobs | Receive-Job -Wait
             if ($JobRes -is [bool]) { $tresult.IsSuccess = $JobRes }
             $tresult.Output.Add($JobRes) | Out-Null
         }
-        $tresult.IsSuccess = !$HasErrorRecord -and $($tresult.State -eq "Completed")
-        if ($HasErrorRecord) { $tresult.ErrorRecord = $ErrorRecord }
+        $tresult.IsSuccess = !$_Input_Object.HasError -and $($tresult.State -eq "Completed")
+        if ($_Input_Object.HasError) { $tresult.ErrorRecord = $_Input_Object.ErrorValue }
     }
 
     end {
